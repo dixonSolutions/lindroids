@@ -5,3 +5,7 @@ dist/
 *.apk
 third_party/proot/
 /site/
+
+# Android test lab (lab/README.md): per-run artifacts; only the summary is tracked
+lab/results/*
+!lab/results/SUMMARY.md

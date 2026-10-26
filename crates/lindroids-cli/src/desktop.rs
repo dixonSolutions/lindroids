@@ -9,7 +9,7 @@ pub struct Entry {
     pub name: String,
     pub icon: Option<String>,
     pub exec: Option<String>,
-    pub path: PathBuf,
+    pub no_display: bool,
 }
 
 /// `share` directories to search, outermost first, for programs seen through `root`
@@ -38,7 +38,7 @@ pub fn data_dirs(root: &Path) -> Vec<PathBuf> {
 
 pub fn parse(path: &Path) -> Option<Entry> {
     let text = std::fs::read_to_string(path).ok()?;
-    let mut e = Entry { path: path.to_path_buf(), ..Default::default() };
+    let mut e = Entry::default();
     e.id = path.file_stem()?.to_string_lossy().into_owned();
     let mut in_main = false;
     for line in text.lines() {
@@ -56,6 +56,8 @@ pub fn parse(path: &Path) -> Option<Entry> {
             e.icon = Some(v.to_string());
         } else if let Some(v) = line.strip_prefix("Exec=") {
             e.exec = Some(v.to_string());
+        } else if let Some(v) = line.strip_prefix("NoDisplay=") {
+            e.no_display = v.trim() == "true";
         }
     }
     (!e.name.is_empty()).then_some(e)
@@ -71,7 +73,9 @@ pub fn find(dirs: &[PathBuf], program: &str) -> Option<Entry> {
             return Some(e);
         }
     }
-    // Then the first entry whose Exec runs this program.
+    // Then the entry that best looks like "the" launcher for this program: several may run it
+    // (Mousepad ships its settings dialog as a second entry running `mousepad --preferences`).
+    let mut best: Option<(i32, Entry)> = None;
     for d in dirs {
         let Ok(rd) = std::fs::read_dir(d.join("applications")) else { continue };
         let mut paths: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).collect();
@@ -80,16 +84,32 @@ pub fn find(dirs: &[PathBuf], program: &str) -> Option<Entry> {
             if p.extension().map_or(true, |x| x != "desktop") {
                 continue;
             }
-            if let Some(e) = parse(&p) {
-                let exec0 = e.exec.as_deref().unwrap_or("").split_whitespace().find(|w| !w.contains('=')).unwrap_or("");
-                let exec0 = Path::new(exec0).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                if exec0 == base {
-                    return Some(e);
-                }
+            let Some(e) = parse(&p) else { continue };
+            let exec = e.exec.clone().unwrap_or_default();
+            let mut words = exec.split_whitespace().filter(|w| !w.contains('=') || w.starts_with('-'));
+            let exec0 = words.next().map(|w| Path::new(w).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()).unwrap_or_default();
+            if exec0 != base {
+                continue;
+            }
+            let extra_args = words.filter(|w| !w.starts_with('%')).count() as i32;
+            let mut score = 0;
+            if e.id == base || e.id.ends_with(&format!(".{base}")) {
+                score += 4;
+            }
+            score -= 2 * extra_args;
+            if e.no_display {
+                score -= 3;
+            }
+            let lname = e.name.to_lowercase();
+            if lname.contains("settings") || lname.contains("preferences") {
+                score -= 2;
+            }
+            if best.as_ref().map_or(true, |(s, _)| score > *s) {
+                best = Some((score, e));
             }
         }
     }
-    None
+    best.map(|(_, e)| e)
 }
 
 /// Find an icon file by theme name (or absolute path), preferring large PNGs, then SVG.
@@ -208,6 +228,7 @@ mod tests {
         let apps = dir.join("share/applications");
         std::fs::create_dir_all(&apps).unwrap();
         std::fs::write(apps.join("org.example.Foo.desktop"), "[Desktop Entry]\nName=Foo Editor\nExec=/usr/bin/foo %F\nIcon=foo\n").unwrap();
+        std::fs::write(apps.join("org.example.Foo-settings.desktop"), "[Desktop Entry]\nName=Foo Settings\nExec=foo --preferences\nIcon=foo\n").unwrap();
         let e = find(&[dir.join("share")], "foo").unwrap();
         assert_eq!(e.name, "Foo Editor");
         assert_eq!(e.id, "org.example.Foo");
