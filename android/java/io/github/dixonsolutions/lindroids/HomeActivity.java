@@ -35,9 +35,22 @@ public final class HomeActivity extends Activity {
         LinkService.ensureRunning(this);
     }
 
+    /** Sandboxes connect and windows open while this screen is up: keep it current. */
+    final Runnable refresh = new Runnable() {
+        @Override public void run() {
+            build();
+            LinkService.main.postDelayed(this, 2000);
+        }
+    };
+
     @Override protected void onResume() {
         super.onResume();
-        build();
+        refresh.run();
+    }
+
+    @Override protected void onPause() {
+        LinkService.main.removeCallbacks(refresh);
+        super.onPause();
     }
 
     int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
@@ -61,7 +74,10 @@ public final class HomeActivity extends Activity {
         col.addView(btn);
     }
 
+    ScrollView shown;
+
     void build() {
+        final int scrollY = shown == null ? 0 : shown.getScrollY();
         ScrollView sv = new ScrollView(this);
         sv.setBackgroundColor(0xff101418);
         col = new LinearLayout(this);
@@ -118,6 +134,8 @@ public final class HomeActivity extends Activity {
         how.setTextIsSelectable(true);
         text("Version " + version(), 12, false).setAlpha(0.6f);
         setContentView(sv);
+        shown = sv;
+        sv.post(() -> sv.scrollTo(0, scrollY));
     }
 
     String version() {

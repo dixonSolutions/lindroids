@@ -201,7 +201,10 @@ fn cmd_status() -> i32 {
         Ok(CliReply::Status { build, app_connected, app_build, pairing_code, windows, clients, .. }) => {
             println!("server      {build} ({})", rt.display());
             match (&app_build, app_connected) {
-                (Some(b), true) if *b != build => println!("app         connected, build {b}: older or newer than this CLI — `lindroids setup` updates it"),
+                // Dev builds ("+dev") are not comparable; release builds must match.
+                (Some(b), true) if *b != build && !b.ends_with("+dev") && !build.ends_with("+dev") => {
+                    println!("app         connected, build {b}: older or newer than this CLI — `lindroids setup` updates it")
+                }
                 (Some(b), true) => println!("app         connected, build {b}"),
                 _ => println!("app         not connected"),
             }

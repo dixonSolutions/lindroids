@@ -110,7 +110,17 @@ pub fn wake_app(sb: &Sandbox, secret: &str) -> Option<&'static str> {
         ("/system/bin/am", "/system/bin/am", &[]),
         ("cmd", "/system/bin/cmd", &["activity"]),
     ];
+    // Termux's `am` runs app_process, which on x86 images with an ARM translation layer loads the
+    // native bridge and is killed by seccomp (a tombstone each time): skip it there.
+    let bridged = Command::new("/system/bin/getprop")
+        .arg("ro.dalvik.vm.native.bridge")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .map_or(false, |v| !v.is_empty() && v != "0");
     for (label, cmd, pre) in tries {
+        if bridged && label == "am" {
+            continue;
+        }
         let mut a: Vec<&str> = pre.to_vec();
         a.extend(args.iter().copied());
         if run_quiet(cmd, &a, Duration::from_secs(8)) {
