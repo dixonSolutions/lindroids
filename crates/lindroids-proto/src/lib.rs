@@ -124,7 +124,15 @@ pub enum ToApp {
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ToServer {
     /// First message on a link.
-    Hello { version: u32, build: String, density: f32, nonce: String },
+    Hello {
+        version: u32,
+        build: String,
+        density: f32,
+        nonce: String,
+        /// The screen's size in physical pixels, so windows can be sized before they open.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        screen: Option<(u32, u32)>,
+    },
     /// Second message: `proof` from an earlier pairing's secret, or `code`, the pairing code the
     /// user read off the terminal.
     Auth {

@@ -12,7 +12,8 @@ public final class App extends Application {
     public void onCreate() {
         super.onCreate();
         System.loadLibrary("lindroids");
-        Native.appInit(getFilesDir().getAbsolutePath(), getResources().getDisplayMetrics().density);
+        android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+        Native.appInit(getFilesDir().getAbsolutePath(), dm.density, dm.widthPixels, dm.heightPixels);
         LinkService.app = this;
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel ch = new NotificationChannel(CHANNEL, "Running apps", NotificationManager.IMPORTANCE_LOW);

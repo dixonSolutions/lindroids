@@ -174,7 +174,23 @@ fn write_tar(plan: &Plan, out: std::fs::File) -> Result<(), String> {
         if !seen.insert(name.clone()) {
             continue;
         }
-        if let Err(e) = b.append_path_with_name(host, name) {
+        // proot's emulated hard links (symlinks into a distro's .l2s directory, by this side's
+        // path) would dangle inside the bundle: copy what they point to.
+        let target = std::fs::read_link(host).ok().filter(|t| t.to_string_lossy().contains("/.l2s/.l2s."));
+        let res = match target {
+            Some(t) => match std::fs::File::open(&t) {
+                Ok(mut f) => {
+                    let meta = f.metadata().map_err(|e| e.to_string())?;
+                    let mut h = tar::Header::new_gnu();
+                    h.set_metadata(&meta);
+                    h.set_cksum();
+                    b.append_data(&mut h, name, &mut f)
+                }
+                Err(e) => Err(e),
+            },
+            None => b.append_path_with_name(host, name),
+        };
+        if let Err(e) = res {
             // Unreadable files (sockets, permissions) are skipped, not fatal.
             if e.kind() == std::io::ErrorKind::BrokenPipe {
                 return Err("the app stopped reading the bundle".into());

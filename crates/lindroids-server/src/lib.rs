@@ -196,6 +196,9 @@ pub struct Window {
     pub fit: f32,
     /// Where the scaled-down content starts (it is centred), in physical pixels.
     pub fit_offset: (i32, i32),
+    /// xdg-decoration object, and the mode told to the client (None: not told yet).
+    pub decoration: Option<wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1>,
+    pub decoration_mode: Option<wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode>,
 }
 
 /// A bundle on its way from the CLI to the app.
@@ -374,7 +377,10 @@ impl State {
         let serial = self.next_serial();
         let scale = self.scale;
         let Some(w) = self.windows.get_mut(&win) else { return };
-        let size = match w.phys {
+        // Before the Android window exists, a fullscreen client still needs a real size (SDL
+        // sizes its fullscreen windows from it): the screen, or a plausible one.
+        let guess = if w.fullscreen { Some(self.outputs.screen.unwrap_or((1280, 800))) } else { None };
+        let size = match w.phys.or(guess) {
             Some(p) => ((p.0 / scale) as i32, (p.1 / scale) as i32),
             None => (0, 0),
         };
@@ -382,21 +388,22 @@ impl State {
             return;
         }
         w.configured = size;
+        log::debug!("configure window {win}: {size:?}");
         shell::send_toplevel_configure(w, size, serial);
     }
 
     /// Handshake on a new link. Returns the link back while it is still pending.
     fn handshake(&mut self, mut link: Link, msg: ToServer) -> Option<Link> {
         match (&link.phase, msg) {
-            (Phase::Hello, ToServer::Hello { version, build, density, nonce: app_nonce }) => {
+            (Phase::Hello, ToServer::Hello { version, build, density, nonce: app_nonce, screen }) => {
                 let nonce = shm::random_string(32, b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
                 let proof = auth::server_proof(&self.secret, &app_nonce);
                 link.send(&ToApp::Challenge { nonce: nonce.clone(), proof });
-                link.phase = Phase::Auth { nonce, app_nonce, density, version, build };
+                link.phase = Phase::Auth { nonce, app_nonce, density, version, build, screen };
                 Some(link)
             }
-            (Phase::Auth { nonce, density, version, build, .. }, ToServer::Auth { proof, code }) => {
-                let (density, version, build) = (*density, *version, build.clone());
+            (Phase::Auth { nonce, density, version, build, screen, .. }, ToServer::Auth { proof, code }) => {
+                let (density, version, build, screen) = (*density, *version, build.clone(), *screen);
                 let by_secret = proof.as_deref().map_or(false, |p| auth::same(p, &auth::app_proof(&self.secret, nonce)));
                 let by_code = !by_secret
                     && self.pairing_failures < MAX_PAIRING_FAILURES
@@ -431,6 +438,9 @@ impl State {
                 let hello = ToApp::Hello { version: proto::PROTOCOL_VERSION, build: BUILD.into(), sandbox: self.cfg.sandbox.clone() };
                 self.send_app(&hello);
                 audio::link_up();
+                if let Some((w, h)) = screen {
+                    output::screen_size_hint(self, w, h);
+                }
                 if self.cfg.scale.is_none() {
                     let s = scale_for_density(density);
                     if s != self.scale {

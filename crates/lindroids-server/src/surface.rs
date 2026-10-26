@@ -247,7 +247,15 @@ fn apply(state: &mut State, id: &ObjectId, p: Pending) {
     if let Some(v) = p.viewport_dst {
         s.viewport_dst = v;
     }
-    log::debug!("commit {:?}: buffer={} frame_cbs+{}", id, s.image.is_some(), p.frame.len());
+    log::debug!(
+        "commit {:?}: image={:?} scale={} viewport={:?} role={:?} frame_cbs+{}",
+        id,
+        s.image.as_ref().map(|i| (i.width, i.height)),
+        s.buffer_scale,
+        s.viewport_dst,
+        s.role,
+        p.frame.len()
+    );
     s.frame_cbs.extend(p.frame);
     let first = !s.committed_once;
     s.committed_once = true;

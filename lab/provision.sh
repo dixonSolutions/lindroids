@@ -76,6 +76,22 @@ if timeout 15 "$VM" "$NAME" ssh true 2>/dev/null; then
   log "ssh already works"
   exit 0
 fi
+# Provisioned before, but rebooted since: sshd is not running. Type `sshd` into Termux.
+if [[ $(sh_ 'tail -n 1 /data/data/com.termux/files/home/lab-setup.log' 2>/dev/null) == LAB-SETUP-DONE ]]; then
+  log "already provisioned; starting sshd"
+  for try in 1 2 3; do
+    sh_ 'am start -n com.termux/.app.TermuxActivity' >/dev/null
+    sleep $((3 * try))
+    "$VM" "$NAME" adb shell "input text 'sshd'"
+    "$VM" "$NAME" adb shell input keyevent 66
+    for i in $(seq 1 10); do
+      timeout 15 "$VM" "$NAME" ssh true 2>/dev/null && { log "ssh works"; exit 0; }
+      sleep 2
+    done
+  done
+  echo "sshd did not come up" >&2
+  exit 1
+fi
 
 log "starting Termux (bootstrap)"
 sh_ 'am start -n com.termux/.app.TermuxActivity' >/dev/null

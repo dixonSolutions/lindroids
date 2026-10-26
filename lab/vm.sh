@@ -13,10 +13,15 @@
 #   lab/vm.sh list                     every lab VM and whether it runs
 #
 # Environment knobs (start):
-#   SELINUX=enforcing|permissive|default  enforcing adds androidboot.selinux=enforcing and drops
-#                                         any androidboot.selinux=permissive (default: default)
+#   SELINUX=enforcing|permissive|late|default
+#                                         enforcing adds androidboot.selinux=enforcing and drops any
+#                                         androidboot.selinux=permissive; late boots the image default
+#                                         and runs `setenforce 1` once boot completes (wait-boot), for
+#                                         images whose own services do not survive enforcing boot
 #   GPU=gl|virtio|std                     gl = virtio-vga-gl + egl-headless (virgl), default
 #   EXTRA="k=v ..."                       extra kernel cmdline
+#   DROP="word ..."                       remove these words from the image's default cmdline
+#   e.g. software rendering on Bliss: GPU=std DROP="HWC=drm_minigbm GRALLOC=minigbm_arcvm" EXTRA=HWACCEL=0
 #   RAM_MB=3072 CPUS=4
 #
 # The lead's VM (libvirt "xtbliss", adb 127.0.0.1:5555 / emulator-5554) is never touched: every
@@ -144,7 +149,8 @@ cmd_start() {
   if ((fresh)) || [[ ! -f $DISK ]]; then make_disk; fi
   mkdir -p "$RUN"
 
-  local cmdline=$CMDLINE sel=${SELINUX:-default}
+  local cmdline=$CMDLINE sel=${SELINUX:-default} w
+  for w in ${DROP:-}; do cmdline=$(sed -E "s/(^| )$w( |$)/ /g" <<<"$cmdline"); done
   if [[ $sel == enforcing ]]; then
     cmdline=$(sed -E 's/(^| )androidboot\.selinux=[a-z]+//g' <<<"$cmdline")
     cmdline+=" androidboot.selinux=enforcing"
@@ -158,9 +164,10 @@ cmd_start() {
 
   local gpu=${GPU:-gl} qemu display
   case $gpu in
-    gl) qemu=("${QEMU_FLATPAK[@]}"); display=(-device virtio-vga-gl -display egl-headless,rendernode=/dev/dri/renderD128) ;;
-    virtio) qemu=("${QEMU_FLATPAK[@]}"); display=(-device virtio-vga -display none) ;;
-    std) qemu=("${QEMU_FLATPAK[@]}"); display=(-vga std -display none) ;;
+    # The VNC socket (no TCP port) gives QMP screendump a surface, for screenshots while adb is down.
+    gl) qemu=("${QEMU_FLATPAK[@]}"); display=(-device virtio-vga-gl -display egl-headless,rendernode=/dev/dri/renderD128 -vnc "unix:$RUN/vnc.sock") ;;
+    virtio) qemu=("${QEMU_FLATPAK[@]}"); display=(-device virtio-vga -display none -vnc "unix:$RUN/vnc.sock") ;;
+    std) qemu=("${QEMU_FLATPAK[@]}"); display=(-vga std -display none -vnc "unix:$RUN/vnc.sock") ;;
     *) die "GPU=$gpu?" ;;
   esac
   echo "$gpu" >"$RUN/gpu"
@@ -191,6 +198,12 @@ cmd_wait_boot() {
     fi
     if [[ $(adbc shell getprop sys.boot_completed 2>/dev/null | tr -d '\r') == 1 ]]; then
       echo "$NAME booted in $((SECONDS - t0)) s"
+      if [[ $(cat "$RUN/selinux-requested" 2>/dev/null) == late && $(adbc shell getenforce | tr -d '\r') != Enforcing ]]; then
+        adbc root >/dev/null 2>&1 || true
+        sleep 3
+        adbc shell setenforce 1 >/dev/null 2>&1 || true
+        echo "$NAME: setenforce 1 -> $(adbc shell getenforce | tr -d '\r')"
+      fi
       return 0
     fi
     sleep 3

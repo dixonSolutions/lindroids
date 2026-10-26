@@ -7,7 +7,7 @@ final class Native {
     private Native() {}
 
     /** Called once at app start: where bundles live, and the screen density for the server. */
-    static native void appInit(String filesDir, float density);
+    static native void appInit(String filesDir, float density, int screenWidth, int screenHeight);
 
     /**
      * Connects link {@code link} to the server listening on abstract socket {@code socket}, which

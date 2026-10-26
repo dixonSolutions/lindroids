@@ -53,6 +53,12 @@ pub fn register_globals(dh: &DisplayHandle) {
 }
 
 pub fn send_toplevel_configure(w: &mut Window, size: (i32, i32), serial: u32) {
+    // A client that never asked for a decoration mode gets client-side: GNOME-style apps keep
+    // their menus in the header bar.
+    if let (Some(d), None) = (&w.decoration, w.decoration_mode) {
+        d.configure(zxdg_toplevel_decoration_v1::Mode::ClientSide);
+        w.decoration_mode = Some(zxdg_toplevel_decoration_v1::Mode::ClientSide);
+    }
     let mut states: Vec<u8> = Vec::new();
     let mut push = |s: xdg_toplevel::State| states.extend_from_slice(&(s as u32).to_ne_bytes());
     if size.0 > 0 && size.1 > 0 {
@@ -451,7 +457,14 @@ impl Dispatch<xdg_surface::XdgSurface, ObjectId> for State {
                 let win = state.new_window_id();
                 let tl = di.init(id, (sid.clone(), win));
                 if tl.version() >= 5 {
-                    tl.wm_capabilities(Vec::new());
+                    // Windows are always maximized into their Android task and may go fullscreen.
+                    // An empty list would tell libdecor (SDL's decorations) that fullscreen is
+                    // impossible, and SDL's fullscreen windows would then never get a size.
+                    let caps: Vec<u8> = [xdg_toplevel::WmCapabilities::Maximize, xdg_toplevel::WmCapabilities::Fullscreen]
+                        .iter()
+                        .flat_map(|c| (*c as u32).to_ne_bytes())
+                        .collect();
+                    tl.wm_capabilities(caps);
                 }
                 if let Some(s) = state.surfaces.get_mut(sid) {
                     s.role = Role::Toplevel(win);
@@ -481,6 +494,8 @@ impl Dispatch<xdg_surface::XdgSurface, ObjectId> for State {
                         fullscreen: false,
                         fit: 1.0,
                         fit_offset: (0, 0),
+                        decoration: None,
+                        decoration_mode: None,
                     },
                 );
             }
@@ -504,6 +519,7 @@ impl Dispatch<xdg_surface::XdgSurface, ObjectId> for State {
                 );
             }
             xdg_surface::Request::SetWindowGeometry { x, y, width, height } => {
+                log::debug!("window geometry {sid:?}: {x},{y} {width}x{height}");
                 if let Some(x_) = state.surfaces.get_mut(sid).and_then(|s| s.xdg.as_mut()) {
                     x_.pending_geometry = Some(Rect { x, y, w: width, h: height });
                 }
@@ -644,7 +660,7 @@ impl GlobalDispatch<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1, ()> for
 
 impl Dispatch<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1, ()> for State {
     fn request(
-        _: &mut State,
+        state: &mut State,
         _: &Client,
         _: &zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
         request: zxdg_decoration_manager_v1::Request,
@@ -652,30 +668,53 @@ impl Dispatch<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1, ()> for State
         _: &DisplayHandle,
         di: &mut DataInit<'_, State>,
     ) {
-        if let zxdg_decoration_manager_v1::Request::GetToplevelDecoration { id, .. } = request {
-            let d = di.init(id, ());
-            // Client-side: GNOME-style apps keep their menus in the header bar, and hiding it
-            // would hide those. Maximized+tiled, toolkits draw it flat, without shadows.
-            d.configure(zxdg_toplevel_decoration_v1::Mode::ClientSide);
+        if let zxdg_decoration_manager_v1::Request::GetToplevelDecoration { id, toplevel } = request {
+            let win = toplevel.data::<(ObjectId, u32)>().map(|d| d.1).unwrap_or(0);
+            let d = di.init(id, win);
+            // The mode is told with the first configure, once the client had a chance to ask.
+            if let Some(w) = state.windows.get_mut(&win) {
+                w.decoration = Some(d);
+                w.decoration_mode = None;
+            }
         }
     }
 }
 
-impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, ()> for State {
+impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, u32> for State {
     fn request(
-        _: &mut State,
+        state: &mut State,
         _: &Client,
         res: &zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
         request: zxdg_toplevel_decoration_v1::Request,
-        _: &(),
+        win: &u32,
         _: &DisplayHandle,
         _: &mut DataInit<'_, State>,
     ) {
-        match request {
-            zxdg_toplevel_decoration_v1::Request::SetMode { .. } | zxdg_toplevel_decoration_v1::Request::UnsetMode => {
-                res.configure(zxdg_toplevel_decoration_v1::Mode::ClientSide);
+        use zxdg_toplevel_decoration_v1::Mode;
+        let wanted = match request {
+            // What the client asks for, it gets: server-side means no title bar at all (Android
+            // shows the name), which suits SDL games; otherwise the client draws its own.
+            zxdg_toplevel_decoration_v1::Request::SetMode { mode: WEnum::Value(Mode::ServerSide) } => Mode::ServerSide,
+            zxdg_toplevel_decoration_v1::Request::SetMode { .. } | zxdg_toplevel_decoration_v1::Request::UnsetMode => Mode::ClientSide,
+            _ => return,
+        };
+        let configured = state.windows.get(win).map_or(false, |w| w.configured != (-1, -1));
+        if let Some(w) = state.windows.get_mut(win) {
+            if w.decoration_mode == Some(wanted) {
+                return;
             }
-            _ => {}
+            w.decoration_mode = Some(wanted);
+        }
+        res.configure(wanted);
+        // A new mode takes effect with the next xdg_surface.configure.
+        if configured {
+            state.configure_window(*win, true);
+        }
+    }
+
+    fn destroyed(state: &mut State, _: ClientId, _: &zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, win: &u32) {
+        if let Some(w) = state.windows.get_mut(win) {
+            w.decoration = None;
         }
     }
 }

@@ -448,6 +448,14 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
     } else if Path::new("/sdcard").is_dir() {
         binds.push(("/sdcard".into(), "/sdcard".into()));
     }
+    // A Flatpak installed inside a proot-distro distro: proot-distro emulates the hard links
+    // ostree makes with symlinks into <rootfs>/.l2s, by their path on this side. Make that path
+    // resolve here too.
+    let l2s = app.root.join(".l2s");
+    if app.root != Path::new("/") && l2s.is_dir() {
+        let p = l2s.display().to_string();
+        binds.push((l2s, p));
+    }
     // Absolute paths from `filesystems=` (home and the xdg-* dirs are inside the bound home).
     let reserved = ["/usr", "/app", "/etc", "/proc", "/dev", "/sys", "/tmp", "/run", "/lib", "/lib64", "/bin", "/sbin", "/var"];
     for fs in app.app.metadata.list("Context", "filesystems") {

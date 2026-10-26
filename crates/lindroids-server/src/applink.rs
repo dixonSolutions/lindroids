@@ -127,7 +127,15 @@ fn read_one(conn: &mut Conn, framer: &mut Framer, deadline: Instant) -> Result<(
     }
 }
 
-pub fn connect(uid: u32, socket_name: Option<&str>, secret: Option<&str>, code: Option<&str>, density: f32, build: &str) -> Outcome {
+/// What the app tells a server about itself.
+#[derive(Debug, Clone, Copy)]
+pub struct Display {
+    pub density: f32,
+    /// Physical pixels.
+    pub screen: Option<(u32, u32)>,
+}
+
+pub fn connect(uid: u32, socket_name: Option<&str>, secret: Option<&str>, code: Option<&str>, display: Display, build: &str) -> Outcome {
     let mut conn = match reach(uid, socket_name) {
         Ok(c) => c,
         Err(e) => return Outcome::Absent(e),
@@ -135,7 +143,13 @@ pub fn connect(uid: u32, socket_name: Option<&str>, secret: Option<&str>, code: 
     let mut framer = Framer::default();
     let deadline = Instant::now() + Duration::from_secs(8);
     let nonce = crate::shm::random_string(32, b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
-    let hello = ToServer::Hello { version: proto::PROTOCOL_VERSION, build: build.into(), density, nonce: nonce.clone() };
+    let hello = ToServer::Hello {
+        version: proto::PROTOCOL_VERSION,
+        build: build.into(),
+        density: display.density,
+        nonce: nonce.clone(),
+        screen: display.screen,
+    };
     if let Err(e) = conn.write_all(&proto::encode(&hello)) {
         return Outcome::Absent(e.to_string());
     }

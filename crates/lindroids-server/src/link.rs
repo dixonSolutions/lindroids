@@ -17,7 +17,7 @@ pub enum Phase {
     /// Waiting for the app's Hello.
     Hello,
     /// Challenge sent; waiting for Auth.
-    Auth { nonce: String, app_nonce: String, density: f32, version: u32, build: String },
+    Auth { nonce: String, app_nonce: String, density: f32, version: u32, build: String, screen: Option<(u32, u32)> },
     Ready,
 }
 

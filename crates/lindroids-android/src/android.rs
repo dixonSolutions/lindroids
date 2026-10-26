@@ -28,6 +28,7 @@ static WINDOWS: Mutex<Option<HashMap<(i32, u32), Win>>> = Mutex::new(None);
 static IMPORTS: Mutex<Option<HashMap<(i32, String), std::fs::File>>> = Mutex::new(None);
 static FILES_DIR: OnceLock<PathBuf> = OnceLock::new();
 static DENSITY: Mutex<f32> = Mutex::new(1.0);
+static SCREEN: Mutex<Option<(u32, u32)>> = Mutex::new(None);
 
 /// The app side of one Linux window: the last frame, kept whole so changed tiles can be applied.
 #[derive(Default)]
@@ -135,10 +136,13 @@ pub extern "system" fn Java_io_github_dixonsolutions_lindroids_Native_serverRun(
 // ------------------------------------------------------------------ links
 
 #[no_mangle]
-pub extern "system" fn Java_io_github_dixonsolutions_lindroids_Native_appInit(mut env: JNIEnv, _: JClass, files: JString, density: jfloat) {
+pub extern "system" fn Java_io_github_dixonsolutions_lindroids_Native_appInit(mut env: JNIEnv, _: JClass, files: JString, density: jfloat, width: jint, height: jint) {
     let files = jstr(&mut env, &files);
     let _ = FILES_DIR.set(PathBuf::from(files));
     *DENSITY.lock().unwrap() = density;
+    if width > 0 && height > 0 {
+        *SCREEN.lock().unwrap() = Some((width as u32, height as u32));
+    }
     if LINK_SERVICE.get().is_none() {
         if let Ok(cls) = env.find_class("io/github/dixonsolutions/lindroids/LinkService") {
             if let Ok(g) = env.new_global_ref(cls) {
@@ -175,8 +179,8 @@ pub extern "system" fn Java_io_github_dixonsolutions_lindroids_Native_linkConnec
     let socket = opt_jstr(&mut env, &socket);
     let secret = opt_jstr(&mut env, &secret);
     let code = opt_jstr(&mut env, &code);
-    let density = *DENSITY.lock().unwrap();
-    let r = match applink::connect(uid as u32, socket.as_deref(), secret.as_deref(), code.as_deref(), density, crate::BUILD) {
+    let display = applink::Display { density: *DENSITY.lock().unwrap(), screen: *SCREEN.lock().unwrap() };
+    let r = match applink::connect(uid as u32, socket.as_deref(), secret.as_deref(), code.as_deref(), display, crate::BUILD) {
         Outcome::Linked { conn, framer, paired, sandbox, backlog } => {
             let kind = conn.kind();
             if link >= 0 {

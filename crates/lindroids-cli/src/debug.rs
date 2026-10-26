@@ -69,7 +69,7 @@ pub fn cmd_debug_app(args: &[String]) -> i32 {
     let secret = std::fs::read_to_string(&secret_file).ok();
     let code = if secret.is_none() { std::fs::read_to_string(rt.join("pairing-code")).ok() } else { None };
     let socket = if force_tcp { Some("lindroids.nothing-listens-here") } else { socket_name.as_deref() };
-    let (conn, mut framer, backlog) = match applink::connect(uid, socket, secret.as_deref(), code.as_deref().map(str::trim), 1.0, "debug-app") {
+    let (conn, mut framer, backlog) = match applink::connect(uid, socket, secret.as_deref(), code.as_deref().map(str::trim), applink::Display { density: 1.0, screen: Some(size) }, "debug-app") {
         Outcome::Linked { conn, framer, paired, sandbox, backlog } => {
             if let Some(s) = paired {
                 let _ = std::fs::write(&secret_file, s);

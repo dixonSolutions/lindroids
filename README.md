@@ -21,6 +21,14 @@ lindroids export mousepad         # adds a home screen icon that works without T
 then Termux is closed and Mousepad starts from its own icon. Recorded on Android 13 (x86_64);
 full-quality videos: <a href="media/demo-run.mp4">run</a>, <a href="media/demo-export.mp4">export</a>.</sub></p>
 
+<p align="center">
+<img src="media/demo-flatpak.gif" width="70%" alt="Tux Paint from Flathub, running as an Android window">
+</p>
+
+<p align="center"><sub><code>lindroids run org.tuxpaint.Tuxpaint</code>: Tux Paint from Flathub, installed with
+<code>flatpak</code> inside a proot-distro Debian, running without bubblewrap, drawn with touch, with its
+sound effects playing through Android (<a href="media/demo-flatpak.mp4">video</a>).</sub></p>
+
 ## What it does
 
 - **Every Linux window is an Android window.** Each toplevel gets its own Android task: it shows
@@ -122,7 +130,7 @@ More: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 |---|---|
 | Android | 7.0 (API 24) and newer; arm64-v8a, armeabi-v7a, x86_64, x86 |
 | Terminals | Termux; Debian/Ubuntu under proot (proot-distro, UserLAnd, Andronix…); desktop Linux (for testing) |
-| Tested apps | GTK 3 (Galculator, Mousepad), GTK 4 (widget factory; GNOME Calculator, Characters and Pinta as Flatpaks), Flutter (RustDesk Flatpak), foot, xterm (X11), paplay/GStreamer/SDL/ALSA sound |
+| Tested apps | GTK 3 (Galculator, Mousepad), GTK 4 (widget factory; GNOME Calculator, Characters and Pinta as Flatpaks), SDL 3 (Tux Paint Flatpak from Flathub, on Android), Flutter (RustDesk Flatpak), foot, xterm (X11), paplay/GStreamer/SDL/ALSA sound |
 | Should work, not yet tested | Qt 5/6 on Wayland, SDL games, Firefox/Chromium/Electron on Wayland |
 
 Tested versions are listed in [lab/README.md](lab/README.md), with the QEMU lab that runs them.
