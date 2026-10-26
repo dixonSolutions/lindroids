@@ -123,14 +123,10 @@ jobs:
           HAVE_GPG_KEY: ${{ secrets.LINDROIDS_GPG_PRIVATE_KEY != '' && 'yes' || '' }}
           LINDROIDS_GITHUB_REPO: ${{ github.repository }}
         run: |
-          # Without the signing keys a fork still builds and tests everything and publishes
-          # nothing. On the upstream repository every main commit must release, so missing keys
-          # fail the run rather than passing green with nothing published.
+          # Without the signing keys (a fork, or before scripts/set-github-secrets.sh) everything
+          # is still built and tested, and nothing is published: releases are then made with
+          # scripts/publish-local.sh where the keys are.
           if [ -z "$LINDROIDS_KEYSTORE_B64" ] || [ -z "$LINDROIDS_KEYSTORE_PASS" ] || [ -z "$HAVE_GPG_KEY" ]; then
-            if [ "$LINDROIDS_GITHUB_REPO" = "dixonSolutions/lindroids" ]; then
-              echo "::error::signing secrets are not set: run scripts/set-github-secrets.sh"
-              exit 1
-            fi
             echo "::warning::signing secrets are not set (scripts/set-github-secrets.sh): built, not published"
             echo "publish=false" >> "$GITHUB_OUTPUT"
             scripts/build-release.sh
