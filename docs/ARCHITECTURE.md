@@ -121,6 +121,29 @@ window, and so its own Android window, exactly like a Wayland program's.
   manager in the `lindroids` binary (x11rb): one Android window for the whole X screen, normal
   windows filling it, dialogs centred.
 
+## Android's side of the desktop
+
+Linux programs keep asking what they ask on any desktop, and Android answers. The server starts
+the environment's own `dbus-daemon` as the session's bus (`<runtime>/bus`) and registers, with
+zbus, the XDG desktop portal (`org.freedesktop.portal.Desktop`) and `org.freedesktop.Notifications`
+on it ([portal.rs](../crates/lindroids-server/src/portal.rs)). The app answers over the link:
+
+| Interface | Android |
+|---|---|
+| Settings (`org.freedesktop.appearance`, GNOME's `gtk-theme`/`color-scheme`) | night mode, Material You accent, contrast, animations; changes signalled live |
+| OpenURI | `ACTION_VIEW` for links; files go through the app's FileProvider |
+| FileChooser | the document picker; shared-storage documents are used in place, others fetched into the runtime dir; saves are written back to the picked document when they change |
+| Notification, fdo Notifications | Android notifications with their buttons; taps come back as actions |
+| MemoryMonitor | `onTrimMemory` |
+| NetworkMonitor, PowerProfileMonitor | the default network; battery saver |
+
+Programs get `DBUS_SESSION_BUS_ADDRESS`, `GTK_USE_PORTAL=1` (GLib and GTK 3 use the portal outside
+a Flatpak only when asked), `GDK_DEBUG=portals` (GTK 4), `QT_QPA_PLATFORMTHEME=xdgdesktopportal`,
+and an `xdg-open` first on PATH that runs `lindroids open`. Programs under proot run as a faked
+root, so EXTERNAL authentication cannot work for them; the bus also takes ANONYMOUS, which is safe
+because its socket is in the runtime dir only this uid can enter. Distro and Flatpak runs see the
+runtime dir at the server's path too, so the paths the FileChooser hands out are valid there.
+
 ## Flatpak
 
 Flatpak's own runner needs bubblewrap, which needs namespaces an Android app does not have.

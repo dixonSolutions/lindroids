@@ -40,6 +40,9 @@ sound effects playing through Android (<a href="media/demo-flatpak.mp4">video</a
 <td align="center"><img src="media/screenshots/xterm-x11.png" width="300"><br><sub>X11: <code>lindroids run xterm</code></sub></td>
 <td align="center"><img src="media/screenshots/folder-picker.png" width="300"><br><sub><code>lindroids pick-folder</code></sub></td>
 </tr>
+<tr>
+<td align="center" colspan="3"><img src="media/screenshots/portal-light.png" width="300"> <img src="media/screenshots/portal-dark.png" width="300"><br><sub>GNOME Calculator follows Android's dark mode and accent colour live, through the portal</sub></td>
+</tr>
 </table>
 
 ## What it does
@@ -54,6 +57,12 @@ sound effects playing through Android (<a href="media/demo-flatpak.mp4">video</a
   X display, and each X11 window gets its own Android window (rootless Xwayland through
   [xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite), started on the first X11
   connection; `lindroids setup x11` installs what is missing).
+- **Android's side of the desktop.** Programs get the standard desktop portal and notification
+  service on their own session bus, answered by Android: they follow **dark mode** and the
+  **Material You accent** live, open and save files with **Android's file picker**, open links
+  and files in **Android apps** (`xdg-open`), post **Android notifications** with buttons, and
+  hear about **low memory**, the **network** and **battery saver**. In the terminal:
+  `lindroids open`, `lindroids notify`, `lindroids info`.
 - **Sound.** A PulseAudio-compatible server plays every stream through Android (AAudio, or
   AudioTrack on Android 7): paplay, GStreamer, SDL, ALSA via pulse, libcanberra.
 - **Input.** Touch (as touch, or as a mouse for apps that don't do touch), mouse, hardware
@@ -107,6 +116,9 @@ lindroids list                          # what you exported from here
 lindroids remove <id>
 
 lindroids pick-folder                   # Android's folder picker; prints the chosen path
+lindroids open <file|URI>               # open with an Android app (xdg-open does the same)
+lindroids notify <title> [body]         # an Android notification
+lindroids info                          # dark mode, accent, network, memory, battery
 lindroids setup x11                     # install Xwayland (and satellite where needed)
 lindroids status | doctor | pair | setup | start | stop | version
 ```
