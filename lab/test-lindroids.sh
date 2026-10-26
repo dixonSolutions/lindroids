@@ -53,7 +53,7 @@ shot() { "$VM" "$NAME" screenshot "$OUT/$1.png" >/dev/null 2>&1; }
 ui_find() {
   sh_ 'uiautomator dump /data/local/tmp/ui.xml >/dev/null 2>&1; cat /data/local/tmp/ui.xml' | python3 -c '
 import re, sys, xml.etree.ElementTree as ET
-pat = re.compile(sys.argv[1])
+pat = re.compile(sys.argv[1])  # (?i) for buttons: Android <= 9 shows them upper-case
 try:
     root = ET.fromstring(sys.stdin.read())
 except Exception:
@@ -154,7 +154,7 @@ log "pairing code $CODE"
 connected() { tsh 'lindroids status' 2>/dev/null | grep -qE '^app +connected'; }
 pair_dialog() {
   local i
-  for i in $(seq 1 10); do ui_find '^Pair$' >/dev/null && return 0; sleep 1; done
+  for i in $(seq 1 10); do ui_find '(?i)^pair$' >/dev/null && return 0; sleep 1; done
   return 1
 }
 sleep 3
@@ -173,7 +173,7 @@ if ! connected; then
   xy=$(ui_find 'EditText') && sh_ "input tap $xy"
   sh_ "input text $CODE"
   shot pair-code
-  xy=$(ui_find '^Pair$') || fail "no Pair button"
+  xy=$(ui_find '(?i)^pair$') || fail "no Pair button"
   sh_ "input tap $xy"
   for i in $(seq 1 30); do connected && break; sleep 0.5; done
 fi

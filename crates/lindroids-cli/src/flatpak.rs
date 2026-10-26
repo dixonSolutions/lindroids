@@ -68,14 +68,7 @@ pub fn find(root: &Path, id: &str) -> Option<App> {
             return Some(app);
         }
     }
-    let mut distros: Vec<PathBuf> = std::fs::read_dir(distros_dir()).map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).collect()).unwrap_or_default();
-    distros.sort();
-    distros.iter().find_map(|d| find_in(d, id))
-}
-
-/// Where proot-distro keeps its distros' root filesystems.
-fn distros_dir() -> PathBuf {
-    PathBuf::from(lindroids_proto::TERMUX_PREFIX).join("var/lib/proot-distro/installed-rootfs")
+    crate::run::distro_rootfses().iter().find_map(|d| find_in(d, id))
 }
 
 fn find_in(root: &Path, id: &str) -> Option<App> {
@@ -327,7 +320,7 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
     let root = &app.root;
 
     // Home: the user's own, or in a distro its /root (what `proot-distro login` gives).
-    let (home_host, home, user) = match o.distro.is_some() || root.starts_with(distros_dir()) {
+    let (home_host, home, user) = match o.distro.is_some() || root.starts_with(PathBuf::from(lindroids_proto::TERMUX_PREFIX).join("var/lib/proot-distro")) {
         true => (install::real(root, &root.join("root")), "/root".to_string(), "root".to_string()),
         false => {
             let h = std::env::var("HOME").unwrap_or_else(|_| "/root".into());

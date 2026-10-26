@@ -1,0 +1,120 @@
+# Architecture
+
+Lindroids has three parts:
+
+| Part | Where it runs | What it is |
+|---|---|---|
+| `lindroids` | inside the sandbox (Termux, a proot distro, a desktop) | one binary: the CLI and, as `lindroids server`, the server |
+| server | the same place, started on demand | a Wayland compositor and a PulseAudio-protocol sound server (`crates/lindroids-server`) |
+| Lindroids app | Android | windows, input, sound output, shortcuts, and an in-app server for exported bundles (`android/`, `crates/lindroids-android`) |
+
+## Why the server is a plain Linux program
+
+The obvious design is the one Termux:X11 uses: start a Java process inside the terminal app with
+`app_process`, use hidden Android APIs to broadcast a Binder to the display app, and hand Surfaces
+over Binder. It works on most phones, but not everywhere: on x86 images with an ARM translation
+layer (BlissOS, Android-x86, many Chromebook builds) `app_process` loads the native bridge, which
+calls `mount()` and is killed by the app seccomp filter. And `am`, used to wake other apps, needs
+`app_process` too on recent Android, or is refused to apps outright.
+
+So the server touches no Android API at all. It runs wherever Linux programs run, and the app
+reaches it.
+
+## The link
+
+Android's SELinux policy gives every app its own MLS categories and refuses `connectto` on another
+app's Unix sockets (seen on a permissive device as
+`avc: denied { connectto } ... tclass=unix_stream_socket`). Loopback TCP, on the other hand, is open
+between any two apps with the INTERNET permission. The link is therefore a byte stream:
+
+1. the app tries the server's abstract socket `@lindroids.server.<uid>` (works for the in-app
+   server, and on devices whose policy allows it); the kernel's `SO_PEERCRED` says who listens;
+2. otherwise it connects to `127.0.0.1:<47000 + uid offset>`.
+
+Nothing depends on passing file descriptors. Messages are JSON lines; a message with a `len` field
+is followed by that many bytes of payload (`crates/lindroids-proto`).
+
+**Authentication.** Any app can connect to a loopback port, and any app could listen on one first,
+so neither side trusts the other on sight. Both know a secret from an earlier pairing:
+
+```
+app    → Hello { nonce_a }
+server → Challenge { nonce_s, HMAC(secret, "lindroids-server" | nonce_a) }
+app    : verifies the server (no proof, no secret sent)
+app    → Auth { HMAC(secret, "lindroids-app" | nonce_s) }      or  Auth { code }
+server → Hello            (or AuthFailed; Paired { secret } after a code)
+```
+
+The first time, the user types the 6-digit code the CLI shows; five wrong codes close pairing until
+the server restarts. The secret lives in `~/.local/share/lindroids/secret` on the sandbox side and
+in the app's private preferences. When the CLI can send intents (`termux-am`, `am`, `cmd`) it also
+wakes the app with the secret, so pairing is not needed again; otherwise the app finds servers on its
+own while its service runs, by trying the sockets of approved and installed apps.
+
+## Frames
+
+The compositor implements wl_compositor, wl_subcompositor, wl_shm, wp_viewporter, xdg-shell
+(toplevels, popups with positioner constraints), xdg-decoration (client-side), wl_seat
+(pointer/keyboard/touch), text-input-v3, wl_data_device (clipboard), wl_output and xdg-output.
+
+Client buffers are copied (and converted to RGBA) at commit, so clients get their buffers back at
+once. Each window is composited on the CPU into a canvas the size of its Android Surface — the root
+surface copied, subsurfaces and popups blended — then compared with the last frame sent in 64×64
+tiles; the changed tiles go to the app LZ4-compressed. One frame per window is in flight; the app
+acknowledges it once it is in the Surface, and only then do the clients' frame callbacks fire, so
+clients render at the speed the screen takes frames. A hidden window (no Surface) holds its
+acknowledgement and its clients idle.
+
+**Scale.** The output scale is an integer a little below the screen density (`density × 0.75`,
+rounded): desktop apps get ~540 logical pixels across a phone instead of 360. A client that is
+still larger than its window is scaled down to fit (2×2 averaging keeps text legible) and centred;
+input is mapped back through the same transform.
+
+## Input
+
+Android `MotionEvent`s become `wl_touch` for clients that bound it, and a left-button pointer for
+those that did not (or for everyone with `LINDROIDS_TOUCH=pointer`). Mice give `wl_pointer` with
+buttons and wheel. Android keycodes map to evdev codes of the embedded US XKB keymap. Text from the
+soft keyboard goes through text-input-v3 when the focused client has a text field (any script,
+emoji), and is typed as key presses otherwise.
+
+## Sound
+
+`<runtime>/pulse/native` speaks the PulseAudio native protocol (playback; no shm). Each stream is
+sent to the app as PCM chunks paced at real time, about 100 ms ahead, with credits from the app
+bounding what is outstanding; the app plays each stream on its own AAudio stream (API 27+) or
+`AudioTrack`, and Android mixes. Formats other than s16/f32 are converted, more than two channels
+are folded to stereo, stream and sink volumes are applied in the server.
+
+## X11
+
+`lindroids run --x11` starts a rootful Xwayland on a free display and runs the program on it. A
+small window manager inside the `lindroids` binary (x11rb) makes normal windows fill the Android
+window, follows it when it resizes, centres dialogs and focuses the newest window.
+
+## Flatpak
+
+Flatpak's own runner needs bubblewrap, which needs namespaces an Android app does not have.
+`lindroids run <app-id>` finds the installation (in Termux's view, inside a proot-distro rootfs,
+or a toolbox host), reads the app's and runtime's metadata, resolves extensions (GL, locale,
+codecs), and builds the same filesystem view with proot: runtime at `/usr`, app at `/app`,
+extensions at their mount points, a generated `/etc/passwd`, `~/.var/app/<id>` as the XDG dirs.
+
+## Exported bundles
+
+`lindroids export` resolves what to copy:
+
+- Termux program: the owning package, its dependency closure from the dpkg database, the packages
+  that put plugins into directories the closure owns (pixbuf loaders, GIO/GTK modules…), files
+  that package scripts generated there (`loaders.cache`, `gschemas.compiled`), plus bash and
+  coreutils. Inside the app it runs under its own proot root with Termux's prefix and home bound in.
+- proot-distro program: the same closure from the distro's dpkg database, with Essential packages
+  and `/etc`; it runs with `-r` on the copied root.
+- Flatpak: runtime, app and extensions, with a skeleton root.
+
+The CLI streams the tar over the server and the link into the app, which unpacks it, records the
+launch spec and pins a shortcut (`ShortcutManager.requestPinShortcut`, adaptive icon; the legacy
+`INSTALL_SHORTCUT` broadcast on Android 7). Tapping it opens a short splash (a visible activity is
+what lets Android open the first window at once), starts the in-app server if needed, and spawns
+the program under the APK's proot (`lib<abi>/libproot.so`, executable because native libraries
+are extracted and the app targets SDK 28, like Termux).

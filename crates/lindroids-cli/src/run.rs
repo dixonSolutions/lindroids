@@ -77,8 +77,31 @@ pub fn program_of(cmd: &[String]) -> String {
     Path::new(&first).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or(first)
 }
 
+/// A proot-distro distro's root filesystem: `containers/<name>/rootfs` since proot-distro 5,
+/// `installed-rootfs/<name>` before.
 pub fn distro_rootfs(distro: &str) -> PathBuf {
-    PathBuf::from(TERMUX_PREFIX).join("var/lib/proot-distro/installed-rootfs").join(distro)
+    let base = PathBuf::from(TERMUX_PREFIX).join("var/lib/proot-distro");
+    let new = base.join("containers").join(distro).join("rootfs");
+    if new.is_dir() {
+        new
+    } else {
+        base.join("installed-rootfs").join(distro)
+    }
+}
+
+/// Every installed proot-distro distro's root filesystem, sorted by name.
+pub fn distro_rootfses() -> Vec<PathBuf> {
+    let base = PathBuf::from(TERMUX_PREFIX).join("var/lib/proot-distro");
+    let mut names: Vec<String> = ["containers", "installed-rootfs"]
+        .iter()
+        .filter_map(|d| std::fs::read_dir(base.join(d)).ok())
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names.dedup();
+    names.iter().map(|n| distro_rootfs(n)).filter(|p| p.is_dir()).collect()
 }
 
 /// What the user wants to run, resolved.
