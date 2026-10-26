@@ -26,7 +26,7 @@ pub struct Seat {
     pub text_inputs: Vec<zwp_text_input_v3::ZwpTextInputV3>,
     /// The Linux window whose Android window has focus.
     pub focus_win: Option<u32>,
-    kb_focus: Option<wl_surface::WlSurface>,
+    pub(crate) kb_focus: Option<wl_surface::WlSurface>,
     ptr_focus: Option<wl_surface::WlSurface>,
     /// Touch point -> (surface, surface origin in window logical coordinates).
     touch_targets: HashMap<i32, (wl_surface::WlSurface, f64, f64)>,
@@ -258,6 +258,7 @@ fn set_keyboard_focus(state: &mut State, surface: Option<wl_surface::WlSurface>)
         }
     }
     if let Some(new) = &surface {
+        super::data::focus_entering(state, new);
         let serial = state.next_serial();
         for k in state.seat.keyboards.iter().filter(|k| same_client(*k, new)) {
             k.enter(serial, new, Vec::new());

@@ -136,12 +136,14 @@ PNG=$FRAMES/window-$WIN.png
 echo "    window $WIN: $(grep '^window ' "$WORK/debug-app.log" | head -1)"
 wait_for "$TIMEOUT" "$PNG" test -s "$PNG"
 
-# The first frames can be an empty surface; wait until foot has drawn something.
+# The first frames can be an empty surface; wait until foot has drawn something. foot asks for
+# server-side decorations and gets them, so there is no title bar: its prompt and cursor alone
+# (about 140 pixels of 800x600) are what it draws.
 nonblank() {
   local s
   s=$(png_stats "$PNG") || return 1
   set -- $s
-  [ "$1" -ge 2 ] && python3 -c "import sys; sys.exit(0 if float('$2') > 0.0005 else 1)"
+  [ "$1" -ge 2 ] && python3 -c "import sys; sys.exit(0 if float('$2') > 0.0001 else 1)"
 }
 wait_for "$TIMEOUT" "a non-blank frame" nonblank
 sleep 1

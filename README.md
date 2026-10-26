@@ -143,8 +143,9 @@ More: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 |---|---|
 | Android | 7.0 (API 24) and newer; arm64-v8a, armeabi-v7a, x86_64, x86 |
 | Terminals | Termux; Debian/Ubuntu under proot (proot-distro, UserLAnd, Andronix…); desktop Linux (for testing) |
-| Tested apps | GTK 3 (Galculator, Mousepad), GTK 4 (widget factory; GNOME Calculator, Characters and Pinta as Flatpaks), SDL 3 (Tux Paint Flatpak from Flathub, on Android), Flutter (RustDesk Flatpak), foot, xterm (X11), paplay/GStreamer/SDL/ALSA sound |
-| Should work, not yet tested | Qt 5/6 on Wayland, SDL games, Firefox/Chromium/Electron on Wayland |
+| Tested apps | GTK 3 (Galculator, Mousepad), GTK 4 (widget factory; GNOME Calculator, Characters and Pinta as Flatpaks), SDL 3 (Tux Paint Flatpak from Flathub, on Android), Flutter (RustDesk Flatpak), Qt 6.11 Widgets (PyQt6 from the KDE 6.11 Flatpak runtime), foot, xterm (X11), paplay/GStreamer/SDL/ALSA sound |
+| Should work, not yet tested | Qt 5 on Wayland, SDL games, Firefox/Electron on Wayland |
+| Not yet working | Chromium-based engines under the Flatpak runner (Qt WebEngine, e.g. ZapZap: Chromium stops itself while creating its profile under proot, [#11](https://github.com/dixonSolutions/lindroids/issues/11)) |
 
 Tested in the [QEMU lab](lab/README.md) — pairing, windows, typing, reconnecting — on Android 7.1,
 9, 12L and 13, each with SELinux permissive and enforcing (on enforcing Android 9+ the link runs

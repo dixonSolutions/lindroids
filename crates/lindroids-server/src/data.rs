@@ -2,13 +2,17 @@
 //!
 //! When a Linux app copies, its text is read and put on the Android clipboard. When Android's
 //! clipboard changes (seen when a Linux window gains focus), Linux apps are offered that text.
+//!
+//! As the protocol says, only the client with keyboard focus hears about the selection: just
+//! before its keyboard enter, and when the selection changes while it has focus. Qt 6 crashes if
+//! told during its first roundtrip, before its clipboard exists.
 
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Mutex;
 
 use lindroids_proto::ToApp;
-use wayland_server::protocol::{wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source, wl_seat};
+use wayland_server::protocol::{wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source, wl_seat, wl_surface};
 use wayland_server::{Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource};
 
 use super::{Inbox, State};
@@ -63,8 +67,23 @@ fn offer_to(state: &State, dev: &wl_data_device::WlDataDevice) {
     dev.selection(Some(&offer));
 }
 
+fn focused<R: Resource>(state: &State, r: &R) -> bool {
+    state.seat.kb_focus.as_ref().map_or(false, |s| owned_by_same_client(r, s))
+}
+
+fn owned_by_same_client<R: Resource>(r: &R, s: &wl_surface::WlSurface) -> bool {
+    matches!((r.client(), s.client()), (Some(a), Some(b)) if a.id() == b.id())
+}
+
 fn broadcast(state: &State) {
-    for d in &state.data.devices {
+    for d in state.data.devices.iter().filter(|d| focused(state, *d)) {
+        offer_to(state, d);
+    }
+}
+
+/// `surface`'s client is about to get keyboard focus: tell its data devices the selection.
+pub fn focus_entering(state: &State, surface: &wl_surface::WlSurface) {
+    for d in state.data.devices.iter().filter(|d| owned_by_same_client(*d, surface)) {
         offer_to(state, d);
     }
 }
@@ -124,7 +143,9 @@ impl Dispatch<wl_data_device_manager::WlDataDeviceManager, ()> for State {
             wl_data_device_manager::Request::GetDataDevice { id, seat } => {
                 let _: wl_seat::WlSeat = seat;
                 let d = di.init(id, ());
-                offer_to(state, &d);
+                if focused(state, &d) {
+                    offer_to(state, &d);
+                }
                 state.data.devices.push(d);
             }
             _ => {}
