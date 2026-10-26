@@ -29,7 +29,17 @@ BASE_URL="https://${OWNER,,}.github.io/$NAME"
 die() { echo "publish-local: $*" >&2; exit 1; }
 [ -f "$KEYS/release.keystore" ] && [ -f "$KEYS/release.pass" ] || die "no signing keystore in $KEYS"
 [ -d "$KEYS/gnupg" ] || die "no APT signing key in $KEYS/gnupg"
-command -v gh >/dev/null || die "gh is required"
+# Inside a distrobox (where the toolchains are), the host's gh will do (LINDROIDS_HOST_GH, else
+# the usual places; Homebrew's is not on the PATH distrobox-host-exec uses).
+if ! command -v gh >/dev/null && command -v distrobox-host-exec >/dev/null; then
+  for HOST_GH in ${LINDROIDS_HOST_GH:-} /home/linuxbrew/.linuxbrew/bin/gh /usr/bin/gh /usr/local/bin/gh; do
+    if distrobox-host-exec test -x "$HOST_GH" 2>/dev/null; then
+      gh() { distrobox-host-exec "$HOST_GH" "$@"; }
+      break
+    fi
+  done
+fi
+command -v gh >/dev/null || declare -F gh >/dev/null || die "gh is required"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || die "the working tree has uncommitted changes"
 git fetch -q origin main
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || die "HEAD is not origin/main: push first"
