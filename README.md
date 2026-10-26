@@ -29,6 +29,19 @@ full-quality videos: <a href="media/demo-run.mp4">run</a>, <a href="media/demo-e
 <code>flatpak</code> inside a proot-distro Debian, running without bubblewrap, drawn with touch, with its
 sound effects playing through Android (<a href="media/demo-flatpak.mp4">video</a>).</sub></p>
 
+<table>
+<tr>
+<td align="center"><img src="media/screenshots/phone-galculator.png" width="200"><br><sub>GTK 3 on a phone screen (1080×2340, 440 dpi)</sub></td>
+<td align="center"><img src="media/screenshots/home-screen-shortcuts.png" width="300"><br><sub>Exported programs on the home screen</sub></td>
+<td align="center"><img src="media/screenshots/pin-dialog.png" width="300"><br><sub><code>lindroids export</code> asks the launcher</sub></td>
+</tr>
+<tr>
+<td align="center"><img src="media/screenshots/phone-mousepad.png" width="200"><br><sub>Text input on a phone</sub></td>
+<td align="center"><img src="media/screenshots/xterm-x11.png" width="300"><br><sub>X11: <code>lindroids run --x11 xterm</code></sub></td>
+<td align="center"><img src="media/screenshots/folder-picker.png" width="300"><br><sub><code>lindroids pick-folder</code></sub></td>
+</tr>
+</table>
+
 ## What it does
 
 - **Every Linux window is an Android window.** Each toplevel gets its own Android task: it shows
