@@ -138,11 +138,7 @@ pub fn wake_app(sb: &Sandbox, secret: &str) -> Option<&'static str> {
     ];
     // Termux's `am` runs app_process, which on x86 images with an ARM translation layer loads the
     // native bridge and is killed by seccomp (a tombstone each time): skip it there.
-    let bridged = Command::new("/system/bin/getprop")
-        .arg("ro.dalvik.vm.native.bridge")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .map_or(false, |v| !v.is_empty() && v != "0");
+    let bridged = native_bridge();
     for (label, cmd, pre) in tries {
         if bridged && label == "am" {
             continue;
@@ -181,4 +177,15 @@ pub fn preload_with(lib: &str, existing: Option<&str>) -> String {
         Some(e) => format!("{lib} {e}"),
         None => lib.to_string(),
     }
+}
+
+/// An x86 Android image with an ARM translation layer (houdini, libndk_translation): app_process
+/// started from a terminal app is killed by seccomp there, so `am` and `termux-open` cannot work.
+pub fn native_bridge() -> bool {
+    Command::new("/system/bin/getprop")
+        .arg("ro.dalvik.vm.native.bridge")
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .map_or(false, |v| !v.is_empty() && v != "0")
 }

@@ -51,19 +51,15 @@ next_steps() {
   echo
   echo "Next steps:"
   if [ -n "$apk" ]; then
-    echo "  1. Install the Lindroids app (once; later updates come with this package):"
-    if have termux-open; then
-      echo "       termux-open $apk"
-    else
-      echo "       $apk  (copy it to the phone and open it, or: adb install $apk)"
-    fi
+    echo "  1. lindroids setup           # installs the Lindroids app ($apk) and pairs it"
   else
     echo "  1. Install the Lindroids app on the phone: download lindroids-<version>.apk from"
     echo "       https://github.com/$GITHUB_REPO/releases/latest"
+    echo "     then: lindroids setup     # pairs it with this terminal"
   fi
-  echo "  2. lindroids pair            # enter the code it shows in the app"
-  echo "  3. lindroids run <command>   # e.g. lindroids run foot"
+  echo "  2. lindroids run <command>   # e.g. lindroids run foot; X11 programs work too"
   echo "     lindroids export <command> puts an app on the Android home screen."
+  echo "     lindroids update brings the CLI and the app to the newest release."
   echo
   echo "Update: $update"
 }
@@ -153,20 +149,26 @@ install_static() {
   chmod 755 "$dir/lindroids.new"
   mv "$dir/lindroids.new" "$dir/lindroids"
   say "installed $dir/lindroids"
-  # xwayland-satellite (for `lindroids run --x11`) goes where the CLI looks for it:
-  # <bindir>/../libexec/lindroids/. It is a glibc build that uses the distro's libxcb.
+  # xwayland-satellite (X11 programs) goes where the CLI looks for it:
+  # <bindir>/../libexec/lindroids/. It is a glibc build that uses the distro's libxcb, so a musl
+  # system (Alpine) gets its own package instead, through `lindroids setup x11`.
   xwls=$tmp/$name/libexec/lindroids/xwayland-satellite
-  if [ -f "$xwls" ]; then
-    libexec=$(dirname "$dir")/libexec/lindroids
+  libexec=$(dirname "$dir")/libexec/lindroids
+  if [ -f "$xwls" ] && ! ls /lib/ld-musl-* >/dev/null 2>&1; then
     mkdir -p "$libexec"
     cp "$xwls" "$libexec/xwayland-satellite.new"
     chmod 755 "$libexec/xwayland-satellite.new"
     mv "$libexec/xwayland-satellite.new" "$libexec/xwayland-satellite"
     say "installed $libexec/xwayland-satellite"
     if have ldd && ldd "$libexec/xwayland-satellite" 2>&1 | grep -qiE 'not found|error'; then
-      warn "for X11 programs (lindroids run --x11), install glibc 2.34+, libxcb and libxcb-cursor"
+      warn "for X11 programs, install glibc 2.34+, libxcb and libxcb-cursor (lindroids setup x11)"
     fi
-    have Xwayland || warn "for X11 programs (lindroids run --x11), install Xwayland"
+  else
+    # A glibc build left by an earlier install would only be skipped over.
+    rm -f "$libexec/xwayland-satellite"
+  fi
+  if ! have Xwayland || { ! have xwayland-satellite && [ ! -f "$libexec/xwayland-satellite" ]; }; then
+    warn "for X11 programs, run: lindroids setup x11"
   fi
   case ":$PATH:" in
     *":$dir:"*) ;;

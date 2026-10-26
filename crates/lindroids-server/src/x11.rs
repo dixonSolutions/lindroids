@@ -21,18 +21,21 @@ use log::{info, warn};
 
 /// Where satellite comes from, in order: LINDROIDS_XWAYLAND_SATELLITE, the copy Lindroids ships
 /// next to its own binary (`<prefix>/libexec/lindroids/`), then PATH (a distro's own package).
+/// The first one that runs here: the shipped copy is a glibc build outside Termux, which a musl
+/// distro (Alpine) cannot run, while its own package can.
 pub fn find_satellite() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("LINDROIDS_XWAYLAND_SATELLITE") {
         let p = PathBuf::from(p);
         return p.is_file().then_some(p);
     }
+    let mut candidates = Vec::new();
     if let Some(bin_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
-        let p = bin_dir.join("../libexec/lindroids/xwayland-satellite");
-        if p.is_file() {
-            return Some(p);
-        }
+        candidates.push(bin_dir.join("../libexec/lindroids/xwayland-satellite"));
     }
-    which("xwayland-satellite")
+    candidates.extend(which("xwayland-satellite"));
+    candidates.into_iter().filter(|p| p.is_file()).find(|p| {
+        Command::new(p).arg("--test-listenfd-support").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success())
+    })
 }
 
 pub fn which(cmd: &str) -> Option<PathBuf> {
@@ -84,7 +87,9 @@ impl X11 {
             return Err("off (LINDROIDS_X11=off)".into());
         }
         let satellite = find_satellite().ok_or("xwayland-satellite not found")?;
-        which("Xwayland").ok_or("Xwayland not installed (`lindroids setup x11`)")?;
+        let xwayland = which("Xwayland").ok_or("Xwayland not installed (`lindroids setup x11`)")?;
+        let bin = runtime.join("x11-bin");
+        write_xwayland_wrapper(&bin, &xwayland.display().to_string()).map_err(|e| format!("{}: {e}", bin.display()))?;
         if !Command::new(&satellite).arg("--test-listenfd-support").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success()) {
             return Err(format!("{} is too old (no -listenfd; 0.6 or newer is needed)", satellite.display()));
         }
@@ -175,6 +180,9 @@ impl X11 {
         for l in &self.listeners {
             cmd.args(["-listenfd", &l.as_raw_fd().to_string()]);
         }
+        // Satellite runs `Xwayland` from PATH: ours first (see write_xwayland_wrapper).
+        let path = format!("{}:{}", self.runtime.join("x11-bin").display(), std::env::var("PATH").unwrap_or_default());
+        cmd.env("PATH", path);
         cmd.env("WAYLAND_DISPLAY", &self.wayland)
             .env("XDG_RUNTIME_DIR", &self.runtime)
             .env_remove("DISPLAY")
@@ -220,6 +228,18 @@ impl Drop for X11 {
         }
         let _ = std::fs::remove_file(&self.published);
     }
+}
+
+/// `<dir>/Xwayland`, which runs `real` with `-shm`. Satellite cannot pass Xwayland that flag, and
+/// Lindroids only takes CPU buffers (wl_shm), so glamor (GPU rendering) could never show anything
+/// here; worse, probing for it aborts Xwayland inside libepoxy where there is no libEGL (Debian's
+/// xwayland does not depend on it).
+pub fn write_xwayland_wrapper(dir: &Path, real: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir)?;
+    let p = dir.join("Xwayland");
+    std::fs::write(&p, format!("#!/bin/sh\n# Lindroids: CPU buffers only (see x11.rs).\nexec {real} -shm \"$@\"\n"))?;
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755))
 }
 
 /// A display number with its listening sockets: the file `<dir>/X<n>`, then the abstract

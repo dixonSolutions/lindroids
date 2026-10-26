@@ -300,10 +300,13 @@ pub fn cmd_setup() -> i32 {
     match bundled_apk() {
         Some(apk) => {
             println!("Installing the Lindroids app ({})...", lindroids_server::BUILD);
+            // termux-open runs app_process, which an ARM translation layer gets killed.
             let opened = sandbox::have("termux-open")
+                && !sandbox::native_bridge()
                 && Command::new("termux-open")
                     .args(["--view", "--content-type", "application/vnd.android.package-archive"])
                     .arg(&apk)
+                    .stderr(Stdio::null())
                     .status()
                     .map_or(false, |s| s.success());
             if opened {

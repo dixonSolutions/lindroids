@@ -160,12 +160,17 @@ pub fn spawn(p: &SpawnPaths, argv: &[String], extra_env: &[(String, String)]) ->
     // bundle's /tmp, and handed to satellite, which starts next to the program (X11_WRAPPER).
     let x11 = match &m.x11_satellite {
         Some(sat) => {
-            let (tmp, sh) = match m.kind {
-                Kind::Termux => (p.bundle.join("usr/tmp"), format!("{TERMUX_PREFIX}/bin/sh")),
-                Kind::Rootfs { .. } => (p.bundle.join("root/tmp"), "/bin/sh".to_string()),
+            // (bundle's /tmp, its sh, its Xwayland, where the runtime dir is in its view)
+            let (tmp, sh, xwayland, rt_inside) = match m.kind {
+                Kind::Termux => (p.bundle.join("usr/tmp"), format!("{TERMUX_PREFIX}/bin/sh"), format!("{TERMUX_PREFIX}/bin/Xwayland"), p.runtime.display().to_string()),
+                Kind::Rootfs { .. } => (p.bundle.join("root/tmp"), "/bin/sh".to_string(), "/usr/bin/Xwayland".to_string(), "/run/lindroids".to_string()),
             };
+            // Satellite finds Xwayland on PATH: the wrapper that adds -shm first.
+            let bin = p.runtime.join(format!("x11-bin-{}", m.id));
+            lindroids_server::x11::write_xwayland_wrapper(&bin, &xwayland).map_err(|e| e.to_string())?;
+            let bin_inside = format!("{rt_inside}/x11-bin-{}", m.id);
             let r = lindroids_server::x11::reserve(&tmp.join(".X11-unix"), false)?;
-            let mut v = vec![sh, "-c".into(), X11_WRAPPER.into(), "lindroids-x11".into(), sat.clone(), r.display.to_string()];
+            let mut v = vec![sh, "-c".into(), X11_WRAPPER.into(), "lindroids-x11".into(), bin_inside, sat.clone(), r.display.to_string()];
             v.extend(r.fds.iter().map(|f| f.as_raw_fd().to_string()));
             v.push("--".into());
             v.extend(argv.iter().cloned());
@@ -193,15 +198,15 @@ pub fn spawn(p: &SpawnPaths, argv: &[String], extra_env: &[(String, String)]) ->
     Ok(child.id())
 }
 
-/// Runs inside the bundle: `sh -c X11_WRAPPER lindroids-x11 <satellite> <n> <fd>... -- <argv>`.
-/// Satellite serves display :n on the inherited sockets and starts Xwayland on the first X11
-/// connection; it ends with the program.
+/// Runs inside the bundle: `sh -c X11_WRAPPER lindroids-x11 <wrapper dir> <satellite> <n> <fd>...
+/// -- <argv>`. Satellite serves display :n on the inherited sockets and starts Xwayland (through
+/// the -shm wrapper) on the first X11 connection; it ends with the program.
 const X11_WRAPPER: &str = r#"
-sat=$1; n=$2; shift 2
+bin=$1; sat=$2; n=$3; shift 3
 l=
 while [ "$1" != "--" ]; do l="$l -listenfd $1"; shift; done
 shift
-"$sat" ":$n" $l &
+PATH="$bin:$PATH" "$sat" ":$n" $l &
 s=$!
 DISPLAY=":$n" _JAVA_AWT_WM_NONREPARENTING=1 "$@"
 rc=$?

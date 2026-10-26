@@ -10,6 +10,7 @@ import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
+import android.view.inputmethod.EditorInfo;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -19,6 +20,10 @@ import android.widget.TextView;
  * time, for the pairing code that `lindroids` prints in the terminal.
  */
 public final class ApproveActivity extends Activity {
+    /** The dialog on screen: each new request (a retry, a wrong code) replaces it, never stacks. */
+    private static ApproveActivity showing;
+    private AlertDialog dialog;
+
     static void ask(Context ctx, int uid, String sandbox, boolean needCode, boolean interactive) {
         Intent i = new Intent(ctx, ApproveActivity.class).putExtra("uid", uid).putExtra("sandbox", sandbox)
                 .putExtra("needCode", needCode);
@@ -53,8 +58,16 @@ public final class ApproveActivity extends Activity {
         try { ctx.startActivity(i); } catch (Throwable ignored) {}
     }
 
+    @Override protected void onDestroy() {
+        if (showing == this) showing = null;
+        if (dialog != null) dialog.dismiss();
+        super.onDestroy();
+    }
+
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        if (showing != null && showing != this) showing.finish();
+        showing = this;
         LinkService.app = getApplicationContext();
         final int uid = getIntent().getIntExtra("uid", -1);
         final String sandbox = getIntent().getStringExtra("sandbox");
@@ -81,19 +94,30 @@ public final class ApproveActivity extends Activity {
             code.setHint("6-digit code");
             col.addView(code);
         }
-        new AlertDialog.Builder(this)
+        final Runnable accept = () -> {
+            LinkService.setAllowed(uid, true);
+            LinkService.announcedPairing.remove(uid);
+            LinkService.ensureRunning(this);
+            String c = needCode ? code.getText().toString().trim() : null;
+            LinkService.connect(uid, LinkService.socketFor(uid), c, true);
+            finish();
+        };
+        dialog = new AlertDialog.Builder(this)
                 .setTitle("Allow Linux apps from " + sandbox + "?")
                 .setView(col)
-                .setPositiveButton(needCode ? "Pair" : "Allow", (d, w) -> {
-                    LinkService.setAllowed(uid, true);
-                    LinkService.announcedPairing.remove(uid);
-                    LinkService.ensureRunning(this);
-                    String c = needCode ? code.getText().toString().trim() : null;
-                    LinkService.connect(uid, LinkService.socketFor(uid), c, true);
-                    finish();
-                })
+                .setPositiveButton(needCode ? "Pair" : "Allow", (d, w) -> accept.run())
                 .setNegativeButton("Not now", (d, w) -> finish())
                 .setOnCancelListener(d -> finish())
                 .show();
+        if (needCode) {
+            // The keyboard's Done (or Enter) pairs, as the Pair button does.
+            code.setImeOptions(EditorInfo.IME_ACTION_DONE);
+            code.setSingleLine(true);
+            code.setOnEditorActionListener((v, action, ev) -> {
+                accept.run();
+                return true;
+            });
+            code.requestFocus();
+        }
     }
 }
