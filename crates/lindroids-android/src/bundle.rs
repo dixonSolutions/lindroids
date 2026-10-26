@@ -76,14 +76,30 @@ pub fn proot_command(p: &SpawnPaths, m: &Manifest, argv: &[String], extra_env: &
     let common_env: Vec<(String, String)>;
     match &m.kind {
         Kind::Termux => {
+            // A root of its own, with Android's system directories bound in: binding into the
+            // real /data/data/com.termux would sit under directories this app cannot read, and
+            // programs that walk up their paths (mkdir -p) trip over that.
+            let root = p.bundle.join("root");
+            let _ = std::fs::create_dir_all(&root);
+            cmd.arg("-r").arg(&root);
+            for b in ["/system", "/apex", "/vendor", "/odm", "/product", "/system_ext", "/linkerconfig", "/dev", "/proc", "/sys", "/storage"] {
+                if Path::new(b).exists() {
+                    cmd.arg("-b").arg(b);
+                }
+            }
+            if Path::new("/storage/emulated/0").exists() {
+                cmd.arg("-b").arg("/storage/emulated/0:/sdcard");
+            }
             cmd.arg("-b").arg(format!("{}:{}", p.bundle.join("usr").display(), TERMUX_PREFIX));
             cmd.arg("-b").arg(format!("{}:{}", p.bundle.join("home").display(), TERMUX_HOME));
+            cmd.arg("-b").arg(p.runtime);
             cmd.arg("-w").arg(m.workdir.clone().unwrap_or_else(|| TERMUX_HOME.into()));
             common_env = vec![
                 ("PREFIX".into(), TERMUX_PREFIX.into()),
                 ("HOME".into(), TERMUX_HOME.into()),
                 ("TMPDIR".into(), format!("{TERMUX_PREFIX}/tmp")),
                 ("PATH".into(), format!("{TERMUX_PREFIX}/bin")),
+                ("SHELL".into(), format!("{TERMUX_PREFIX}/bin/bash")),
                 ("XDG_RUNTIME_DIR".into(), rt.clone()),
                 ("WAYLAND_DISPLAY".into(), format!("{rt}/wayland-0")),
                 ("PULSE_SERVER".into(), format!("unix:{rt}/pulse/native")),
@@ -108,6 +124,7 @@ pub fn proot_command(p: &SpawnPaths, m: &Manifest, argv: &[String], extra_env: &
                 ("USER".into(), "root".into()),
                 ("TMPDIR".into(), "/tmp".into()),
                 ("PATH".into(), "/app/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into()),
+                ("SHELL".into(), "/bin/sh".into()),
                 ("XDG_RUNTIME_DIR".into(), "/run/lindroids".into()),
                 ("WAYLAND_DISPLAY".into(), "wayland-0".into()),
                 ("PULSE_SERVER".into(), "unix:/run/lindroids/pulse/native".into()),

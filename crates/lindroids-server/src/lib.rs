@@ -43,7 +43,7 @@ use wayland_server::{Display, DisplayHandle, ListeningSocket};
 pub use self::surface::Surface;
 
 /// Build identifier shown by `lindroids doctor` and the app.
-pub const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "+", env!("LINDROIDS_BUILD_ID"));
+pub const BUILD: &str = concat!(env!("LINDROIDS_VERSION"), "+", env!("LINDROIDS_BUILD_ID"));
 
 /// Wrong pairing codes allowed before pairing closes until the server restarts.
 const MAX_PAIRING_FAILURES: u32 = 5;
@@ -325,10 +325,14 @@ impl State {
         if w.announced || !w.mapped || self.link.is_none() {
             return;
         }
-        let title = if !w.title.is_empty() {
+        let launched = icons::name_for_window(&self.dh, &w.client);
+        // A rootful Xwayland window is the X11 program the user ran: name it after that.
+        let title = if w.app_id == "org.freedesktop.Xwayland" && launched.is_some() {
+            launched.unwrap()
+        } else if !w.title.is_empty() {
             w.title.clone()
         } else {
-            icons::name_for_window(&self.dh, &w.client).unwrap_or_else(|| w.app_id.clone())
+            launched.unwrap_or_else(|| w.app_id.clone())
         };
         let msg = ToApp::WindowNew {
             win,
@@ -420,6 +424,7 @@ impl State {
                     warn!("app speaks protocol {version}, server {}", proto::PROTOCOL_VERSION);
                 }
                 link.density = density;
+                link.build = build.clone();
                 link.phase = Phase::Ready;
                 self.drop_link();
                 self.link = Some(link);
@@ -522,6 +527,7 @@ impl State {
                 version: proto::PROTOCOL_VERSION,
                 build: BUILD.into(),
                 app_connected: self.link.is_some(),
+                app_build: self.link.as_ref().map(|l| l.build.clone()),
                 pairing_code: (self.pairing_failures < MAX_PAIRING_FAILURES).then(|| self.pairing_code.clone()),
                 windows: self
                     .windows

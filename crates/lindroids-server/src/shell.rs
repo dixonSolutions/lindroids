@@ -541,7 +541,8 @@ impl Dispatch<xdg_toplevel::XdgToplevel, (ObjectId, u32)> for State {
             xdg_toplevel::Request::SetTitle { title } => {
                 let announced = state.windows.get_mut(&win).map(|w| {
                     w.title = title.clone();
-                    w.announced
+                    // Xwayland's "Xwayland on :1" says nothing; the launched name stays.
+                    w.announced && w.app_id != "org.freedesktop.Xwayland"
                 });
                 if announced == Some(true) {
                     state.send_app(&ToApp::WindowTitle { win, title });

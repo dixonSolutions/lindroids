@@ -132,7 +132,8 @@ pub fn build_command(o: &Opts, target: &Target, rt: &Path) -> Result<Command, St
             };
             let inner: Vec<String> = if o.x11 {
                 let tmp = if o.distro.is_some() || !Path::new(TERMUX_PREFIX).exists() { "/tmp".to_string() } else { format!("{TERMUX_PREFIX}/tmp") };
-                let mut v = vec!["sh".into(), "-c".into(), X11_WRAPPER.replace("@TMP@", &tmp).replace("@RT@", &rt_inside.display().to_string()), "lindroids-x11".into()];
+                let n = free_display(&x11_dir());
+                let mut v = vec!["sh".into(), "-c".into(), X11_WRAPPER.replace("@TMP@", &tmp).replace("@RT@", &rt_inside.display().to_string()), "lindroids-x11".into(), n.to_string()];
                 v.extend(shell_argv);
                 v
             } else {
@@ -160,10 +161,23 @@ pub fn build_command(o: &Opts, target: &Target, rt: &Path) -> Result<Command, St
     }
 }
 
-/// Starts a rootful Xwayland on a free display, then the program on it.
+/// Where X sockets are, as this process sees them (a proot-distro's /tmp is Termux's tmp).
+pub fn x11_dir() -> PathBuf {
+    if Path::new(TERMUX_PREFIX).exists() {
+        PathBuf::from(TERMUX_PREFIX).join("tmp/.X11-unix")
+    } else {
+        PathBuf::from("/tmp/.X11-unix")
+    }
+}
+
+fn free_display(dir: &Path) -> u32 {
+    (1..64).find(|n| !dir.join(format!("X{n}")).exists() && !dir.parent().unwrap_or(dir).join(format!(".X{n}-lock")).exists()).unwrap_or(1)
+}
+
+/// Starts a rootful Xwayland on display $1, then the program on it.
 const X11_WRAPPER: &str = r#"
-n=1
-while [ -e "@TMP@/.X11-unix/X$n" ] || [ -e "@TMP@/.X$n-lock" ]; do n=$((n+1)); done
+n=$1
+shift
 Xwayland ":$n" -noreset -nolisten tcp >"@RT@/xwayland-$n.log" 2>&1 &
 x=$!
 i=0
@@ -198,6 +212,25 @@ pub fn cmd_run(args: &[String]) -> i32 {
         Ok(c) => c,
         Err(e) => return crate::fail(&format!("cannot start {}: {e}", o.command[0])),
     };
+    if o.x11 {
+        // The display the wrapper was given is the last free one we picked: find its socket.
+        let dir = x11_dir();
+        let display = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).skip_while(|a| a != "lindroids-x11").nth(1);
+        if let Some(n) = display {
+            std::thread::spawn(move || {
+                let sock = dir.join(format!("X{n}"));
+                for _ in 0..200 {
+                    if sock.exists() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                if let Err(e) = crate::x11wm::run(&sock) {
+                    eprintln!("lindroids: X11 window manager: {e}");
+                }
+            });
+        }
+    }
     let _ = client::request(
         &rt,
         &CliRequest::Launch { pid: child.id(), name, icon_png_b64: Some(base64::engine::general_purpose::STANDARD.encode(icon)) },

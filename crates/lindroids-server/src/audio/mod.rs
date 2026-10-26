@@ -16,6 +16,7 @@
 //! here has to map a client's memory.
 
 mod convert;
+mod format;
 mod pace;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -44,7 +45,7 @@ const CHUNK_MS: u32 = 20;
 const TICK: Duration = Duration::from_millis(10);
 /// A stream whose data the app has not acknowledged for this long is played into the void at
 /// real time until credits come back or a new app links: clients must never stall forever.
-const DEAF_AFTER: Duration = Duration::from_secs(1);
+const DEAF_AFTER: Duration = Duration::from_millis(500);
 /// Defaults for buffer attributes the client leaves to the server. PulseAudio's own default of
 /// two seconds is meant for a sound card's deep buffer; programs that care set their own.
 const DEFAULT_TLENGTH_MS: u32 = 250;
@@ -249,8 +250,8 @@ impl Stream {
                 return;
             }
             if !self.deaf && self.in_app + n * out_frame > window {
-                // The app is behind real time: wait for it rather than burst later.
-                self.pacer.resync(now);
+                // The app is behind: wait for its credits. The clock runs on meanwhile, so a
+                // client is not held up by an app that went away for longer than DEAF_AFTER.
                 return;
             }
             let bytes: Vec<u8> = self.queue.drain(..n as usize * frame).collect();
@@ -284,6 +285,12 @@ impl Stream {
             self.prebuffering = true;
             self.announce_start = true;
         }
+    }
+
+    /// Something will happen on a clock tick: data to pace, a drain or a dead app to notice.
+    /// Otherwise the loop sleeps until a client or the app does something.
+    fn busy(&self) -> bool {
+        !self.corked && (self.pacer.running() || !self.queue.is_empty() || self.drain.is_some() || self.in_app > 0)
     }
 
     fn deaf_now(&self, now: Instant) -> bool {
@@ -369,7 +376,7 @@ impl Stream {
             corked: self.corked,
             has_volume: true,
             volume_writable: true,
-            format: pa::FormatInfo::new(pa::FormatEncoding::Pcm),
+            format: format::info(&self.spec, &self.map),
         }
     }
 }
@@ -558,7 +565,7 @@ impl Server {
                 let events = if c.wbuf.is_empty() { libc::POLLIN } else { libc::POLLIN | libc::POLLOUT };
                 fds.push(libc::pollfd { fd: c.sock.as_raw_fd(), events, revents: 0 });
             }
-            let busy = self.clients.iter().any(|c| c.streams.values().any(|s| !s.corked || s.drain.is_some()));
+            let busy = self.clients.iter().any(|c| c.streams.values().any(Stream::busy));
             let timeout = if busy { next_tick.saturating_duration_since(Instant::now()).as_millis() as i32 } else { 1000 };
             unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
 
@@ -893,7 +900,7 @@ impl Server {
             Command::CreatePlaybackStream(p) => self.create_stream(ci, seq, p),
             Command::DeletePlaybackStream(id) => match c.streams.remove(&id) {
                 Some(s) => {
-                    debug!("sound stream {}: closed", s.id);
+                    debug!("sound stream {}: closed, {} bytes written, {} taken", s.id, s.written, s.read_index());
                     shared().post(Inbox::ToApp(ToApp::AudioClose { stream: s.id }));
                     c.ack(seq);
                     self.events.push((F::SinkInput, T::Removed, id));
@@ -974,7 +981,7 @@ impl Server {
                 None => c.error(seq, PulseError::NoEntity),
             },
             Command::UpdatePlaybackStreamSampleRate(p) => match c.streams.get_mut(&p.index) {
-                Some(s) if p.sample_rate > 0 && p.sample_rate <= pa::sample_spec::MAX_RATE => {
+                Some(s) if (1..=pa::sample_spec::MAX_RATE).contains(&p.sample_rate) => {
                     // The app plays a stream at one rate: reopen it at the new one.
                     s.spec.sample_rate = p.sample_rate;
                     s.pacer.set_rate(now, p.sample_rate);
@@ -1049,17 +1056,15 @@ impl Server {
     fn create_stream(&mut self, ci: usize, seq: u32, p: pa::PlaybackStreamParams) {
         use pa::SubscriptionEventFacility as F;
         use pa::SubscriptionEventType as T;
-        let spec = p.sample_spec;
         let c = &mut self.clients[ci];
-        if spec.sample_rate == 0 || spec.sample_rate > pa::sample_spec::MAX_RATE || spec.channels == 0 || spec.channels > pa::sample_spec::MAX_CHANNELS {
-            c.error(seq, PulseError::Invalid);
-            return;
-        }
         if p.sink_index.is_some_and(|i| i != SINK_INDEX) || p.sink_name.as_deref().is_some_and(|n| !is_sink(None, Some(n))) {
             c.error(seq, PulseError::NoEntity);
             return;
         }
-        let map = if p.channel_map.num_channels() == spec.channels { p.channel_map } else { default_map(spec.channels) };
+        let Some((spec, map)) = format::negotiate(&p.sample_spec, &p.channel_map, &p.formats) else {
+            c.error(seq, PulseError::NotSupported);
+            return;
+        };
         let Some(conv) = Converter::new(&spec, &map) else {
             c.error(seq, PulseError::NotSupported);
             return;
@@ -1126,7 +1131,7 @@ impl Server {
             sink_index: SINK_INDEX,
             sink_name: Some(SINK_NAME.to_owned()),
             suspended: false,
-            format: pa::FormatInfo::new(pa::FormatEncoding::Pcm),
+            format: format::info(&spec, &map),
         };
         c.streams.insert(id, s);
         c.reply(seq, &reply);
@@ -1247,18 +1252,6 @@ fn is_source(index: Option<u32>, name: Option<&CStr>) -> bool {
 
 fn sink_spec() -> pa::SampleSpec {
     pa::SampleSpec { format: pa::SampleFormat::S16Le, channels: 2, sample_rate: 48000 }
-}
-
-/// PulseAudio's default layouts (ALSA order) for a channel count the client gave no map for.
-fn default_map(channels: u8) -> pa::ChannelMap {
-    use pa::ChannelPosition::*;
-    let surround = [FrontLeft, FrontRight, RearLeft, RearRight, FrontCenter, Lfe, SideLeft, SideRight];
-    match channels {
-        1 => pa::ChannelMap::mono(),
-        2 => pa::ChannelMap::stereo(),
-        n @ 3..=8 => pa::ChannelMap::new(surround.into_iter().take(n as usize)),
-        n => pa::ChannelMap::new((0..n).map(|i| if i % 2 == 0 { FrontLeft } else { FrontRight })),
-    }
 }
 
 fn hostname() -> CString {

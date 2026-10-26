@@ -8,6 +8,7 @@ mod flatpak;
 mod pkgdb;
 mod run;
 mod sandbox;
+mod x11wm;
 
 use std::io::Write;
 use std::os::unix::process::CommandExt;
@@ -25,6 +26,7 @@ USAGE
   lindroids run [options] \"<command line>\"
   lindroids export [options] <command> [args...]
   lindroids list | remove <id>
+  lindroids setup                    install or update the Lindroids app, then pair
   lindroids status | start | stop | pair | doctor | version
 
 RUN OPTIONS
@@ -67,6 +69,7 @@ fn main() {
         Some("stop") => cmd_stop(),
         Some("status") => cmd_status(),
         Some("pair") => cmd_pair(),
+        Some("setup") => cmd_setup(),
         Some("doctor") => cmd_doctor(),
         Some("run") => run::cmd_run(&args[1..]),
         Some("export") => export::cmd_export(&args[1..]),
@@ -195,9 +198,13 @@ fn cmd_stop() -> i32 {
 fn cmd_status() -> i32 {
     let rt = sandbox::runtime_dir();
     match client::status(&rt) {
-        Ok(CliReply::Status { build, app_connected, pairing_code, windows, clients, .. }) => {
+        Ok(CliReply::Status { build, app_connected, app_build, pairing_code, windows, clients, .. }) => {
             println!("server      {build} ({})", rt.display());
-            println!("app         {}", if app_connected { "connected" } else { "not connected" });
+            match (&app_build, app_connected) {
+                (Some(b), true) if *b != build => println!("app         connected, build {b}: older or newer than this CLI — `lindroids setup` updates it"),
+                (Some(b), true) => println!("app         connected, build {b}"),
+                _ => println!("app         not connected"),
+            }
             if !app_connected {
                 if let Some(c) = pairing_code {
                     println!("pairing     {c}");
@@ -241,6 +248,72 @@ fn cmd_pair() -> i32 {
         Ok(_) => fail("pairing is closed after too many wrong codes; run `lindroids stop` and try again"),
         Err(e) => fail(&e),
     }
+}
+
+/// The APK that came with this package (Termux and Debian packages ship it).
+fn bundled_apk() -> Option<std::path::PathBuf> {
+    let mut c = Vec::new();
+    if let Ok(p) = std::env::var("PREFIX") {
+        c.push(Path::new(&p).join("share/lindroids/lindroids.apk"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent().and_then(|d| d.parent()) {
+            c.push(dir.join("share/lindroids/lindroids.apk"));
+        }
+    }
+    c.push("/usr/share/lindroids/lindroids.apk".into());
+    c.into_iter().find(|p| p.exists())
+}
+
+const RELEASES: &str = "https://github.com/dixonSolutions/lindroids/releases/latest";
+
+fn cmd_setup() -> i32 {
+    let sb = sandbox::detect();
+    let rt = match ensure_server(&sb) {
+        Ok(rt) => rt,
+        Err(e) => return fail(&e),
+    };
+    let connected = ensure_app(&sb, &rt, true);
+    if let Ok(CliReply::Status { app_build: Some(b), .. }) = client::status(&rt) {
+        if connected && b == lindroids_server::BUILD {
+            println!("The Lindroids app ({b}) is installed and connected. Try: lindroids run <command>");
+            return 0;
+        }
+    }
+    match bundled_apk() {
+        Some(apk) => {
+            println!("Installing the Lindroids app ({})...", lindroids_server::BUILD);
+            let opened = sandbox::have("termux-open")
+                && Command::new("termux-open")
+                    .args(["--view", "--content-type", "application/vnd.android.package-archive"])
+                    .arg(&apk)
+                    .status()
+                    .map_or(false, |s| s.success());
+            if opened {
+                println!("Android's installer is open: tap Install (allow Termux to install apps if asked).");
+            } else {
+                // Shared storage, where the Files app can open it.
+                let targets = [
+                    std::env::var("HOME").map(|h| Path::new(&h).join("storage/downloads")).unwrap_or_default(),
+                    "/sdcard/Download".into(),
+                    "/storage/emulated/0/Download".into(),
+                ];
+                let copied = targets.iter().filter(|d| d.is_dir()).find_map(|d| {
+                    let dst = d.join("lindroids.apk");
+                    std::fs::copy(&apk, &dst).ok().map(|_| dst)
+                });
+                match copied {
+                    Some(p) => println!("Copied the app to {}: open it from the Files app (Downloads) and tap Install.", p.display()),
+                    None => println!(
+                        "Install the app from {RELEASES}\n(or run `termux-setup-storage` and `lindroids setup` again to get it in Downloads)."
+                    ),
+                }
+            }
+        }
+        None => println!("Install the Lindroids app from {RELEASES}"),
+    }
+    println!();
+    cmd_pair()
 }
 
 fn cmd_pick_folder() -> i32 {

@@ -64,9 +64,16 @@ MUSL_ARGS=()
 for t in $MUSL_TRIPLES; do MUSL_ARGS+=(--target "$t"); done
 cargo build -p lindroids --release "${MUSL_ARGS[@]}"
 
+TARGET_DIR=${CARGO_TARGET_DIR:-target}
 for t in $ANDROID_TRIPLES $MUSL_TRIPLES; do
   mkdir -p "$DIST/bin/$t"
-  install -m 755 "target/$t/release/lindroids" "$DIST/bin/$t/lindroids"
+  install -m 755 "$TARGET_DIR/$t/release/lindroids" "$DIST/bin/$t/lindroids"
+  # Another build in the same target dir (without LINDROIDS_BUILD_ID) can replace the binary
+  # between cargo and this copy; never ship that. A separate CARGO_TARGET_DIR avoids it.
+  if ! grep -aq "+$LINDROIDS_BUILD_ID" "$DIST/bin/$t/lindroids"; then
+    echo "build-release: $t binary is not build $LINDROIDS_BUILD_ID (concurrent build in $TARGET_DIR?)" >&2
+    exit 1
+  fi
 done
 # Refuse to ship a musl binary that is not static: it would not start under proot-distro.
 for t in $MUSL_TRIPLES; do

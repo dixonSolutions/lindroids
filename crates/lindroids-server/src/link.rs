@@ -30,12 +30,13 @@ pub struct Link {
     pub peer: String,
     pub since: Instant,
     pub density: f32,
+    pub build: String,
     pub broken: bool,
 }
 
 impl Link {
     pub fn new(io: Box<dyn Io>, peer: String) -> Link {
-        Link { io, framer: Framer::default(), out: Vec::new(), out_pos: 0, phase: Phase::Hello, peer, since: Instant::now(), density: 1.0, broken: false }
+        Link { io, framer: Framer::default(), out: Vec::new(), out_pos: 0, phase: Phase::Hello, peer, since: Instant::now(), density: 1.0, build: String::new(), broken: false }
     }
 
     pub fn fd(&self) -> RawFd {

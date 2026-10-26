@@ -103,8 +103,16 @@ public final class ExportActivity extends Activity {
                     .setIcon(adaptive(icon))
                     .setIntent(launch)
                     .build();
-            // Keep it current if it was pinned before (icon or name changed).
-            try { sm.updateShortcuts(java.util.Collections.singletonList(info)); } catch (Throwable ignored) {}
+            // Pinned before: refresh it (icon, name) instead of adding a second one.
+            try {
+                for (ShortcutInfo s : sm.getPinnedShortcuts()) {
+                    if (s.getId().equals(info.getId())) {
+                        sm.enableShortcuts(java.util.Collections.singletonList(info.getId()));
+                        sm.updateShortcuts(java.util.Collections.singletonList(info));
+                        return "updated the \"" + name + "\" shortcut on the home screen";
+                    }
+                }
+            } catch (Throwable ignored) {}
             if (sm.isRequestPinShortcutSupported()) {
                 sm.requestPinShortcut(info, null);
                 return "asked the launcher to add \"" + name + "\" to the home screen";

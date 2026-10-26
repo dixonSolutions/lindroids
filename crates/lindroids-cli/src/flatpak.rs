@@ -50,15 +50,32 @@ pub fn looks_like_id(s: &str) -> bool {
 }
 
 /// Find the installed app `id` under `root`. With root "/", also looks in `/run/host` (a toolbox
-/// or distrobox, where the host's Flatpaks are).
+/// or distrobox, where the host's Flatpaks are) and in Termux's proot-distro distros (flatpak
+/// does not exist for Termux itself).
 pub fn find(root: &Path, id: &str) -> Option<App> {
     if !looks_like_id(id) {
         return None;
     }
-    find_in(root, id).or_else(|| {
-        let host = Path::new("/run/host");
-        (root == Path::new("/") && host.join("var/lib/flatpak").is_dir()).then(|| find_in(host, id)).flatten()
-    })
+    if let Some(app) = find_in(root, id) {
+        return Some(app);
+    }
+    if root != Path::new("/") {
+        return None;
+    }
+    let host = Path::new("/run/host");
+    if host.join("var/lib/flatpak").is_dir() {
+        if let Some(app) = find_in(host, id) {
+            return Some(app);
+        }
+    }
+    let mut distros: Vec<PathBuf> = std::fs::read_dir(distros_dir()).map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).collect()).unwrap_or_default();
+    distros.sort();
+    distros.iter().find_map(|d| find_in(d, id))
+}
+
+/// Where proot-distro keeps its distros' root filesystems.
+fn distros_dir() -> PathBuf {
+    PathBuf::from(lindroids_proto::TERMUX_PREFIX).join("var/lib/proot-distro/installed-rootfs")
 }
 
 fn find_in(root: &Path, id: &str) -> Option<App> {
@@ -95,7 +112,8 @@ impl App {
         if cmd.starts_with('/') {
             return Ok(cmd.into());
         }
-        if self.app.files().join("bin").join(cmd).exists() {
+        // symlink_metadata: an /app/bin entry is often a symlink absolute to /app.
+        if self.app.files().join("bin").join(cmd).symlink_metadata().is_ok() {
             return Ok(format!("/app/bin/{cmd}"));
         }
         Ok(format!("/usr/bin/{cmd}"))
@@ -227,6 +245,12 @@ fn group(gid: u32, user: &str) -> String {
     s + "nobody:x:65534:\n"
 }
 
+/// `/run/host/font-dirs.xml`, which the runtime's fontconfig includes; `remaps` are
+/// `<remap-dir>` lines for host font dirs.
+fn font_dirs_xml(remaps: &str) -> String {
+    format!("<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\n<fontconfig>\n{remaps}</fontconfig>\n")
+}
+
 const RESOLV_CONF: &str = "nameserver 8.8.8.8\nnameserver 1.1.1.1\n";
 const HOSTS: &str = "127.0.0.1 localhost\n::1 localhost\n";
 
@@ -302,10 +326,10 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
     let gid = unsafe { libc::getgid() };
     let root = &app.root;
 
-    // Home: the user's own, or the distro's /root (what `proot-distro login` gives).
-    let (home_host, home, user) = match &o.distro {
-        Some(_) => (install::real(root, &root.join("root")), "/root".to_string(), "root".to_string()),
-        None => {
+    // Home: the user's own, or in a distro its /root (what `proot-distro login` gives).
+    let (home_host, home, user) = match o.distro.is_some() || root.starts_with(distros_dir()) {
+        true => (install::real(root, &root.join("root")), "/root".to_string(), "root".to_string()),
+        false => {
             let h = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
             let u = std::env::var("USER").ok().filter(|u| !u.is_empty() && !u.contains(':')).unwrap_or_else(|| "user".into());
             (PathBuf::from(&h), h, u)
@@ -420,8 +444,7 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
     }
     // The runtime's fontconfig includes this; flatpak writes it to map host font paths.
     let font_dirs = etc.join("font-dirs.xml");
-    let xml = format!("<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\n<fontconfig>\n{remaps}</fontconfig>\n");
-    std::fs::write(&font_dirs, xml).map_err(|e| io_err(&font_dirs, e))?;
+    std::fs::write(&font_dirs, font_dirs_xml(&remaps)).map_err(|e| io_err(&font_dirs, e))?;
     binds.push((font_dirs, "/run/host/font-dirs.xml".into()));
     // Android shared storage.
     if Path::new("/storage").is_dir() {
@@ -659,6 +682,9 @@ fn bundle_plan_in(app: &App, args: &[String], o: &Opts, state: &Path) -> Result<
     for (n, _) in &links {
         files.push((gen.join(n), format!("root/{n}")));
     }
+    let font_dirs = gen.join("font-dirs.xml");
+    std::fs::write(&font_dirs, font_dirs_xml("")).map_err(|e| io_err(&font_dirs, e))?;
+    files.push((font_dirs, "root/run/host/font-dirs.xml".into()));
     files.push((app.app.dir.join("metadata"), "metadata".into()));
 
     let var = format!("root/root/.var/app/{}", app.id);
@@ -867,6 +893,37 @@ mod tests {
         assert!(plan.env.contains(&("XDG_CONFIG_HOME".into(), "/root/.var/app/org.example.App/config".into())));
         assert!(!plan.env.iter().any(|(k, _)| k == "XDG_RUNTIME_DIR" || k == "LD_LIBRARY_PATH"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Against the Flatpaks installed on this machine:
+    /// `LINDROIDS_FLATPAK_IDS=org.gnome.Calculator,... LINDROIDS_FLATPAK_ICONS=<dir> cargo test
+    /// -p lindroids -- --ignored real_apps --nocapture`.
+    #[test]
+    #[ignore]
+    fn real_apps() {
+        let ids = std::env::var("LINDROIDS_FLATPAK_IDS").unwrap_or_else(|_| "org.gnome.Calculator".into());
+        let icons = std::env::var_os("LINDROIDS_FLATPAK_ICONS").map(PathBuf::from);
+        // Generated files the plans point at stay next to the icons when those are kept.
+        let state = icons.as_ref().map(|d| d.join("state")).unwrap_or_else(|| std::env::temp_dir().join(format!("lindroids-flatpak-real-{}", std::process::id())));
+        for id in ids.split(',') {
+            let app = find(Path::new("/"), id).unwrap_or_else(|| panic!("{id} is not installed"));
+            let (name, icon) = identify(&app, &Opts::default());
+            assert!(icon.starts_with(b"\x89PNG"));
+            let plan = bundle_plan_in(&app, &[], &Opts::default(), &state).unwrap();
+            let exts: Vec<&str> = app.extensions.iter().map(|e| e.id.as_str()).collect();
+            eprintln!("{id}: {name:?}, runtime {}, extensions {exts:?}, {} bundle entries, argv {:?}", app.runtime_ref, plan.files.len(), plan.argv);
+            if let Some(d) = &icons {
+                std::fs::create_dir_all(d).unwrap();
+                std::fs::write(d.join(format!("{id}.png")), &icon).unwrap();
+                // The plan too, for building a bundle by hand.
+                let BundleKind::Rootfs { binds } = &plan.kind else { unreachable!() };
+                let json = serde_json::json!({ "binds": binds, "env": plan.env, "workdir": plan.workdir, "files": plan.files, "dirs": plan.dirs, "argv": plan.argv });
+                std::fs::write(d.join(format!("{id}.plan.json")), json.to_string()).unwrap();
+            }
+        }
+        if icons.is_none() {
+            let _ = std::fs::remove_dir_all(&state);
+        }
     }
 
     #[test]

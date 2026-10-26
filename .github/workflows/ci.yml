@@ -34,11 +34,12 @@ jobs:
           shared-key: ci
 
       - name: Test dependencies
-        run: sudo apt-get update -q && sudo apt-get install -y -q foot shellcheck
+        run: sudo apt-get update -q && sudo apt-get install -y -q foot fonts-dejavu-core shellcheck
 
       - name: Shell scripts
         run: |
-          shellcheck -S warning scripts/*.sh packaging/*.sh packaging/repo/*.sh tests/*.sh
+          shellcheck -S warning scripts/build-release.sh scripts/fetch-proot.sh scripts/version.sh \
+            scripts/set-github-secrets.sh packaging/*.sh packaging/repo/*.sh tests/*.sh
           sh -n packaging/install.sh
 
       - name: Tests
@@ -74,10 +75,11 @@ jobs:
           gpg --export > "$stage/ci.gpg"
           packaging/repo/build-repo.sh "$stage/site" --debs "$stage/debs" --public-key "$stage/ci.gpg" \
             --base-url http://127.0.0.1:8790
-          (cd "$stage/site" && exec python3 -m http.server 8790 --bind 127.0.0.1 >/dev/null 2>&1) &
+          python3 -m http.server 8790 --bind 127.0.0.1 --directory "$stage/site" >/dev/null 2>&1 &
+          server=$!
           sleep 1
           docker run --rm --network host debian:stable sh -ec '
             apt-get update -q >/dev/null && apt-get install -y -q curl >/dev/null
             curl -fsSL http://127.0.0.1:8790/install.sh | sh
             lindroids version'
-          kill %1 || true
+          kill "$server" || true

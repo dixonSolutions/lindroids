@@ -273,6 +273,9 @@ pub enum CliReply {
         version: u32,
         build: String,
         app_connected: bool,
+        /// Build of the connected app, to tell when it needs updating.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app_build: Option<String>,
         /// Shown in the terminal so the user can pair the app.
         pairing_code: Option<String>,
         windows: Vec<WindowInfo>,

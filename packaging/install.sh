@@ -122,8 +122,8 @@ install_debian() {
 install_static() {
   case "$(uname -m)" in
     x86_64|amd64) arch=x86_64 ;;
+    armv8l|armv7*|arm) arch=armv7 ;;   # armv8l: 32-bit userspace on a 64-bit CPU
     aarch64|arm64|armv8*) arch=aarch64 ;;
-    armv7*|armv8l|arm) arch=armv7 ;;
     i386|i486|i586|i686|x86) arch=i686 ;;
     *) die "no Lindroids build for $(uname -m)" ;;
   esac

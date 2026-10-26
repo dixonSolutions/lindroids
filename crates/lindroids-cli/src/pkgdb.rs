@@ -137,11 +137,73 @@ impl Db {
         out
     }
 
+    /// Every installed package's files.
+    pub fn all_files(&self) -> HashMap<String, Vec<String>> {
+        let mut out = HashMap::new();
+        for (p, list) in &self.lists {
+            if let Ok(text) = std::fs::read_to_string(self.dir.join("info").join(format!("{list}.list"))) {
+                out.insert(p.clone(), text.lines().filter(|l| !l.is_empty() && *l != "/.").map(String::from).collect());
+            }
+        }
+        out
+    }
+
+    /// `closure`, plus the installed packages that drop plugins into plugin directories the closure
+    /// owns (pixbuf loaders, GIO/GTK modules, GStreamer plugins...), with their own dependencies.
+    /// Packages do not depend on their plugins, yet toolkits fail without them: GTK cannot draw
+    /// its SVG icons without librsvg's pixbuf loader.
+    pub fn with_plugins(&self, closure: BTreeSet<String>, files: &HashMap<String, Vec<String>>) -> BTreeSet<String> {
+        let mut set = closure;
+        for _ in 0..4 {
+            let plugin_dirs: Vec<&str> = set
+                .iter()
+                .filter_map(|p| files.get(p))
+                .flatten()
+                .map(String::as_str)
+                .filter(|d| is_plugin_dir(d))
+                .collect();
+            let mut add = Vec::new();
+            for (pkg, fs) in files {
+                if set.contains(pkg) {
+                    continue;
+                }
+                let provides = fs.iter().any(|f| {
+                    let parent = f.rsplit_once('/').map_or("", |(d, _)| d);
+                    plugin_dirs.iter().any(|d| parent == *d)
+                });
+                if provides {
+                    add.push(pkg.clone());
+                }
+            }
+            if add.is_empty() {
+                break;
+            }
+            let more = self.closure(&add, false);
+            set.extend(more);
+        }
+        set
+    }
+
     /// Paths owned by any installed package (to tell generated files from packaged ones).
     pub fn all_owned(&self) -> HashSet<String> {
         let all: BTreeSet<String> = self.lists.keys().cloned().collect();
         self.files(&all).into_iter().collect()
     }
+}
+
+fn is_plugin_dir(d: &str) -> bool {
+    const MARKS: [&str; 9] = [
+        "/gdk-pixbuf-2.0/2.10.0/loaders",
+        "/gio/modules",
+        "/gtk-3.0/3.0.0/immodules",
+        "/gtk-3.0/modules",
+        "/gtk-4.0/4.0.0/media",
+        "/gtk-4.0/4.0.0/printbackends",
+        "/gstreamer-1.0",
+        "/qt6/plugins/platforms",
+        "/qt6/plugins/wayland-shell-integration",
+    ];
+    MARKS.iter().any(|m| d.ends_with(m))
 }
 
 /// Files that package scripts generate in the packages' own directories (gschemas.compiled,

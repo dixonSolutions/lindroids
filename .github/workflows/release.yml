@@ -83,7 +83,7 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
 
       - name: Packaging tools
-        run: sudo apt-get update -q && sudo apt-get install -y -q patchelf dpkg-dev foot
+        run: sudo apt-get update -q && sudo apt-get install -y -q patchelf dpkg-dev foot fonts-dejavu-core
 
       - name: Cache proot debs
         uses: actions/cache@v4

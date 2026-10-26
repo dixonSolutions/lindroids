@@ -50,7 +50,8 @@ fn bundle_argv(o: &Opts, sh: &str, resolved: &Path) -> Vec<String> {
 /// under `root` on this system; `strip` is removed from recorded paths before `prefix_in_bundle`
 /// is put in front.
 fn closure_files(db: &Db, roots: Vec<String>, essential: bool, root: &Path, prefix_in_bundle: &str, strip: &str) -> Vec<(PathBuf, String)> {
-    let pkgs = db.closure(&roots, essential);
+    let all_files = db.all_files();
+    let pkgs = db.with_plugins(db.closure(&roots, essential), &all_files);
     let owned = db.files(&pkgs);
     let dirs: BTreeSet<String> = owned.iter().filter(|p| root.join(p.trim_start_matches('/')).is_dir()).cloned().collect();
     let all = db.all_owned();
@@ -99,7 +100,10 @@ fn plan(o: &Opts, target: &Target, sb: &sandbox::Sandbox, id: &str, name: &str) 
             }
             manifest.kind = BundleKind::Rootfs { binds: Vec::new() };
             manifest.workdir = Some("/root".into());
-            let dirs = ["root/tmp", "root/root", "root/run", "root/proc", "root/dev", "root/sys", "root/sdcard", "root/storage"].iter().map(|s| s.to_string()).collect();
+            let dirs = ["root/tmp", "root/root", "root/root/.config", "root/root/.local/share", "root/root/.cache", "root/run", "root/proc", "root/dev", "root/sys", "root/sdcard", "root/storage"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
             Ok(Plan { manifest, files, dirs, argv: bundle_argv(o, "/bin/sh", Path::new(&inside)) })
         }
         Target::Program(_) => {
@@ -116,18 +120,19 @@ fn plan(o: &Opts, target: &Target, sb: &sandbox::Sandbox, id: &str, name: &str) 
             if roots.is_empty() {
                 eprintln!("lindroids: {} is not from a package; copying only it", host.display());
             }
-            if run::is_shell_line(&o.command) {
-                roots.push("dash".into());
-            }
+            // A shell and the basic tools: terminals start $SHELL, shell lines need sh.
+            roots.extend(["bash".to_string(), "dash".into(), "coreutils".into()]);
             if o.x11 {
-                roots.extend(["xwayland".to_string(), "dash".into(), "coreutils".into()]);
+                roots.push("xwayland".into());
             }
             let mut files = closure_files(&db, roots, false, Path::new("/"), "usr", TERMUX_PREFIX);
             if host.starts_with(TERMUX_PREFIX) && !files.iter().any(|(h, _)| *h == host) {
                 let rel = host.strip_prefix(TERMUX_PREFIX).unwrap().display().to_string();
                 files.push((host.clone(), format!("usr{rel}")));
             }
-            let dirs = vec!["home".into(), "usr/tmp".into()];
+            // A fresh home with the usual XDG directories: some programs create only their own
+            // subdirectory and expect ~/.config to be there.
+            let dirs = ["home", "home/.config", "home/.local/share", "home/.cache", "usr/tmp"].iter().map(|s| s.to_string()).collect();
             Ok(Plan { manifest, files, dirs, argv: bundle_argv(o, &format!("{TERMUX_PREFIX}/bin/sh"), &host) })
         }
     }

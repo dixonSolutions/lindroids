@@ -4,8 +4,8 @@
 //! counts frames off a monotonic clock as if a device were consuming them, and lets the app hold
 //! a fixed lead ahead of that point. The lead absorbs scheduling jitter on both sides of the link
 //! and the time Android takes to write into its device buffer; anything more would only add
-//! latency. The app's credits bound the burst size separately (see the stream code), so a slow
-//! or absent app cannot make the server run ahead of real time either.
+//! latency. The app's credits separately bound how much it can be sent (see the stream code), so
+//! an app slower than real time is not flooded either.
 
 use std::time::Instant;
 
@@ -75,15 +75,6 @@ impl Pacer {
     /// Real time has played everything that was sent.
     pub fn starved(&self, now: Instant) -> bool {
         self.since.is_some() && self.clock(now) >= self.sent
-    }
-
-    /// Restart the clock from what was sent, after a stall that was not the client's fault
-    /// (the app held back credit), so the stall does not turn into a burst afterwards.
-    pub fn resync(&mut self, now: Instant) {
-        if self.since.is_some() && self.clock(now) > self.sent {
-            self.base = self.sent;
-            self.since = Some(now);
-        }
     }
 
     pub fn set_rate(&mut self, now: Instant, rate: u32) {
@@ -162,17 +153,6 @@ mod tests {
         p.start(t0 + 1000 * MS);
         assert_eq!(p.buffered(t0 + 1030 * MS), 30);
         assert_eq!(p.allowance(t0 + 1030 * MS), 70);
-    }
-
-    #[test]
-    fn resync_after_a_credit_stall() {
-        let t0 = Instant::now();
-        let mut p = Pacer::new(1000, 100);
-        p.start(t0);
-        p.take(100);
-        // The app took no more for a second: no burst of a second's worth afterwards.
-        p.resync(t0 + 1100 * MS);
-        assert_eq!(p.allowance(t0 + 1100 * MS), 100);
     }
 
     #[test]

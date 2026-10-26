@@ -4,3 +4,4 @@ dist/
 *.keystore
 *.apk
 third_party/proot/
+/site/

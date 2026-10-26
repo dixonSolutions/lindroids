@@ -160,7 +160,7 @@ build_suite() { # <suite> <arches...>
     : > "$bdir/Packages"
     while IFS= read -r rel; do
       stanza "$OUTDIR/$rel" "$rel" >> "$bdir/Packages"
-    done < <(cd "$OUTDIR" && find "pool/$suite" -name "*_${arch}.deb" | sort -V)
+    done < <(cd "$OUTDIR" && if [ -d "pool/$suite" ]; then find "pool/$suite" -name "*_${arch}.deb" | sort -V; fi)
     gzip -9nc "$bdir/Packages" > "$bdir/Packages.gz"
     echo "    $suite/$arch: $(grep -c '^Package:' "$bdir/Packages" || true) package(s)"
   done
