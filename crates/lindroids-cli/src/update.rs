@@ -131,6 +131,16 @@ fn update_cli(m: &Method) -> Result<(), String> {
     }
 }
 
+/// Where this binary is installed. After the update replaced it, the kernel names the running
+/// (old) file `<path> (deleted)`; the new one is at `<path>`.
+fn installed_exe() -> PathBuf {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("lindroids"));
+    match exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
+        Some(p) => PathBuf::from(p),
+        None => exe,
+    }
+}
+
 /// The installed binary's build, asked of the binary itself (this process is the old one).
 fn installed_build(exe: &Path) -> Option<String> {
     let out = Command::new(exe).arg("version").output().ok()?;
@@ -169,7 +179,7 @@ pub fn cmd_update(args: &[String]) -> i32 {
     if let Err(e) = update_cli(&m) {
         return fail(&e);
     }
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("lindroids"));
+    let exe = installed_exe();
     match installed_build(&exe) {
         Some(b) => println!("Installed lindroids {b}."),
         None => return fail("the updated lindroids does not run"),
