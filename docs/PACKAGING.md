@@ -229,7 +229,8 @@ workflow still builds and tests every push, and says it did not publish.
 ## One-time repository setup
 
 1. Create `github.com/dixonSolutions/lindroids` and push `main`.
-2. `scripts/set-github-secrets.sh dixonSolutions/lindroids`.
+2. `scripts/set-github-secrets.sh --release dixonSolutions/lindroids`: sets the secrets, runs the
+   release workflow, waits for it and turns Pages on (step 4 below).
 3. Settings → Actions → General → Workflow permissions: "Read and write" (the workflow pushes
    `gh-pages` and creates releases; it also declares `contents: write`).
 4. After the first successful release: Settings → Pages → Deploy from branch `gh-pages`, folder
