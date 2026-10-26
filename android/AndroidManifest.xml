@@ -8,6 +8,8 @@
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="28" />
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Network state for Linux programs (the NetworkMonitor portal). -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -73,6 +75,15 @@
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
+        <!-- Android's document picker for Linux programs (FileChooser portal). Its own task, so
+             the home screen of the app does not come up behind it. -->
+        <activity
+            android:name=".PickActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity="io.github.dixonsolutions.lindroids.pick"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <!-- Target of home screen shortcuts made by `lindroids export`. -->
         <activity
             android:name=".LaunchActivity"
@@ -83,6 +94,16 @@
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
 
         <service android:name=".LinkService" android:exported="false" />
+
+        <!-- Files Linux programs open with Android apps (OpenFile), read-only, by grant. -->
+        <provider
+            android:name=".FilesProvider"
+            android:authorities="io.github.dixonsolutions.lindroids.files"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+        <!-- Taps, buttons and dismissals of notifications from Linux programs. -->
+        <receiver android:name=".NoteReceiver" android:exported="false" />
 
         <receiver android:name=".HelloReceiver" android:exported="true">
             <intent-filter>

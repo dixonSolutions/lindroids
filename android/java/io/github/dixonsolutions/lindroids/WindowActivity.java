@@ -100,6 +100,7 @@ public final class WindowActivity extends Activity {
     @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         Native.linkFocus(link, win, hasFocus);
+        if (hasFocus && state != null) state.focusedAt = android.os.SystemClock.uptimeMillis();
         if (hasFocus) shareClipboard();
     }
 

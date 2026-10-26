@@ -54,6 +54,8 @@ public final class LinkService extends Service {
         Bitmap icon;
         WindowActivity activity;
         boolean closedByServer;
+        /** When it last had focus (uptime ms): a notification tap brings back the latest. */
+        long focusedAt;
     }
 
     static final Map<Integer, Link> links = new HashMap<>();
@@ -235,6 +237,8 @@ public final class LinkService extends Service {
                     links.put(l.id, l);
                     ApproveActivity.dismissPairing(app, uid);
                     updateNotification();
+                    // The new link gets Android's state right away (fresh memory figures too).
+                    SystemMonitor.refresh();
                 });
             } else if (r.startsWith("denied ")) {
                 if (code != null) {
@@ -381,6 +385,30 @@ public final class LinkService extends Service {
             } catch (Throwable ignored) {}
         }
     }
+
+    // ---------------------------------------------------------------- Android integration (portal)
+
+    static void onOpenUri(int link, int request, String uri) { main.post(() -> Portal.openUri(app, link, request, uri)); }
+
+    static void onOpenFile(int link, int request, String path, String mime) {
+        main.post(() -> Portal.openFile(app, link, request, path, mime));
+    }
+
+    static void onNotify(int link, int note, String channel, String title, String body, String appName,
+                         byte[] icon, String[] actions) {
+        final boolean urgent = App.CHANNEL_LINUX_URGENT.equals(channel);
+        main.post(() -> Portal.notify(app, note, channel, title, body, appName, icon, actions, urgent));
+    }
+
+    static void onCancelNotification(int note) { main.post(() -> Portal.cancel(app, note)); }
+
+    static void onPickFiles(int link, int request, boolean save, boolean multiple, boolean directory,
+                            String[] mimes, String name) {
+        main.post(() -> PickActivity.start(app, link, request, save, multiple, directory, mimes, name));
+    }
+
+    /** Any thread (a Rust fetch or write thread); see {@link Portal#openDocument}. */
+    static String openDocument(String uri, String mode) { return Portal.openDocument(app, uri, mode); }
 
     static void onLinkClosed(int link) {
         main.post(() -> {
