@@ -417,6 +417,9 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
         binds.push((shm, "/dev/shm".into()));
     }
     binds.push((tmp, "/tmp".into()));
+    // The runtime dir also at the path the server knows it by: files the portal hands out
+    // (picked documents) are named by that path.
+    binds.push((rt.to_path_buf(), rt.display().to_string()));
     // The integrated X display: its abstract socket is reachable from here anyway; the socket
     // directory makes the path form work too.
     let x_dir = lindroids_server::x11::socket_dir();
@@ -490,6 +493,7 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
     env.push(("LD_LIBRARY_PATH".into(), ld_library_path(app)));
     env.push(("XDG_RUNTIME_DIR".into(), format!("/run/user/{uid}")));
     env.push(("WAYLAND_DISPLAY".into(), "wayland-0".into()));
+    env.extend(crate::sandbox::integration_env(rt, Path::new(&format!("/run/user/{uid}"))));
     env.extend(x11_env);
     if o.x11 {
         env.extend([("GDK_BACKEND", "x11"), ("QT_QPA_PLATFORM", "xcb"), ("SDL_VIDEODRIVER", "x11")].map(|(k, v)| (k.to_string(), v.to_string())));

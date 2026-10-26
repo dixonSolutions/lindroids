@@ -21,7 +21,7 @@ pub mod fdpass;
 
 /// Bumped whenever a message changes shape. The app and the server refuse to talk across
 /// versions, and the CLI says which side needs updating.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Android package of the app.
 pub const APP_PACKAGE: &str = "io.github.dixonsolutions.lindroids";
@@ -149,6 +149,153 @@ pub enum ToApp {
     BundleChunk { id: String, len: u32 },
     BundleEnd { id: String, ok: bool },
     Log { level: String, msg: String },
+
+    // --- Android integration (the portal; see lindroids-server/src/portal.rs) ---
+    /// Open a URI with Android (ACTION_VIEW: browser, mail, maps, dialer...). Answered with
+    /// OpenResult.
+    OpenUri { request: u32, uri: String },
+    /// Open a Linux file with an Android app: the payload is its content (the app shares it
+    /// through its FileProvider). Answered with OpenResult.
+    OpenFile { request: u32, name: String, #[serde(default, skip_serializing_if = "Option::is_none")] mime: Option<String>, len: u32 },
+    /// Show (or replace, same `id`) an Android notification. Taps and buttons come back as
+    /// NotificationAction, dismissals as NotificationClosed.
+    Notify(Notification),
+    CloseNotification { id: String },
+    /// Open Android's file picker (ACTION_OPEN_DOCUMENT / OPEN_DOCUMENT_TREE / CREATE_DOCUMENT).
+    /// Answered with FilesPicked.
+    PickFiles(PickFiles),
+    /// Send the content of a picked document (FilesPicked's `files[index]`) as FileChunk
+    /// payloads: the Linux side cannot read it in place.
+    FetchFile { request: u32, index: u32 },
+    /// Write the payload into a document picked for saving (its content URI). Answered with
+    /// WriteResult. `offset` 0 truncates first; later chunks of the same write follow with
+    /// growing offsets, the last one with `last`.
+    WriteFile { request: u32, uri: String, offset: u64, last: bool, len: u32 },
+}
+
+/// An Android notification asked for by a Linux program (org.freedesktop.Notifications, the
+/// Notification portal, `lindroids notify`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Notification {
+    /// The server's key: the same id replaces the notification.
+    pub id: String,
+    /// Who sent it, shown as the notification's sub text ("Thunderbird").
+    #[serde(default)]
+    pub app: String,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_png_b64: Option<String>,
+    /// Buttons: (action key, label). Tapping the notification itself is the action "default".
+    #[serde(default)]
+    pub actions: Vec<(String, String)>,
+    /// 0 low, 1 normal, 2 urgent (heads-up).
+    #[serde(default = "one")]
+    pub urgency: u8,
+}
+
+fn one() -> u8 {
+    1
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PickFiles {
+    pub request: u32,
+    #[serde(default)]
+    pub title: String,
+    /// Pick a place to save (CREATE_DOCUMENT) instead of files to open.
+    #[serde(default)]
+    pub save: bool,
+    #[serde(default)]
+    pub multiple: bool,
+    /// Pick a folder (OPEN_DOCUMENT_TREE).
+    #[serde(default)]
+    pub directory: bool,
+    /// MIME types to offer ("image/png", "text/*"); empty: anything.
+    #[serde(default)]
+    pub mime_types: Vec<String>,
+    /// Suggested file name when saving.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// One document the user picked.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PickedFile {
+    /// The document's content URI (kept by the app for FetchFile/WriteFile).
+    pub uri: String,
+    pub name: String,
+    /// Where the same document is in Android's shared storage as a path
+    /// ("/storage/emulated/0/Download/a.pdf"), when it is there: the Linux side uses it directly
+    /// if it can.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+}
+
+/// What Android says about itself, for Linux programs (the Settings, NetworkMonitor,
+/// PowerProfileMonitor portals; `lindroids info`). Sent after the handshake and on each change.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct SystemState {
+    /// Night mode (the system's dark theme).
+    #[serde(default)]
+    pub dark: bool,
+    /// The system accent colour (Material You's primary on Android 12+), sRGB 0..1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<[f32; 3]>,
+    #[serde(default)]
+    pub high_contrast: bool,
+    /// Animations turned off (animator duration scale 0, or "remove animations").
+    #[serde(default)]
+    pub reduced_motion: bool,
+    /// The system font scale (1.0 is normal).
+    #[serde(default = "one_f")]
+    pub font_scale: f32,
+    #[serde(default)]
+    pub power_saver: bool,
+    #[serde(default)]
+    pub network: NetworkState,
+    #[serde(default)]
+    pub memory: MemoryState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub battery: Option<BatteryState>,
+    /// BCP 47 language tag of the system locale ("en-AU").
+    #[serde(default)]
+    pub locale: String,
+    /// The system time zone ("Australia/Sydney").
+    #[serde(default)]
+    pub timezone: String,
+}
+
+fn one_f() -> f32 {
+    1.0
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct NetworkState {
+    pub available: bool,
+    pub metered: bool,
+    /// As the NetworkMonitor portal counts: 1 local only, 2 limited, 3 captive portal, 4 full.
+    pub connectivity: u8,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct MemoryState {
+    /// Bytes, from ActivityManager.MemoryInfo.
+    pub total: u64,
+    pub available: u64,
+    pub low: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct BatteryState {
+    /// Percent.
+    pub level: u8,
+    pub charging: bool,
 }
 
 // ------------------------------------------------------------------ app -> server
@@ -194,6 +341,24 @@ pub enum ToServer {
     ImportResult { id: String, ok: bool, message: String },
     /// Sound flow control: the app has room for this many more bytes of a stream.
     AudioCredit { stream: u32, bytes: u32 },
+
+    // --- Android integration ---
+    /// Android's state (theme, accent, network, memory, battery...): after Auth, and on changes.
+    System(SystemState),
+    /// Android asked the app to trim memory (onTrimMemory), as the MemoryMonitor portal's level:
+    /// 50 moderate, 100 low, 255 critical.
+    MemoryWarning { level: u8 },
+    OpenResult { request: u32, ok: bool, #[serde(default, skip_serializing_if = "Option::is_none")] message: Option<String> },
+    /// A notification was tapped ("default") or one of its buttons pressed.
+    NotificationAction { id: String, action: String },
+    /// A notification went away: 1 expired, 2 dismissed by the user, 3 closed by a request.
+    NotificationClosed { id: String, reason: u32 },
+    /// The picker's answer (empty: cancelled). For a save, the one document created.
+    FilesPicked { request: u32, files: Vec<PickedFile> },
+    /// Content of a picked document, answering FetchFile; the payload follows. `last` ends it
+    /// (an empty last chunk with `error` set if it could not be read).
+    FileChunk { request: u32, index: u32, last: bool, #[serde(default, skip_serializing_if = "Option::is_none")] error: Option<String>, len: u32 },
+    WriteResult { request: u32, ok: bool, #[serde(default, skip_serializing_if = "Option::is_none")] message: Option<String> },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -301,6 +466,12 @@ pub enum CliRequest {
     PickFolder,
     /// Remove an exported program from the app.
     Unexport { id: String },
+    /// `lindroids open`: a URI, or an absolute path whose file Android should open.
+    Open { target: String },
+    /// `lindroids notify`.
+    Notify { title: String, body: String },
+    /// `lindroids info`: what Android reports.
+    Info,
     /// The CLI started a program: windows from this process (or its children) get this name and
     /// icon.
     Launch {
@@ -328,6 +499,7 @@ pub enum CliReply {
     },
     Ok { message: String },
     Folder { path: Option<String> },
+    Info { system: Option<SystemState> },
     Error { message: String },
 }
 
@@ -352,13 +524,24 @@ pub trait Payload {
 impl Payload for ToApp {
     fn payload_len(&self) -> usize {
         match self {
-            ToApp::Tiles { len, .. } | ToApp::AudioData { len, .. } | ToApp::BundleChunk { len, .. } => *len as usize,
+            ToApp::Tiles { len, .. }
+            | ToApp::AudioData { len, .. }
+            | ToApp::BundleChunk { len, .. }
+            | ToApp::OpenFile { len, .. }
+            | ToApp::WriteFile { len, .. } => *len as usize,
             _ => 0,
         }
     }
 }
 
-impl Payload for ToServer {}
+impl Payload for ToServer {
+    fn payload_len(&self) -> usize {
+        match self {
+            ToServer::FileChunk { len, .. } => *len as usize,
+            _ => 0,
+        }
+    }
+}
 impl Payload for CliRequest {}
 impl Payload for CliReply {}
 

@@ -11,6 +11,15 @@
 //!   resize <win> <w> <h>
 //!   close <win>
 //!   clip <text...>           set the "Android" clipboard
+//!   theme <dark|light>       report Android's night mode (the portal's color-scheme)
+//!   memory <50|100|255>      a low-memory warning
+//!   action <id> <action>     tap a notification ("default") or one of its buttons
+//!
+//! Integration requests are answered as an Android device would: OpenUri/OpenFile are printed
+//! (opened files land in `<dir>/opened-<name>`), notifications are printed, and the file picker
+//! picks the paths in LINDROIDS_DEBUG_PICK (colon-separated; with LINDROIDS_DEBUG_PICK_COPY set
+//! they are offered without a path, so the server fetches them), and saves to
+//! `<dir>/saved-<name>`.
 //!
 //! Sound streams are acknowledged as they arrive; each one's running byte count is kept in
 //! `<dir>/audio-<n>.bytes`. `--socket-name <name>` links to a server started with the same flag.
@@ -34,6 +43,28 @@ struct Win {
 fn send(s: &Mutex<Conn>, m: &ToServer) {
     let _ = s.lock().unwrap().write_all(&proto::encode(m));
 }
+
+fn send_with(s: &Mutex<Conn>, m: &ToServer, payload: &[u8]) {
+    let _ = s.lock().unwrap().write_all(&proto::encode_with(m, payload));
+}
+
+/// What a debug "device" reports: light, a violet accent, online.
+fn system(dark: bool) -> ToServer {
+    ToServer::System(proto::SystemState {
+        dark,
+        accent: Some([0.4, 0.3, 0.9]),
+        font_scale: 1.0,
+        network: proto::NetworkState { available: true, metered: false, connectivity: 4 },
+        memory: proto::MemoryState { total: 8 << 30, available: 3 << 30, low: false },
+        battery: Some(proto::BatteryState { level: 80, charging: true }),
+        locale: "en-AU".into(),
+        timezone: "Australia/Sydney".into(),
+        ..Default::default()
+    })
+}
+
+/// Picks answered so far, for FetchFile.
+static PICKED: Mutex<Vec<(u32, Vec<PathBuf>)>> = Mutex::new(Vec::new());
 
 pub fn cmd_debug_app(args: &[String]) -> i32 {
     let mut dir = PathBuf::from("lindroids-frames");
@@ -83,6 +114,7 @@ pub fn cmd_debug_app(args: &[String]) -> i32 {
     };
     let mut reader = conn.try_clone().unwrap();
     let writer = Arc::new(Mutex::new(conn));
+    send(&writer, &system(false));
 
     // stdin commands
     {
@@ -122,6 +154,9 @@ pub fn cmd_debug_app(args: &[String]) -> i32 {
                     Some("resize") => send(&w, &ToServer::Resize { win, width: n(2) as u32, height: n(3) as u32, density: 1.0 }),
                     Some("close") => send(&w, &ToServer::Close { win }),
                     Some("clip") => send(&w, &ToServer::Clipboard { text: p[1..].join(" ") }),
+                    Some("theme") => send(&w, &system(p.get(1) == Some(&"dark"))),
+                    Some("memory") => send(&w, &ToServer::MemoryWarning { level: n(1) as u8 }),
+                    Some("action") => send(&w, &ToServer::NotificationAction { id: p.get(1).unwrap_or(&"").to_string(), action: p.get(2).unwrap_or(&"default").to_string() }),
                     _ => eprintln!("debug-app: unknown command {line:?}"),
                 }
             }
@@ -183,6 +218,58 @@ fn handle(m: ToApp, payload: Vec<u8>, wins: &mut HashMap<u32, Win>, writer: &Mut
         }
         ToApp::AudioCork { stream, corked } => println!("audio {stream} {}", if corked { "corked" } else { "uncorked" }),
         ToApp::AudioClose { stream } => println!("audio {stream} closed"),
+        ToApp::OpenUri { request, uri } => {
+            println!("open-uri {uri}");
+            send(writer, &ToServer::OpenResult { request, ok: true, message: None });
+        }
+        ToApp::OpenFile { request, name, .. } => {
+            let _ = std::fs::write(dir.join(format!("opened-{name}")), &payload);
+            println!("open-file {name} ({} bytes)", payload.len());
+            send(writer, &ToServer::OpenResult { request, ok: true, message: None });
+        }
+        ToApp::PickFiles(p) => {
+            let picks: Vec<PathBuf> = if p.save {
+                vec![dir.join(format!("saved-{}", p.name.clone().unwrap_or_else(|| "file".into())))]
+            } else {
+                std::env::var("LINDROIDS_DEBUG_PICK").unwrap_or_default().split(':').filter(|s| !s.is_empty()).map(PathBuf::from).collect()
+            };
+            let copy = std::env::var_os("LINDROIDS_DEBUG_PICK_COPY").is_some() || p.save;
+            let files = picks
+                .iter()
+                .map(|f| proto::PickedFile {
+                    uri: format!("debug://{}", f.display()),
+                    name: f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                    path: (!copy).then(|| f.display().to_string()),
+                    size: std::fs::metadata(f).map(|m| m.len()).unwrap_or(0),
+                    mime: None,
+                })
+                .collect();
+            println!("pick-files {} {:?} -> {} file(s)", if p.save { "save" } else { "open" }, p.mime_types, picks.len());
+            PICKED.lock().unwrap().push((p.request, picks));
+            send(writer, &ToServer::FilesPicked { request: p.request, files });
+        }
+        ToApp::FetchFile { request, index } => {
+            let path = PICKED.lock().unwrap().iter().find(|(r, _)| *r == request).and_then(|(_, f)| f.get(index as usize).cloned());
+            match path.map(std::fs::read) {
+                Some(Ok(data)) => {
+                    let chunks: Vec<&[u8]> = if data.is_empty() { vec![&[][..]] } else { data.chunks(64 << 10).collect() };
+                    let n = chunks.len();
+                    for (i, c) in chunks.into_iter().enumerate() {
+                        send_with(writer, &ToServer::FileChunk { request, index, last: i + 1 == n, error: None, len: c.len() as u32 }, c);
+                    }
+                }
+                _ => send(writer, &ToServer::FileChunk { request, index, last: true, error: Some("cannot read it".into()), len: 0 }),
+            }
+        }
+        ToApp::WriteFile { request, uri, offset, last, .. } => {
+            let path = PathBuf::from(uri.trim_start_matches("debug://"));
+            let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(offset == 0).append(offset > 0).open(&path);
+            let ok = f.as_mut().map(|f| f.write_all(&payload).is_ok()).unwrap_or(false);
+            if last || !ok {
+                println!("write-file {} ({} bytes in the last chunk) {}", path.display(), payload.len(), if ok { "ok" } else { "failed" });
+                send(writer, &ToServer::WriteResult { request, ok, message: None });
+            }
+        }
         other => {
             println!("{}", String::from_utf8_lossy(&proto::encode(&other)).trim_end());
             let _ = std::io::stdout().flush();

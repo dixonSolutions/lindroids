@@ -31,12 +31,14 @@ pub struct Link {
     pub since: Instant,
     pub density: f32,
     pub build: String,
+    /// The app's protocol version (from its Hello).
+    pub version: u32,
     pub broken: bool,
 }
 
 impl Link {
     pub fn new(io: Box<dyn Io>, peer: String) -> Link {
-        Link { io, framer: Framer::default(), out: Vec::new(), out_pos: 0, phase: Phase::Hello, peer, since: Instant::now(), density: 1.0, build: String::new(), broken: false }
+        Link { io, framer: Framer::default(), out: Vec::new(), out_pos: 0, phase: Phase::Hello, peer, since: Instant::now(), density: 1.0, build: String::new(), version: 0, broken: false }
     }
 
     pub fn fd(&self) -> RawFd {
@@ -103,8 +105,9 @@ impl Link {
         }
     }
 
-    pub fn next(&mut self) -> Option<Result<ToServer, String>> {
-        self.framer.next::<ToServer>().map(|r| r.map(|(m, _)| m))
+    /// The next message and its payload (FileChunk carries one).
+    pub fn next(&mut self) -> Option<Result<(ToServer, Vec<u8>), String>> {
+        self.framer.next::<ToServer>()
     }
 }
 

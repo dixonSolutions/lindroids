@@ -22,6 +22,7 @@ mod seat;
 mod shell;
 pub mod shm;
 mod surface;
+pub mod portal;
 pub mod x11;
 
 pub use lindroids_proto::fdpass;
@@ -31,7 +32,7 @@ use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::net::{Ipv4Addr, TcpListener};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -242,6 +243,8 @@ enum Waiting {
     Export(String),
     Folder(u32),
     Import(String),
+    /// A worker thread answers this CLI (`lindroids open`).
+    Detached,
 }
 
 pub struct State {
@@ -298,6 +301,7 @@ impl State {
 
     fn drop_link(&mut self) {
         self.link = None;
+        portal::app_changed(0);
         for w in self.windows.values_mut() {
             w.announced = false;
             w.in_flight = false;
@@ -454,9 +458,11 @@ impl State {
                 }
                 link.density = density;
                 link.build = build.clone();
+                link.version = version;
                 link.phase = Phase::Ready;
                 self.drop_link();
                 self.link = Some(link);
+                portal::app_changed(version);
                 let hello = ToApp::Hello { version: proto::PROTOCOL_VERSION, build: BUILD.into(), sandbox: self.cfg.sandbox.clone() };
                 self.send_app(&hello);
                 audio::link_up();
@@ -483,8 +489,20 @@ impl State {
         }
     }
 
-    fn handle_app_message(&mut self, msg: ToServer) {
+    fn handle_app_message(&mut self, msg: ToServer, payload: Vec<u8>) {
+        if portal::wants(&msg) {
+            return portal::from_app(msg, payload);
+        }
         match msg {
+            // Answers to requests nobody is waiting for any more.
+            ToServer::System(_)
+            | ToServer::MemoryWarning { .. }
+            | ToServer::OpenResult { .. }
+            | ToServer::NotificationAction { .. }
+            | ToServer::NotificationClosed { .. }
+            | ToServer::FilesPicked { .. }
+            | ToServer::FileChunk { .. }
+            | ToServer::WriteResult { .. } => {}
             ToServer::Hello { .. } | ToServer::Auth { .. } => {}
             ToServer::AudioCredit { stream, bytes } => audio::credit(stream, bytes),
             ToServer::Resize { win, width, height, .. } => {
@@ -632,6 +650,40 @@ impl State {
                     None
                 }
             }
+            CliRequest::Info => Some(CliReply::Info { system: portal::system() }),
+            CliRequest::Notify { title, body } => {
+                if self.link.is_none() {
+                    Some(no_app())
+                } else {
+                    portal::notify(title, body);
+                    Some(CliReply::Ok { message: "shown".into() })
+                }
+            }
+            CliRequest::Open { target } => match self.clis[idx].stream.try_clone() {
+                Err(e) => Some(CliReply::Error { message: e.to_string() }),
+                Ok(mut stream) => {
+                    // A file travels as a descriptor (the CLI may see another filesystem than
+                    // this server, as in a proot distro); anything else is a URI.
+                    let file = fds.into_iter().next();
+                    self.clis[idx].waiting = Some(Waiting::Detached);
+                    std::thread::spawn(move || {
+                        let r = match file {
+                            Some(fd) => {
+                                let name = Path::new(&target).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| portal::fd_name(&fd));
+                                portal::open_file(std::fs::File::from(fd), name)
+                            }
+                            None => portal::open_uri(target),
+                        };
+                        let reply = match r {
+                            Ok(()) => CliReply::Ok { message: "opened".into() },
+                            Err(message) => CliReply::Error { message },
+                        };
+                        stream.set_nonblocking(false).ok();
+                        let _ = stream.write_all(&proto::encode(&reply));
+                    });
+                    None
+                }
+            },
             CliRequest::PickFolder => {
                 if self.link.is_none() {
                     Some(no_app())
@@ -842,6 +894,14 @@ pub fn run(cfg: Config) -> i32 {
         }
     };
 
+    let _portal = match portal::start(&cfg.runtime_dir) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            info!("desktop integration (portal) is off: {e}");
+            None
+        }
+    };
+
     std::fs::write(cfg.runtime_dir.join("server.pid"), std::process::id().to_string()).ok();
     info!("listening on {}, @{app_name} and 127.0.0.1:{port} (sandbox {:?}, scale {scale})", wl_path.display(), cfg.sandbox);
     // The CLI waits for this line.
@@ -949,7 +1009,7 @@ pub fn run(cfg: Config) -> i32 {
             }
             let alive = state.pending[i].read();
             match state.pending[i].next() {
-                Some(Ok(m)) => {
+                Some(Ok((m, _))) => {
                     let link = state.pending.remove(i);
                     if let Some(l) = state.handshake(link, m) {
                         state.pending.push(l);
@@ -980,7 +1040,7 @@ pub fn run(cfg: Config) -> i32 {
             };
             for m in msgs {
                 match m {
-                    Ok(m) => state.handle_app_message(m),
+                    Ok((m, payload)) => state.handle_app_message(m, payload),
                     Err(e) => warn!("bad message from app: {e}"),
                 }
             }

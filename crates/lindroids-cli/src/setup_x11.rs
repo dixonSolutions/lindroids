@@ -1,5 +1,6 @@
-//! `lindroids setup x11`: install what the integrated X display needs, with the package manager of
-//! the environment Lindroids runs in. Xwayland comes from the distribution everywhere. Lindroids
+//! `lindroids setup x11`: install what the integrated X display and the desktop integration need
+//! (Xwayland; dbus-daemon for the portal), with the package manager of the environment Lindroids
+//! runs in. Xwayland comes from the distribution everywhere. Lindroids
 //! ships xwayland-satellite itself where the distribution has none (Termux, Debian, Ubuntu), and
 //! prefers the distribution's own package where there is one (Fedora, Arch, Alpine, openSUSE).
 
@@ -44,11 +45,11 @@ fn manager(sb: &sandbox::Sandbox) -> Option<Manager> {
         // Xwayland is in Termux's x11 repository; satellite comes with Lindroids.
         return Some(Manager {
             name: "pkg",
-            steps: vec![words("pkg install -y x11-repo"), words("pkg install -y xwayland libxcb xcb-util-cursor")],
+            steps: vec![words("pkg install -y x11-repo"), words("pkg install -y xwayland libxcb xcb-util-cursor dbus")],
         });
     }
     if sandbox::have("apt-get") {
-        let mut pkgs = words("xwayland libxcb1 libxcb-cursor0");
+        let mut pkgs = words("xwayland libxcb1 libxcb-cursor0 dbus");
         if !satellite_shipped && apt_has("xwayland-satellite") {
             pkgs.push("xwayland-satellite".into());
         }
@@ -56,16 +57,22 @@ fn manager(sb: &sandbox::Sandbox) -> Option<Manager> {
         install.extend(pkgs);
         return Some(Manager { name: "apt", steps: vec![as_root(words("apt-get update")), as_root(install)] });
     }
-    let table: [(&str, &str, &str); 4] = [
-        ("dnf", "dnf install -y", "xorg-x11-server-Xwayland xwayland-satellite"),
-        ("pacman", "pacman -S --needed --noconfirm", "xorg-xwayland xwayland-satellite"),
-        ("apk", "apk add", "xwayland xwayland-satellite"),
-        ("zypper", "zypper --non-interactive install", "xwayland xwayland-satellite"),
+    // (manager, install command without weak/recommended extras, Xwayland, satellite)
+    let table: [(&str, &str, &str, &str, &str); 4] = [
+        ("dnf", "dnf install -y --setopt=install_weak_deps=False", "xorg-x11-server-Xwayland", "dbus-daemon", "xwayland-satellite"),
+        ("pacman", "pacman -S --needed --noconfirm", "xorg-xwayland", "dbus", "xwayland-satellite"),
+        ("apk", "apk add", "xwayland", "dbus", "xwayland-satellite"),
+        ("zypper", "zypper --non-interactive install --no-recommends", "xwayland", "dbus-1", "xwayland-satellite"),
     ];
-    for (bin, cmd, pkgs) in table {
+    for (bin, cmd, xwayland, dbus, satellite) in table {
         if sandbox::have(bin) {
             let mut c = words(cmd);
-            c.extend(words(pkgs));
+            c.push(xwayland.into());
+            c.push(dbus.into());
+            // The distro's satellite only where Lindroids' own cannot run (a musl distro).
+            if !satellite_shipped {
+                c.push(satellite.into());
+            }
             return Some(Manager { name: bin, steps: vec![as_root(c)] });
         }
     }
@@ -94,6 +101,9 @@ pub fn missing() -> Vec<&'static str> {
     }
     if lindroids_server::x11::find_satellite().is_none() {
         v.push("xwayland-satellite");
+    }
+    if !sandbox::have("dbus-daemon") {
+        v.push("dbus-daemon");
     }
     v
 }

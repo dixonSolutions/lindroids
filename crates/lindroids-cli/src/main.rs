@@ -9,6 +9,7 @@ mod pkgdb;
 mod run;
 mod sandbox;
 mod elf;
+mod integration;
 mod setup_x11;
 mod update;
 mod x11wm;
@@ -32,6 +33,9 @@ USAGE
   lindroids setup                    install or update the Lindroids app, then pair
   lindroids setup x11 [--yes]        install what X11 programs need (Xwayland), restart the server
   lindroids update [--check]         update the CLI and the app to the latest release
+  lindroids open <file|URI>          open with Android (what xdg-open does for Linux programs)
+  lindroids notify <title> [body]    an Android notification
+  lindroids info [--json]            Android's theme, accent, network, memory, battery
   lindroids status | start | stop | pair | doctor | version
 
 RUN OPTIONS
@@ -48,6 +52,10 @@ EXPORT OPTIONS (as run, plus)
   --id <id>           shortcut id (default: derived from the program)
 
 A program name that looks like a Flatpak id (org.gnome.Calculator) runs that Flatpak.
+
+Programs also get Android's side of the desktop through the standard portal on their own session
+bus: dark mode and accent colour, Android's file picker, links and files opened in Android apps,
+notifications, low-memory warnings, network and battery-saver state.
 
 X11 programs need no option: every program gets DISPLAY as well as WAYLAND_DISPLAY, and each X11
 window becomes its own Android window (xwayland-satellite, started on the first X11 connection).
@@ -83,6 +91,9 @@ fn main() {
         Some("doctor") => cmd_doctor(),
         Some("update") if args.iter().any(|a| a == "--app-only") => update::cmd_update_app_only(),
         Some("update") => update::cmd_update(&args[1..]),
+        Some("open") => integration::cmd_open(&args[1..]),
+        Some("notify") => integration::cmd_notify(&args[1..]),
+        Some("info") => integration::cmd_info(&args[1..]),
         Some("run") => run::cmd_run(&args[1..]),
         Some("export") => export::cmd_export(&args[1..]),
         Some("list") => export::cmd_list(),
@@ -365,6 +376,7 @@ fn cmd_doctor() -> i32 {
         ("proot-distro", sandbox::have("proot-distro")),
         ("Xwayland", sandbox::have("Xwayland")),
         ("satellite", lindroids_server::x11::find_satellite().is_some()),
+        ("dbus-daemon", sandbox::have("dbus-daemon")),
         ("flatpak", sandbox::have("flatpak")),
         ("termux-am", sandbox::have("termux-am")),
     ] {
@@ -384,6 +396,12 @@ fn cmd_doctor() -> i32 {
             false
         }
     };
+    match (rt.join("bus").exists(), running) {
+        (true, true) => println!("desktop     portal on (theme, file picker, open, notifications)"),
+        (false, true) => println!("desktop     portal off in the running server (needs dbus-daemon: `lindroids setup x11`)"),
+        (_, false) if sandbox::have("dbus-daemon") => println!("desktop     ready; starts with the server"),
+        (_, false) => println!("desktop     off: no dbus-daemon (`lindroids setup x11`)"),
+    }
     let missing = setup_x11::missing();
     match (sandbox::x11_display(&rt), running) {
         (Some(d), _) => println!("X11         display {d} (xwayland-satellite starts on the first X11 connection)"),

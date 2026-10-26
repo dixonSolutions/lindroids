@@ -42,8 +42,11 @@ pub fn detect() -> Sandbox {
     }
 }
 
+/// The server's runtime dir: LINDROIDS_RUNTIME_DIR, which Lindroids gives the programs it starts
+/// (in a proot distro the uid is a faked 0, so the default would name another directory), else
+/// the default for this uid.
 pub fn runtime_dir() -> PathBuf {
-    lindroids_server::default_runtime_dir()
+    std::env::var_os("LINDROIDS_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_dir()).unwrap_or_else(lindroids_server::default_runtime_dir)
 }
 
 /// Environment for a program running in this sandbox (runtime dir as seen by the program).
@@ -63,6 +66,55 @@ pub fn client_env(runtime: &Path) -> Vec<(String, String)> {
         }
     }
     v
+}
+
+/// Desktop integration for a program: the server's session bus (where the Android-backed portal
+/// and notification service are), toolkits pointed at the portal, `xdg-open` that hands links and
+/// files to Android, and the way back to the server. `runtime` is the runtime dir as this
+/// process sees it, `inside` as the program will.
+pub fn integration_env(runtime: &Path, inside: &Path) -> Vec<(String, String)> {
+    let mut v = vec![("LINDROIDS_RUNTIME_DIR".to_string(), inside.display().to_string())];
+    if runtime.join("bus").exists() {
+        v.push(("DBUS_SESSION_BUS_ADDRESS".into(), format!("unix:path={}", inside.join("bus").display())));
+        // GLib and GTK 3 use the portal (open, file chooser, settings) only when asked to outside
+        // a Flatpak; GTK 4 likewise with GDK_DEBUG=portals; Qt through its portal theme.
+        v.push(("GTK_USE_PORTAL".into(), "1".into()));
+        if std::env::var_os("GDK_DEBUG").is_none() {
+            v.push(("GDK_DEBUG".into(), "portals".into()));
+        }
+        if std::env::var_os("QT_QPA_PLATFORMTHEME").is_none() {
+            v.push(("QT_QPA_PLATFORMTHEME".into(), "xdgdesktopportal".into()));
+        }
+    }
+    v
+}
+
+/// `<runtime>/bin`: `xdg-open` (and `sensible-browser`, `x-www-browser`) that hand links and
+/// files to Android through `lindroids open`, with a copy of this binary for them to run.
+/// Returns the directory as the program sees it, to put first on its PATH.
+pub fn write_open_helpers(runtime: &Path, inside: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = runtime.join("bin");
+    std::fs::create_dir_all(&bin).ok()?;
+    let me = std::env::current_exe().ok()?;
+    let copy = bin.join("lindroids");
+    let fresh = std::fs::metadata(&copy).ok().and_then(|m| m.modified().ok()) >= std::fs::metadata(&me).ok().and_then(|m| m.modified().ok());
+    if !copy.exists() || !fresh {
+        let tmp = bin.join(".lindroids.new");
+        if std::fs::hard_link(&me, &tmp).is_err() {
+            std::fs::copy(&me, &tmp).ok()?;
+        }
+        std::fs::rename(&tmp, &copy).ok()?;
+    }
+    let script = "#!/bin/sh\n# Lindroids: links and files open with Android.\nexec \"$(dirname \"$0\")/lindroids\" open \"$@\"\n";
+    for name in ["xdg-open", "sensible-browser", "x-www-browser"] {
+        let p = bin.join(name);
+        if std::fs::read_to_string(&p).ok().as_deref() != Some(script) {
+            std::fs::write(&p, script).ok()?;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).ok()?;
+        }
+    }
+    Some(inside.join("bin"))
 }
 
 /// The server's integrated X display (`:N`), if it has one; `runtime` as this process sees it.
