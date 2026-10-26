@@ -73,8 +73,9 @@ next_steps() {
 
 FLATHUB=https://dl.flathub.org/repo/flathub.flatpakrepo
 
-# ask <question>: yes or no from the terminal, also under `curl | sh` (whose stdin is the script).
-# LINDROIDS_FLATPAK answers it; with no terminal the answer is no.
+# ask <question> [yes|no]: yes or no from the terminal, also under `curl | sh` (whose stdin is the
+# script); the second argument is what Enter means (default yes). LINDROIDS_FLATPAK answers it;
+# with no terminal the answer is no.
 ask() {
   case "${LINDROIDS_FLATPAK:-}" in
     y|yes|1|true) return 0 ;;
@@ -82,10 +83,11 @@ ask() {
   esac
   # In a subshell: a failed redirection on a special builtin exits a POSIX shell.
   (: < /dev/tty) 2>/dev/null || return 1
-  printf '%s [Y/n] ' "$1" > /dev/tty
+  if [ "${2:-yes}" = no ]; then printf '%s [y/N] ' "$1" > /dev/tty; else printf '%s [Y/n] ' "$1" > /dev/tty; fi
   read -r answer < /dev/tty || return 1
   case "$answer" in
-    ''|y|Y|yes|Yes|YES) return 0 ;;
+    '') [ "${2:-yes}" != no ] ;;
+    y|Y|yes|Yes|YES) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -114,9 +116,14 @@ flatpak_termux() {
       return 0
     fi
   done
+  # Lindroids runs in Termux itself; this is only for Flatpak apps, which need glibc and so a whole
+  # distro. Not something Enter should download: the default is no.
   distro=${LINDROIDS_DISTRO:-debian}
-  if ! ask "Install Flatpak (with Flathub) in a proot-distro $distro, to run Flatpak apps?"; then
-    echo "Skipping Flatpak (LINDROIDS_FLATPAK=yes, or run this installer again, to install it later)."
+  echo
+  echo "Optional: Flatpak apps. Lindroids runs Termux programs as they are; Flatpak cannot run in"
+  echo "Termux, so it would go into a $distro installed with proot-distro (several hundred MB)."
+  if ! ask "Install proot-distro, $distro and Flatpak (with Flathub)?" no; then
+    echo "Skipping Flatpak (to add it later: LINDROIDS_FLATPAK=yes, then run this installer again)."
     return 0
   fi
   have proot-distro || { say "pkg install proot-distro"; apt install -y proot-distro || { warn "cannot install proot-distro"; return 0; }; }
