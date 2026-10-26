@@ -25,6 +25,11 @@ It honours these variables: `LINDROIDS_METHOD` (`apt-termux`, `apt-debian` or `s
 `LINDROIDS_INSTALL_DIR` (static installs), `LINDROIDS_VERSION` (static installs; default: latest)
 and `LINDROIDS_REPO_URL` (a mirror or a local test repository).
 
+It also checks for Flatpak and, when it is missing, asks whether to install it with Flathub. Termux
+has no flatpak package, so there it goes into a proot-distro distro (Debian unless
+`LINDROIDS_DISTRO` names another), where `lindroids run <app-id>` finds its apps on its own.
+`LINDROIDS_FLATPAK=yes` or `no` answers the question in advance; with no terminal it is skipped.
+
 ## Termux
 
 Use Termux from F-Droid or GitHub (the Play Store build works too).

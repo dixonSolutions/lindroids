@@ -16,6 +16,8 @@
 #   LINDROIDS_VERSION       version for the static install (default: <repo url>/VERSION)
 #   LINDROIDS_INSTALL_DIR   static install target (default ~/.local/bin)
 #   LINDROIDS_METHOD        force apt-termux | apt-debian | static
+#   LINDROIDS_FLATPAK       yes | no: install Flatpak (with Flathub) without asking, or skip it
+#   LINDROIDS_DISTRO        proot-distro distro for Flatpak in Termux (default: debian)
 set -eu
 
 # build-repo.sh rewrites these two lines for the repository it publishes.
@@ -60,8 +62,95 @@ next_steps() {
   echo "  2. lindroids run <command>   # e.g. lindroids run foot; X11 programs work too"
   echo "     lindroids export <command> puts an app on the Android home screen."
   echo "     lindroids update brings the CLI and the app to the newest release."
+  if [ -n "${FLATPAK_DISTRO:-}" ]; then
+    flatpak_hint " (inside: proot-distro login $FLATPAK_DISTRO)"
+  elif have flatpak; then
+    flatpak_hint ""
+  fi
   echo
   echo "Update: $update"
+}
+
+FLATHUB=https://dl.flathub.org/repo/flathub.flatpakrepo
+
+# ask <question>: yes or no from the terminal, also under `curl | sh` (whose stdin is the script).
+# LINDROIDS_FLATPAK answers it; with no terminal the answer is no.
+ask() {
+  case "${LINDROIDS_FLATPAK:-}" in
+    y|yes|1|true) return 0 ;;
+    n|no|0|false) return 1 ;;
+  esac
+  # In a subshell: a failed redirection on a special builtin exits a POSIX shell.
+  (: < /dev/tty) 2>/dev/null || return 1
+  printf '%s [Y/n] ' "$1" > /dev/tty
+  read -r answer < /dev/tty || return 1
+  case "$answer" in
+    ''|y|Y|yes|Yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+flatpak_hint() {
+  echo "  Flatpak apps: lindroids run <app-id>, e.g. lindroids run org.gnome.Calculator"
+  echo "     after: flatpak install flathub org.gnome.Calculator$1"
+}
+
+# proot-distro's root filesystem of a distro (newer proot-distro: containers/<name>/rootfs).
+distro_rootfs() {
+  base=$PREFIX/var/lib/proot-distro
+  if [ -d "$base/containers/$1/rootfs" ]; then echo "$base/containers/$1/rootfs"; else echo "$base/installed-rootfs/$1"; fi
+}
+
+# Termux has no flatpak package: Flatpak goes into a proot-distro distro, where `lindroids run`
+# finds its apps on its own. Prints the distro that has it (one that already does, or the new one).
+flatpak_termux() {
+  for d in "$PREFIX"/var/lib/proot-distro/installed-rootfs/* "$PREFIX"/var/lib/proot-distro/containers/*/rootfs; do
+    if [ -x "$d/usr/bin/flatpak" ]; then
+      case "$d" in
+        */rootfs) d=${d%/rootfs} ;;
+      esac
+      FLATPAK_DISTRO=${d##*/}
+      say "Flatpak: found in the proot-distro distro $FLATPAK_DISTRO"
+      return 0
+    fi
+  done
+  distro=${LINDROIDS_DISTRO:-debian}
+  if ! ask "Install Flatpak (with Flathub) in a proot-distro $distro, to run Flatpak apps?"; then
+    echo "Skipping Flatpak (LINDROIDS_FLATPAK=yes, or run this installer again, to install it later)."
+    return 0
+  fi
+  have proot-distro || { say "pkg install proot-distro"; apt install -y proot-distro || { warn "cannot install proot-distro"; return 0; }; }
+  if [ ! -d "$(distro_rootfs "$distro")/usr" ]; then
+    say "proot-distro install $distro"
+    proot-distro install "$distro" || { warn "proot-distro install $distro failed"; return 0; }
+  fi
+  say "installing Flatpak in $distro and adding Flathub"
+  proot-distro login "$distro" -- sh -c "
+    if command -v apt-get >/dev/null; then export DEBIAN_FRONTEND=noninteractive; apt-get update -q && apt-get install -y -q flatpak
+    elif command -v pacman >/dev/null; then pacman -Sy --needed --noconfirm flatpak
+    elif command -v apk >/dev/null; then apk add flatpak
+    elif command -v dnf >/dev/null; then dnf install -y flatpak
+    else echo 'no known package manager' >&2; exit 1; fi &&
+    flatpak remote-add --if-not-exists flathub $FLATHUB" \
+    || { warn "installing Flatpak in $distro failed"; return 0; }
+  FLATPAK_DISTRO=$distro
+}
+
+# Flatpak with the system's package manager (apt for this installer's Debian path).
+flatpak_system() {
+  if have flatpak; then
+    say "Flatpak: found ($(flatpak --version 2>/dev/null || echo flatpak))"
+    flatpak remotes 2>/dev/null | grep -q '^flathub' || $SUDO flatpak remote-add --if-not-exists flathub "$FLATHUB" || true
+    return 0
+  fi
+  have apt-get || { echo "Flatpak is not installed; for Flatpak apps install it with this system's package manager."; return 0; }
+  if ! ask "Install Flatpak (with Flathub), to run Flatpak apps?"; then
+    echo "Skipping Flatpak (LINDROIDS_FLATPAK=yes, or run this installer again, to install it later)."
+    return 0
+  fi
+  say "apt-get install flatpak"
+  $SUDO apt-get install -y -q flatpak || { warn "apt-get install flatpak failed"; return 0; }
+  $SUDO flatpak remote-add --if-not-exists flathub "$FLATHUB" || warn "cannot add Flathub"
 }
 
 install_termux() {
@@ -78,6 +167,8 @@ install_termux() {
   apt update || die "apt update failed"
   say "apt install lindroids"
   apt install -y lindroids || die "apt install lindroids failed"
+  FLATPAK_DISTRO=
+  flatpak_termux
   next_steps "$PREFIX/share/lindroids/lindroids.apk" "pkg upgrade (or: apt update && apt install lindroids)"
 }
 
@@ -112,6 +203,7 @@ install_debian() {
   $SUDO apt-get update -q || die "apt-get update failed"
   say "apt-get install lindroids"
   $SUDO apt-get install -y -q lindroids || die "apt-get install lindroids failed"
+  flatpak_system
   next_steps /usr/share/lindroids/lindroids.apk "apt update && apt upgrade (or run this installer again)"
 }
 
