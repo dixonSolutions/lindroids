@@ -740,11 +740,18 @@ pub fn run(cfg: Config) -> i32 {
     let app_name = cfg.socket_name.clone().unwrap_or_else(|| proto::server_socket_name(uid));
     // The abstract socket is the fast path (same uid, or devices whose policy allows it); loopback
     // TCP works between any two apps.
-    let app_listener = match listen_abstract(&app_name) {
-        Ok(l) => Some(l),
-        Err(e) => {
-            warn!("no abstract socket @{app_name}: {e}");
-            None
+    // LINDROIDS_TRANSPORT=tcp: loopback only, as on devices whose SELinux keeps apps out of each
+    // other's sockets (for testing that path on devices that would allow the other one).
+    let tcp_only = std::env::var("LINDROIDS_TRANSPORT").as_deref() == Ok("tcp");
+    let app_listener = if tcp_only {
+        None
+    } else {
+        match listen_abstract(&app_name) {
+            Ok(l) => Some(l),
+            Err(e) => {
+                warn!("no abstract socket @{app_name}: {e}");
+                None
+            }
         }
     };
     let port = proto::server_tcp_port(uid);
