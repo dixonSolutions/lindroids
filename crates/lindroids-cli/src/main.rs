@@ -10,6 +10,7 @@ mod run;
 mod sandbox;
 mod elf;
 mod setup_x11;
+mod update;
 mod x11wm;
 
 use std::io::Write;
@@ -30,6 +31,7 @@ USAGE
   lindroids list | remove <id>
   lindroids setup                    install or update the Lindroids app, then pair
   lindroids setup x11 [--yes]        install what X11 programs need (Xwayland), restart the server
+  lindroids update [--check]         update the CLI and the app to the latest release
   lindroids status | start | stop | pair | doctor | version
 
 RUN OPTIONS
@@ -79,6 +81,8 @@ fn main() {
         Some("setup") if args.get(1).map(String::as_str) == Some("x11") => setup_x11::cmd_setup_x11(&args[2..]),
         Some("setup") => cmd_setup(),
         Some("doctor") => cmd_doctor(),
+        Some("update") if args.iter().any(|a| a == "--app-only") => update::cmd_update_app_only(),
+        Some("update") => update::cmd_update(&args[1..]),
         Some("run") => run::cmd_run(&args[1..]),
         Some("export") => export::cmd_export(&args[1..]),
         Some("list") => export::cmd_list(),
@@ -280,7 +284,7 @@ fn bundled_apk() -> Option<std::path::PathBuf> {
 
 const RELEASES: &str = "https://github.com/dixonSolutions/lindroids/releases/latest";
 
-fn cmd_setup() -> i32 {
+pub fn cmd_setup() -> i32 {
     let sb = sandbox::detect();
     let rt = match ensure_server(&sb) {
         Ok(rt) => rt,
