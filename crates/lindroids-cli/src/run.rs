@@ -142,6 +142,10 @@ pub fn build_command(o: &Opts, target: &Target, rt: &Path) -> Result<Command, St
             };
             let mut env = sandbox::client_env(&rt_inside);
             env.extend(sandbox::integration_env(rt, &rt_inside));
+            let base = if o.distro.is_some() { "/usr/local/share:/usr/share".to_string() } else { sandbox::default_data_dirs() };
+            if let Some(d) = sandbox::data_dirs_with_runtime(rt, &rt_inside, &base) {
+                env.push(("XDG_DATA_DIRS".into(), d));
+            }
             // First on PATH: xdg-open that hands links and files to Android, and under proot (a
             // distro from Termux, or the CLI itself inside one) a bwrap that admits it cannot
             // work (lindroids_proto::BWRAP_UNDER_PROOT).

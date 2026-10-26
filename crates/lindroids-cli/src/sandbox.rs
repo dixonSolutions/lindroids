@@ -89,6 +89,21 @@ pub fn integration_env(runtime: &Path, inside: &Path) -> Vec<(String, String)> {
     v
 }
 
+/// XDG_DATA_DIRS with `<runtime>/share` first (the portal's GTK 3 dark theme), as the program
+/// sees it, before `base`: the data dirs it would have had.
+pub fn data_dirs_with_runtime(runtime: &Path, inside: &Path, base: &str) -> Option<String> {
+    runtime.join("share/themes").is_dir().then(|| format!("{}:{base}", inside.join("share").display()))
+}
+
+/// The data dirs a program here has when XDG_DATA_DIRS is not set.
+pub fn default_data_dirs() -> String {
+    match std::env::var("XDG_DATA_DIRS") {
+        Ok(d) if !d.is_empty() => d,
+        _ if detect().kind == Kind::Termux => format!("{p}/local/share:{p}/share", p = lindroids_proto::TERMUX_PREFIX),
+        _ => "/usr/local/share:/usr/share".into(),
+    }
+}
+
 /// `<runtime>/bin`: `xdg-open` (and `sensible-browser`, `x-www-browser`) that hand links and
 /// files to Android through `lindroids open`, with a copy of this binary for them to run.
 /// Returns the directory as the program sees it, to put first on its PATH.

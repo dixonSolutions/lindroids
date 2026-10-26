@@ -494,6 +494,11 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
     env.push(("XDG_RUNTIME_DIR".into(), format!("/run/user/{uid}")));
     env.push(("WAYLAND_DISPLAY".into(), "wayland-0".into()));
     env.extend(crate::sandbox::integration_env(rt, Path::new(&format!("/run/user/{uid}"))));
+    if let Some((_, d)) = env.iter_mut().find(|(k, _)| k == "XDG_DATA_DIRS") {
+        if let Some(with) = crate::sandbox::data_dirs_with_runtime(rt, Path::new(&format!("/run/user/{uid}")), d) {
+            *d = with;
+        }
+    }
     env.extend(x11_env);
     if o.x11 {
         env.extend([("GDK_BACKEND", "x11"), ("QT_QPA_PLATFORM", "xcb"), ("SDL_VIDEODRIVER", "x11")].map(|(k, v)| (k.to_string(), v.to_string())));

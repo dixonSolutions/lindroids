@@ -221,6 +221,7 @@ pub fn start(runtime: &Path) -> Result<Portal, String> {
         std::thread::sleep(Duration::from_millis(20));
     }
     let _ = shared().runtime.set(runtime.to_path_buf());
+    write_gtk3_dark_theme(runtime);
     let conn = zbus::blocking::connection::Builder::address(format!("unix:path={}", socket.display()).as_str())
         .and_then(|b| b.serve_at(DESKTOP, Settings))
         .and_then(|b| b.serve_at(DESKTOP, OpenUri))
@@ -262,6 +263,18 @@ fn bus_config(socket: &Path) -> String {
 "#,
         socket.display()
     )
+}
+
+/// GTK 3 has no color-scheme: through the portal it follows GNOME's `gtk-theme`, which is
+/// "Adwaita-dark" in night mode, and looks for a theme by that name on disk. Its dark variant only
+/// exists inside GTK, so `<runtime>/share/themes/Adwaita-dark` (first on the programs'
+/// XDG_DATA_DIRS) names it. GTK 3 then switches live with Android's night mode.
+fn write_gtk3_dark_theme(runtime: &Path) {
+    let dir = runtime.join("share/themes/Adwaita-dark/gtk-3.0");
+    let css = "@import url(\"resource:///org/gtk/libgtk/theme/Adwaita/gtk-contained-dark.css\");\n";
+    if std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join("gtk.css"), css)).is_err() {
+        warn!("cannot write the GTK 3 dark theme in {}", dir.display());
+    }
 }
 
 fn conn() -> Option<&'static zbus::blocking::Connection> {
