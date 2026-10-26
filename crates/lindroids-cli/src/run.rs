@@ -141,6 +141,23 @@ pub fn build_command(o: &Opts, target: &Target, rt: &Path) -> Result<Command, St
                 None => rt.to_path_buf(),
             };
             let mut env = sandbox::client_env(&rt_inside);
+            // Under proot (a distro from Termux, or the CLI itself inside one), bubblewrap must
+            // admit that it cannot work; see lindroids_proto::BWRAP_UNDER_PROOT.
+            if o.distro.is_some() || sandbox::detect().kind == sandbox::Kind::Proot {
+                if lindroids_proto::write_proot_bin(&rt.join("proot-bin")).is_ok() {
+                    let inside = rt_inside.join("proot-bin").display().to_string();
+                    let path = match &o.distro {
+                        Some(_) => lindroids_proto::proot_distro_path(&inside),
+                        None => format!("{inside}:{}", std::env::var("PATH").unwrap_or_default()),
+                    };
+                    env.push(("PATH".into(), path));
+                }
+                if let Some(name) = sandbox::write_compat_preload(&rt.join("proot-bin")) {
+                    let lib = rt_inside.join("proot-bin").join(name).display().to_string();
+                    let own = if o.distro.is_some() { None } else { std::env::var("LD_PRELOAD").ok() };
+                    env.push(("LD_PRELOAD".into(), sandbox::preload_with(&lib, own.as_deref())));
+                }
+            }
             let (x11_env, integrated_x11) = sandbox::x11_env(rt);
             env.extend(x11_env);
             if o.x11 {

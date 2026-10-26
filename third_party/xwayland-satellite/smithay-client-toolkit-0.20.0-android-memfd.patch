@@ -1,0 +1,50 @@
+--- a/src/shm/raw.rs
++++ b/src/shm/raw.rs
+@@ -3,10 +3,9 @@
+ //! This is intended as a safe building block for higher level shared memory pool abstractions and is not
+ //! encouraged for most library users.
+ 
+-use rustix::{
+-    io::Errno,
+-    shm::{Mode, OFlags},
+-};
++use rustix::io::Errno;
++#[cfg(not(target_os = "android"))]
++use rustix::shm::{Mode, OFlags};
+ use std::{
+     fs::File,
+     io,
+@@ -182,7 +181,7 @@
+ 
+ impl RawPool {
+     fn create_shm_fd() -> io::Result<OwnedFd> {
+-        #[cfg(target_os = "linux")]
++        #[cfg(any(target_os = "linux", target_os = "android"))]
+         {
+             match RawPool::create_memfd() {
+                 Ok(fd) => return Ok(fd),
+@@ -194,6 +193,15 @@
+             };
+         }
+ 
++        // Android has no shm_open (rustix does not offer rustix::shm there): memfd is the only way.
++        #[cfg(target_os = "android")]
++        return Err(Errno::NOSYS.into());
++        #[cfg(not(target_os = "android"))]
++        return RawPool::create_shm_fd_shm_open();
++    }
++
++    #[cfg(not(target_os = "android"))]
++    fn create_shm_fd_shm_open() -> io::Result<OwnedFd> {
+         let time = SystemTime::now();
+         let mut mem_file_handle = format!(
+             "/smithay-client-toolkit-{}",
+@@ -233,7 +241,7 @@
+         }
+     }
+ 
+-    #[cfg(target_os = "linux")]
++    #[cfg(any(target_os = "linux", target_os = "android"))]
+     fn create_memfd() -> rustix::io::Result<OwnedFd> {
+         use std::ffi::CStr;
+ 

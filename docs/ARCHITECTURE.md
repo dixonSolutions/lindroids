@@ -137,8 +137,26 @@ extensions at their mount points, a generated `/etc/passwd`, `~/.var/app/<id>` a
   that put plugins into directories the closure owns (pixbuf loaders, GIO/GTK modules…), files
   that package scripts generated there (`loaders.cache`, `gschemas.compiled`), plus bash and
   coreutils. Inside the app it runs under its own proot root with Termux's prefix and home bound in.
-- proot-distro program: the same closure from the distro's dpkg database, with Essential packages
-  and `/etc`; it runs with `-r` on the copied root.
+- proot-distro program: the same closure from the distro's package database (dpkg for
+  Debian/Ubuntu, apk for Alpine, pacman for Arch; rpm distros are refused with a message), with
+  the base packages and `/etc`; it runs with `-r` on the copied root. apk's `install_if` is
+  followed (Alpine's glycin image loaders arrive that way), and busybox's applet links are added.
+
+## Programs under proot
+
+Two things that work on an ordinary Linux system do not under proot on Android, and Lindroids
+fixes both for `--distro`, for the CLI running inside a distro (UserLAnd, Andronix) and for
+exported distro bundles:
+
+- **bubblewrap.** proot fakes the namespace calls and then cannot do the mounts, so `bwrap`
+  "succeeds" and the sandboxed program has no filesystem. glycin, which loads GTK's images since
+  gdk-pixbuf 2.44 (Alpine, Arch), would abort GTK. A `bwrap` first on PATH reports what is true
+  there, that namespaces are unavailable, which is the case glycin falls back on by design.
+- **alarm() on x86 Android.** Android's seccomp filter for apps on x86/x86_64 refuses the legacy
+  `alarm` syscall, which glibc calls directly there (ARM64 has no such syscall, so phones are not
+  affected): xterm, for one, fails. `liblindroids-compat.so`, a libc-free shim built from
+  [third_party/compat](../third_party/compat/lindroids-compat.c) and embedded in the CLI, is
+  preloaded into glibc programs on x86 Android and implements `alarm()` with `setitimer`.
 - Flatpak: runtime, app and extensions, with a skeleton root.
 
 The CLI streams the tar over the server and the link into the app, which unpacks it, records the

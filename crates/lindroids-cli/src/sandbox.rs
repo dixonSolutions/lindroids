@@ -155,3 +155,30 @@ pub fn wake_app(sb: &Sandbox, secret: &str) -> Option<&'static str> {
     }
     None
 }
+
+/// liblindroids-compat.so for this CPU, empty where none is needed (see build.rs).
+const COMPAT_SO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/liblindroids-compat.so"));
+
+/// On x86 Android, glibc programs under proot need the alarm() of liblindroids-compat.so
+/// (third_party/compat). Writes it into `dir` and returns the file name, if this is such a system.
+pub fn write_compat_preload(dir: &Path) -> Option<&'static str> {
+    let on_android = Path::new("/system/build.prop").exists() || Path::new("/system/bin/app_process").exists();
+    if COMPAT_SO.is_empty() || !on_android {
+        return None;
+    }
+    std::fs::create_dir_all(dir).ok()?;
+    let p = dir.join("liblindroids-compat.so");
+    if std::fs::read(&p).ok().as_deref() != Some(COMPAT_SO) {
+        std::fs::write(&p, COMPAT_SO).ok()?;
+    }
+    Some("liblindroids-compat.so")
+}
+
+/// LD_PRELOAD with `lib` added to what the program would have had.
+pub fn preload_with(lib: &str, existing: Option<&str>) -> String {
+    match existing.filter(|e| !e.trim().is_empty()) {
+        Some(e) if e.split([' ', ':']).any(|x| x == lib) => e.to_string(),
+        Some(e) => format!("{lib} {e}"),
+        None => lib.to_string(),
+    }
+}

@@ -1,6 +1,7 @@
 # Every push to main is a release: v<major>.<minor>.<commit count> (scripts/version.sh).
-# Builds the CLI for 8 targets, the APK, the .debs and tarballs (scripts/build-release.sh),
-# publishes the signed APT repository to gh-pages and a GitHub Release with the artifacts.
+# Builds the CLI for 8 targets, xwayland-satellite (8 builds, cached by its pin), the APK, the
+# .debs and tarballs (scripts/build-release.sh), publishes the signed APT repository to gh-pages
+# and a GitHub Release with the artifacts.
 # Commits whose message contains "[skip ci]" do not release. See docs/PACKAGING.md.
 name: release
 
@@ -20,6 +21,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   NDK_VERSION: 27.2.12479018
+  # scripts/build-xwayland-satellite.sh builds its Debian half in debian:bookworm.
+  LINDROIDS_CONTAINER_ENGINE: docker
 
 jobs:
   release:
@@ -51,9 +54,11 @@ jobs:
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          # The *-linux-gnu targets are for xwayland-satellite's glibc builds (x86_64 is the host).
           targets: >-
             aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android,
-            aarch64-unknown-linux-musl,armv7-unknown-linux-musleabihf,x86_64-unknown-linux-musl,i686-unknown-linux-musl
+            aarch64-unknown-linux-musl,armv7-unknown-linux-musleabihf,x86_64-unknown-linux-musl,i686-unknown-linux-musl,
+            aarch64-unknown-linux-gnu,armv7-unknown-linux-gnueabihf,i686-unknown-linux-gnu
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -82,8 +87,11 @@ jobs:
           test -d "$ANDROID_HOME/ndk/$NDK_VERSION"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
 
+      # libclang (bindgen), pkg-config and patch: xwayland-satellite's Termux build.
       - name: Packaging tools
-        run: sudo apt-get update -q && sudo apt-get install -y -q patchelf dpkg-dev foot fonts-dejavu-core
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q patchelf dpkg-dev foot fonts-dejavu-core libclang-dev pkg-config patch
 
       - name: Cache proot debs
         uses: actions/cache@v4
@@ -93,6 +101,13 @@ jobs:
             target/proot-debs
           key: proot-${{ hashFiles('scripts/fetch-proot.sh') }}
 
+      # Built from source only when the pin or the patches change (same key as ci.yml).
+      - name: Cache xwayland-satellite
+        uses: actions/cache@v4
+        with:
+          path: target/xwls/out
+          key: xwls-${{ hashFiles('scripts/build-xwayland-satellite.sh', 'third_party/xwayland-satellite/*.patch') }}
+
       - name: Tests
         run: cargo test --workspace --exclude lindroids-android
 
@@ -100,16 +115,24 @@ jobs:
         run: tests/host-integration.sh
 
       - name: Build release
+        id: build
         env:
           LINDROIDS_KEYSTORE_B64: ${{ secrets.LINDROIDS_KEYSTORE_B64 }}
           LINDROIDS_KEYSTORE_PASS: ${{ secrets.LINDROIDS_KEYSTORE_PASS }}
           LINDROIDS_KEY_ALIAS: ${{ secrets.LINDROIDS_KEY_ALIAS }}
+          HAVE_GPG_KEY: ${{ secrets.LINDROIDS_GPG_PRIVATE_KEY != '' && 'yes' || '' }}
           LINDROIDS_GITHUB_REPO: ${{ github.repository }}
         run: |
-          if [ -z "$LINDROIDS_KEYSTORE_B64" ] || [ -z "$LINDROIDS_KEYSTORE_PASS" ]; then
-            echo "::error::LINDROIDS_KEYSTORE_B64 / LINDROIDS_KEYSTORE_PASS are not set (scripts/set-github-secrets.sh)"
-            exit 1
+          # Without the signing keys (a fork, or before scripts/set-github-secrets.sh) everything
+          # is still built and tested, and nothing is published: releases are then made with
+          # scripts/publish-local.sh where the keys are.
+          if [ -z "$LINDROIDS_KEYSTORE_B64" ] || [ -z "$LINDROIDS_KEYSTORE_PASS" ] || [ -z "$HAVE_GPG_KEY" ]; then
+            echo "::warning::signing secrets are not set (scripts/set-github-secrets.sh): built, not published"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            scripts/build-release.sh
+            exit 0
           fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
           export LINDROIDS_KEYSTORE="$RUNNER_TEMP/release.keystore"
           printf '%s' "$LINDROIDS_KEYSTORE_B64" | base64 -d > "$LINDROIDS_KEYSTORE"
           export LINDROIDS_KEY_ALIAS="${LINDROIDS_KEY_ALIAS:-lindroids}"
@@ -117,6 +140,7 @@ jobs:
           rm -f "$LINDROIDS_KEYSTORE"
 
       - name: Fetch the published site
+        if: steps.build.outputs.publish == 'true'
         run: |
           mkdir -p site
           if git fetch --depth 1 origin gh-pages 2>/dev/null; then
@@ -126,6 +150,7 @@ jobs:
           fi
 
       - name: Build the APT repository
+        if: steps.build.outputs.publish == 'true'
         env:
           LINDROIDS_GPG_PRIVATE_KEY: ${{ secrets.LINDROIDS_GPG_PRIVATE_KEY }}
         run: |
@@ -139,6 +164,7 @@ jobs:
             --base-url "https://$owner.github.io/$repo" --github-repo "$GITHUB_REPOSITORY"
 
       - name: GitHub Release
+        if: steps.build.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
@@ -155,6 +181,7 @@ jobs:
 
       # After the release, so install.sh's VERSION never points at a release that does not exist.
       - name: Publish to gh-pages
+        if: steps.build.outputs.publish == 'true'
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

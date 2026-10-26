@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Publish a release from a maintainer's machine, where the signing keys are: the same release the
+# release workflow makes when its secrets are set (scripts/set-github-secrets.sh), for when they are
+# not. The keys never leave this machine; only signed artifacts are uploaded.
+#
+#   scripts/publish-local.sh [--dry-run]
+#
+# 1. Checks that HEAD is clean and pushed (the release tag points at it).
+# 2. scripts/build-release.sh, signing the APK with ~/.local/share/lindroids/release.keystore.
+# 3. Fetches the published site (gh-pages), adds the new packages with packaging/repo/build-repo.sh,
+#    signed with the APT key in ~/.local/share/lindroids/gnupg.
+# 4. Creates the GitHub release v<version> with the APK, tarballs, debs and SHA256SUMS.
+# 5. Pushes the site to gh-pages as a single commit, and turns GitHub Pages on for it if needed.
+#    The release comes first, so the site's VERSION never names a release that does not exist.
+#
+# Needs: gh (logged in), git, and everything build-release.sh and build-repo.sh need.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+ROOT=$PWD
+DRY=0
+[ "${1:-}" = "--dry-run" ] && DRY=1
+
+KEYS=${LINDROIDS_KEYS_DIR:-$HOME/.local/share/lindroids}
+REPO=${LINDROIDS_GITHUB_REPO:-dixonSolutions/lindroids}
+OWNER=${REPO%%/*}
+NAME=${REPO#*/}
+BASE_URL="https://${OWNER,,}.github.io/$NAME"
+
+die() { echo "publish-local: $*" >&2; exit 1; }
+[ -f "$KEYS/release.keystore" ] && [ -f "$KEYS/release.pass" ] || die "no signing keystore in $KEYS"
+[ -d "$KEYS/gnupg" ] || die "no APT signing key in $KEYS/gnupg"
+command -v gh >/dev/null || die "gh is required"
+[ -z "$(git status --porcelain --untracked-files=no)" ] || die "the working tree has uncommitted changes"
+git fetch -q origin main
+[ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || die "HEAD is not origin/main: push first"
+
+eval "$(scripts/version.sh)"
+VER=$LINDROIDS_VERSION
+TAG="v$VER"
+SHA=$(git rev-parse HEAD)
+if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+  die "release $TAG already exists"
+fi
+echo "==> publishing Lindroids $VER ($SHA) to $REPO and $BASE_URL"
+
+LINDROIDS_KEYSTORE="$KEYS/release.keystore" \
+LINDROIDS_KEYSTORE_PASS="$(cat "$KEYS/release.pass")" \
+LINDROIDS_KEY_ALIAS="${LINDROIDS_KEY_ALIAS:-lindroids}" \
+LINDROIDS_GITHUB_REPO="$REPO" \
+  scripts/build-release.sh
+
+SITE="$ROOT/target/publish-site"
+rm -rf "$SITE"
+mkdir -p "$SITE"
+if git fetch -q --depth 1 origin gh-pages 2>/dev/null; then
+  git archive FETCH_HEAD | tar -x -C "$SITE"
+else
+  echo "no gh-pages branch yet: starting an empty repository"
+fi
+LINDROIDS_GNUPGHOME="$KEYS/gnupg" packaging/repo/build-repo.sh "$SITE" --debs dist/debs --keep 3 \
+  --base-url "$BASE_URL" --github-repo "$REPO"
+
+if [ $DRY = 1 ]; then
+  echo "==> dry run: release files in dist/, site in $SITE; nothing uploaded"
+  exit 0
+fi
+
+echo "==> GitHub release $TAG"
+gh release create "$TAG" -R "$REPO" --target "$SHA" --title "Lindroids $VER" --generate-notes --latest \
+  dist/lindroids-*.apk dist/lindroids-*.tar.gz dist/debs/*.deb dist/SHA256SUMS
+
+echo "==> gh-pages"
+PUB="$ROOT/target/publish-git"
+rm -rf "$PUB"
+mkdir -p "$PUB"
+cp -a "$SITE/." "$PUB/"
+git -C "$PUB" init -q -b gh-pages
+git -C "$PUB" add -A
+git -C "$PUB" -c user.name="$(git config user.name)" -c user.email="$(git config user.email)" \
+  commit -q -m "Publish Lindroids $VER [skip ci]"
+git -C "$PUB" push -q --force "$(git remote get-url origin)" gh-pages:gh-pages
+rm -rf "$PUB"
+
+if ! gh api "repos/$REPO/pages" >/dev/null 2>&1; then
+  echo "==> turning on GitHub Pages (gh-pages, /)"
+  gh api -X POST "repos/$REPO/pages" -f "source[branch]=gh-pages" -f "source[path]=/" >/dev/null
+fi
+echo "==> done: $BASE_URL (Pages can take a minute to update)"

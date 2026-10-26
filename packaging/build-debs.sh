@@ -3,6 +3,7 @@
 #
 #   packaging/build-debs.sh --version 0.1.42 [--dist dist] [--apk dist/lindroids-0.1.42.apk]
 #                           [--out dist/debs] [--arches "amd64 aarch64"]   (default: all eight)
+#                           [--xwls dist/xwayland-satellite]
 #
 # Two flavours, one package name (`lindroids`):
 #   Termux  (suite `termux`): Architecture aarch64/arm/x86_64/i686, files under
@@ -11,6 +12,16 @@
 #           musl CLI. For Debian/Ubuntu under proot-distro, UserLAnd, Andronix, and plain Linux.
 # Both carry the APK at <prefix>/share/lindroids/lindroids.apk so the CLI can install or update
 # the app. Input binaries: <dist>/bin/<rust triple>/lindroids.
+#
+# Both also carry xwayland-satellite (MPL-2.0, built by scripts/build-xwayland-satellite.sh) at
+# <prefix>/libexec/lindroids/xwayland-satellite, where the CLI looks for it (<bindir>/../libexec):
+#   Termux  the bionic build, plus the glibc build for the same CPU at
+#           libexec/lindroids/glibc/xwayland-satellite, which `lindroids export --distro` copies
+#           into bundles of Debian-family proot distros (they cannot run the bionic one);
+#   Debian  the glibc build (bookworm baseline). The CLI stays static; the satellite's libraries
+#           (and Xwayland) are Recommends, so the package installs anywhere.
+# Input: <xwls>/{termux,debian}-<deb arch>/xwayland-satellite, LICENSE.xwayland-satellite and
+# xwayland-satellite-crates.txt (the layout of target/xwls/out).
 #
 # Needs dpkg-deb (Fedora: dnf install dpkg; Debian/Ubuntu: preinstalled). Compression is xz,
 # which every Termux and Debian dpkg reads (zstd is not accepted by Termux's dpkg everywhere).
@@ -22,6 +33,7 @@ VERSION=
 DIST=dist
 APK=
 OUT=
+XWLS=
 ARCHES="aarch64 arm x86_64 i686 arm64 armhf amd64 i386"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -30,14 +42,26 @@ while [ $# -gt 0 ]; do
     --apk) APK=$2; shift 2 ;;
     --out) OUT=$2; shift 2 ;;
     --arches) ARCHES=$2; shift 2 ;;
+    --xwls) XWLS=$2; shift 2 ;;
     *) echo "build-debs: unknown argument $1" >&2; exit 2 ;;
   esac
 done
 [ -n "$VERSION" ] || { echo "build-debs: --version is required" >&2; exit 2; }
 APK=${APK:-$DIST/lindroids-$VERSION.apk}
 OUT=${OUT:-$DIST/debs}
+XWLS=${XWLS:-$DIST/xwayland-satellite}
 [ -f "$APK" ] || { echo "build-debs: no APK at $APK" >&2; exit 1; }
-command -v dpkg-deb >/dev/null || { echo "build-debs: dpkg-deb is required" >&2; exit 1; }
+for f in LICENSE.xwayland-satellite xwayland-satellite-crates.txt; do
+  [ -f "$XWLS/$f" ] || { echo "build-debs: no $XWLS/$f (scripts/build-xwayland-satellite.sh)" >&2; exit 1; }
+done
+for tool in dpkg-deb readelf; do
+  command -v $tool >/dev/null || { echo "build-debs: $tool is required" >&2; exit 1; }
+done
+# The pin comes from the build script, so the copyright file names exactly what is shipped.
+xwls_pin() { sed -n "s/^$1=//p" scripts/build-xwayland-satellite.sh; }
+XWLS_VERSION=$(xwls_pin SATELLITE_VERSION)
+XWLS_SHA256=$(xwls_pin SATELLITE_SHA256)
+XWLS_URL="https://github.com/Supreeeme/xwayland-satellite/archive/refs/tags/v$XWLS_VERSION.tar.gz"
 
 MAINTAINER="dixonSolutions <lindroids@users.noreply.github.com>"
 HOMEPAGE="https://github.com/${LINDROIDS_GITHUB_REPO:-dixonSolutions/lindroids}"
@@ -48,7 +72,10 @@ WORK=$ROOT/target/debs
 rm -rf "$WORK"
 mkdir -p "$WORK" "$OUT"
 
-copyright() {
+copyright() { # <flavour>
+  local mpl="LICENSE.xwayland-satellite in this directory"
+  [ "$1" = debian ] && mpl="$mpl and, on Debian systems,
+ in /usr/share/common-licenses/MPL-2.0"
   cat <<EOF
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: lindroids
@@ -65,6 +92,22 @@ Files: share/lindroids/lindroids.apk
 Comment: The APK also contains proot (GPL-2.0-or-later), talloc
  (LGPL-3.0-or-later) and libandroid-shmem (BSD-3-Clause), prebuilt by Termux.
  See THIRD-PARTY.md in this directory for versions, sources and changes.
+
+Files: libexec/lindroids/xwayland-satellite libexec/lindroids/glibc/xwayland-satellite
+Copyright: Shawn Wallace and the xwayland-satellite contributors
+License: MPL-2.0
+ The full text of the Mozilla Public License 2.0 is in
+ $mpl.
+Comment: xwayland-satellite $XWLS_VERSION (https://github.com/Supreeeme/xwayland-satellite),
+ built from its unmodified release source:
+ $XWLS_URL
+ sha256 $XWLS_SHA256
+ The Termux build also uses two dependency crates (smithay-client-toolkit,
+ wayland-cursor; MIT) with small patches so that they compile for Android; the
+ patches are in third_party/xwayland-satellite/ of the Lindroids source (see
+ THIRD-PARTY.md). The Rust crates it is built from, with their licences, are
+ listed in xwayland-satellite-crates.txt. It embeds the Open Sans font
+ (SIL Open Font License 1.1).
 EOF
 }
 
@@ -84,14 +127,39 @@ build() {
     [ -f "$f" ] && install -m 644 "$f" "$doc/$f"
   done
   [ -f third_party/README.md ] && install -m 644 third_party/README.md "$doc/THIRD-PARTY.md"
-  copyright > "$doc/copyright"
+  install -m 644 "$XWLS/LICENSE.xwayland-satellite" "$XWLS/xwayland-satellite-crates.txt" "$doc/"
+  copyright "$flavour" > "$doc/copyright"
   chmod 644 "$doc/copyright"
 
-  local suggests
+  # xwayland-satellite: the build for this flavour and, in Termux, also the glibc one.
+  local xwls=$XWLS/$flavour-$arch/xwayland-satellite glibc_arch
+  [ -f "$xwls" ] || { echo "build-debs: missing $xwls" >&2; exit 1; }
+  mkdir -p "$d/$prefix/libexec/lindroids"
+  install -m 755 "$xwls" "$d/$prefix/libexec/lindroids/xwayland-satellite"
   if [ "$flavour" = termux ]; then
-    suggests="proot, proot-distro, xwayland"
+    case "$arch" in
+      aarch64) glibc_arch=arm64 ;;
+      arm) glibc_arch=armhf ;;
+      x86_64) glibc_arch=amd64 ;;
+      i686) glibc_arch=i386 ;;
+    esac
+    xwls=$XWLS/debian-$glibc_arch/xwayland-satellite
+    [ -f "$xwls" ] || { echo "build-debs: missing $xwls" >&2; exit 1; }
+    mkdir -p "$d/$prefix/libexec/lindroids/glibc"
+    install -m 755 "$xwls" "$d/$prefix/libexec/lindroids/glibc/xwayland-satellite"
+  fi
+
+  # The CLI itself needs none of these (it is static on Debian); xwayland-satellite does, for
+  # `lindroids run --x11`. Recommends, so the package still installs without them, e.g. in a
+  # Termux without x11-repo (xcb-util-cursor and xwayland are there; libxcb is in main).
+  local recommends suggests glibc
+  if [ "$flavour" = termux ]; then
+    recommends="libxcb, xcb-util-cursor, xwayland"
+    suggests="proot, proot-distro"
   else
-    suggests="xwayland, flatpak"
+    glibc=$(readelf -V --wide "$xwls" | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)
+    recommends="xwayland, libc6 (>= $glibc), libxcb1, libxcb-cursor0"
+    suggests="flatpak"
   fi
   local size
   size=$(du -sk --exclude=DEBIAN "$d" | cut -f1)
@@ -101,6 +169,7 @@ Version: $VERSION
 Architecture: $arch
 Maintainer: $MAINTAINER
 Installed-Size: $size
+Recommends: $recommends
 Suggests: $suggests
 Section: x11
 Priority: optional
@@ -110,7 +179,8 @@ Description: Run Linux apps in Android windows
  Lindroids Android app: every Linux window becomes an Android window, with
  touch, keyboard, IME, clipboard and audio. \`lindroids export\` puts a Linux
  app on the Android home screen. This package contains the lindroids CLI
- (which is also the server) and the Lindroids APK.
+ (which is also the server), the Lindroids APK, and xwayland-satellite, which
+ runs X11 programs under Xwayland (\`lindroids run --x11\`).
 EOF
   find "$d" -type d -exec chmod 755 {} +
   local deb=$OUT/lindroids_${VERSION}_${arch}.deb

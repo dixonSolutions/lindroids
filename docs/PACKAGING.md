@@ -13,7 +13,7 @@ Every push to `main` (unless the head commit message contains `[skip ci]`) is a 
 | `lindroids-<v>.apk` (4 ABIs, release-signed)    | GitHub Release; inside every `.deb`      |
 | `lindroids_<v>_{aarch64,arm,x86_64,i686}.deb`   | APT suite `termux`; GitHub Release       |
 | `lindroids_<v>_{arm64,armhf,amd64,i386}.deb`    | APT suite `stable`; GitHub Release       |
-| `lindroids-<v>-<arch>-linux-musl.tar.gz`        | GitHub Release (static installs)         |
+| `lindroids-<v>-<arch>-linux-musl.tar.gz`        | GitHub Release (static installs): `bin/lindroids` + `libexec/lindroids/xwayland-satellite` |
 | `SHA256SUMS`                                    | GitHub Release                           |
 | APT repository + `install.sh`                   | `gh-pages` → https://dixonsolutions.github.io/lindroids/ |
 
@@ -47,6 +47,59 @@ scripts/fetch-proot.sh --update-pins     # prints the PINS lines; paste them int
 scripts/fetch-proot.sh --force
 ```
 
+### xwayland-satellite (X11)
+
+`lindroids run --x11` runs X11 programs through
+[xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite) (MPL-2.0), which runs
+Xwayland rootless and makes each X11 window its own toplevel, so each one becomes an Android
+window. The CLI looks for it at `<dir of lindroids>/../libexec/lindroids/xwayland-satellite`,
+then on `PATH`. Nobody packages it for Termux, Debian or Ubuntu, so
+[`scripts/build-xwayland-satellite.sh`](../scripts/build-xwayland-satellite.sh) builds it from
+the pinned release tarball (version, URL and sha256 at the top of the script), unmodified, with
+default features:
+
+| Output (`target/xwls/out/`)          | Built                                                              | Shipped at                                         |
+| ------------------------------------ | ------------------------------------------------------------------ | -------------------------------------------------- |
+| `termux-<arch>/xwayland-satellite`   | cargo-ndk, API 24, against a sysroot of Termux's libxcb `.deb`s     | Termux `.deb`: `$PREFIX/libexec/lindroids/`         |
+| `debian-<arch>/xwayland-satellite`   | in `debian:bookworm` (podman or docker), multiarch `-dev` packages and cross gcc | Debian `.deb`: `/usr/libexec/lindroids/`; Termux `.deb` of the same CPU: `$PREFIX/libexec/lindroids/glibc/`; tarball: `libexec/lindroids/` |
+| `LICENSE.xwayland-satellite`, `xwayland-satellite-crates.txt` | from the source and its `Cargo.lock` | `share/doc/lindroids/` and the tarball |
+
+- **Termux** (`aarch64 arm x86_64 i686`): bindgen (xcb-util-cursor-sys), pkg-config and the
+  linker are pointed at a per-arch sysroot unpacked from Termux's own `libxcb`, `xcb-util-cursor`
+  and dependency `.deb`s, pinned with sha256 like proot's (main and x11-repo, same mirrors).
+  The binary needs only `libc libdl libm libxcb libxcb-cursor`, has RUNPATH
+  `/data/data/com.termux/files/usr/lib` (as Termux's own binaries) and 16 KB-aligned segments.
+  Two dependency crates (smithay-client-toolkit, wayland-cursor) do not compile for Android as
+  published (they fall back to `shm_open`, which bionic lacks); the Termux build uses them with
+  the small patches in [`third_party/xwayland-satellite/`](../third_party/xwayland-satellite/)
+  through `--config patch.crates-io...`, so xwayland-satellite's own source stays unchanged.
+  Why each patch exists: [third_party/README.md](../third_party/README.md#patches-for-android).
+- **Debian** (`arm64 armhf amd64 i386`): built on bookworm, so it needs glibc 2.34 or newer
+  (Debian 12, Ubuntu 22.04 and later) plus `libxcb1`, `libxcb-cursor0` and `xwayland`, which
+  the `.deb` *recommends* (the static CLI must still install without them). The host's Rust
+  toolchain is mounted into the container read-only; crates are downloaded inside it.
+- **Termux `.deb`s carry both builds**: the glibc one is for `lindroids export --distro`, which
+  copies it into bundles of Debian-family proot distros, which cannot run the bionic one. Together
+  they add about 10 MB installed (2 MB to the download) to a Termux `.deb`, and about 5 MB
+  installed (1.3 MB download) to a Debian `.deb`. Termux recommends `libxcb`,
+  `xcb-util-cursor` and `xwayland` (the last two need `pkg install x11-repo`).
+- Every output is checked with `readelf` (NEEDED, RUNPATH, interpreter, alignment, glibc
+  version); `scripts/build-xwayland-satellite.sh --check` re-runs the checks. Outputs carry a
+  stamp of the script and the patches, so a release rebuilds them only when the pin changes; CI
+  caches `target/xwls/out` with the same key.
+
+```sh
+scripts/build-xwayland-satellite.sh                     # all 8 (or: termux | debian)
+scripts/build-xwayland-satellite.sh termux --arches aarch64
+scripts/build-xwayland-satellite.sh --update-pins       # TERMUX_PINS lines for today's Termux
+```
+
+To move to a new xwayland-satellite release: set `SATELLITE_VERSION`, `SATELLITE_COMMIT` and
+`SATELLITE_SHA256` (`curl -fsSL <tag tarball> | sha256sum`; the script checks the commit in the
+tarball's header), check the crate versions in `ANDROID_CRATE_PATCHES` against the new
+`Cargo.lock` (a patch that no longer applies fails the build), and update the version table in
+[third_party/README.md](../third_party/README.md#xwayland-satellite).
+
 ## Versioning
 
 [`scripts/version.sh`](../scripts/version.sh) defines the version for every artifact:
@@ -66,8 +119,13 @@ so it shows the patch number from `Cargo.toml`, not N. The commit hash identifie
 
 ## Building locally
 
-Toolchain: Rust stable with the 8 targets above, `cargo-ndk`, Android SDK (`build-tools;35.0.0`,
-`platforms;android-35`, `ndk;27.2.12479018`), JDK 17+, `patchelf`, `dpkg-deb`, `gpg`, `git`.
+Toolchain: Rust stable with the 8 targets above plus `aarch64-unknown-linux-gnu`,
+`armv7-unknown-linux-gnueabihf` and `i686-unknown-linux-gnu` (and the host's
+`x86_64-unknown-linux-gnu`) for xwayland-satellite, `cargo-ndk`, Android SDK
+(`build-tools;35.0.0`, `platforms;android-35`, `ndk;27.2.12479018`), JDK 17+, `patchelf`,
+`dpkg-deb`, `gpg`, `git`; for xwayland-satellite also libclang (Fedora `clang-libs`, Debian
+`libclang-dev`), `pkg-config`, `patch`, and podman or docker (inside a distrobox the script uses
+the host's podman through `distrobox-host-exec`; `LINDROIDS_CONTAINER_ENGINE` overrides).
 
 ```sh
 # Everything into dist/ (debug-signed APK unless the keystore variables are set)
@@ -81,7 +139,8 @@ packaging/repo/build-repo.sh .scratch/repo --debs dist/debs
 ```
 
 Pieces can be run on their own: `scripts/fetch-proot.sh`, `scripts/build-apk.sh`,
-`packaging/build-debs.sh --version <v> [--arches "x86_64 amd64"]`.
+`scripts/build-xwayland-satellite.sh`,
+`packaging/build-debs.sh --version <v> [--arches "x86_64 amd64"] [--xwls target/xwls/out]`.
 
 ### Testing a repository before publishing
 
@@ -101,7 +160,10 @@ curl -fsSL http://10.0.2.2:8790/install.sh | LINDROIDS_REPO_URL=http://10.0.2.2:
 
 `tests/host-integration.sh` runs the server, `lindroids debug-app` (a stand-in for the Android
 app) and `foot` through `lindroids run`, types into it, and checks the window's frames; CI runs it
-on every pull request and before every release.
+on every pull request and before every release. On pull requests CI also builds (or restores and
+re-checks) the 8 xwayland-satellite binaries, and the package smoke test installs the amd64
+`.deb` in `debian:stable` and checks that the satellite's libraries resolve and Xwayland comes
+with it.
 
 ## The APT repository
 
@@ -124,7 +186,7 @@ lindroids.gpg   lindroids.asc   install.sh   VERSION   index.html   .nojekyll
 - The workflow copies the current `gh-pages` content into `site/` first; the script adds the new
   `.deb`s and keeps the newest 3 versions per architecture (`--keep`). `gh-pages` is pushed as a
   single orphan commit, so old packages do not accumulate in git history.
-- `install.sh` is `packaging/install.sh` with the published URL and `owner/repo` substituted
+- `install.sh` is `install.sh` with the published URL and `owner/repo` substituted
   (`--base-url`, `--github-repo`). `VERSION` is the newest version in the pool; the static
   installer downloads that release's tarball.
 - The script refuses to sign with any key other than the one committed as
@@ -157,6 +219,13 @@ in place, and losing the GPG key means every user has to fetch a new key.
 2. Commit; the next release is signed with the new key. Users re-run the installer (it rewrites
    the key file). If the old key was compromised, publish its revocation certificate.
 
+### Publishing without the secrets
+
+[`scripts/publish-local.sh`](../scripts/publish-local.sh) makes the same release from the machine
+that holds the keys: it builds and signs everything locally, creates the GitHub release, pushes
+`gh-pages` and turns Pages on. The keys stay on that machine. Without the secrets the release
+workflow still builds and tests every push, and says it did not publish.
+
 ## One-time repository setup
 
 1. Create `github.com/dixonSolutions/lindroids` and push `main`.
@@ -167,5 +236,5 @@ in place, and losing the GPG key means every user has to fetch a new key.
    `/` (root). No custom domain (no CNAME).
 
 Using a different owner or repository name needs no code change: the workflow derives the Pages
-URL and release links from `github.repository`. Only the defaults in `packaging/install.sh` and the
+URL and release links from `github.repository`. Only the defaults in `install.sh` and the
 URLs in the docs mention `dixonSolutions/lindroids`.

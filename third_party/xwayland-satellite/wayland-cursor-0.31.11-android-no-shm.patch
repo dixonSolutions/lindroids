@@ -1,0 +1,28 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -59,6 +59,7 @@
+ #[cfg(any(target_os = "linux", target_os = "android"))]
+ use rustix::fs::{memfd_create, MemfdFlags};
+ use rustix::io::Errno;
++#[cfg(not(target_os = "android"))]
+ use rustix::shm;
+ #[cfg(any(target_os = "linux", target_os = "android"))]
+ use std::ffi::CStr;
+@@ -450,7 +451,16 @@
+         }
+     }
+ 
+-    // Fallback to using shm_open.
++    // Android has no shm_open (rustix does not offer rustix::shm there): memfd is the only way.
++    #[cfg(target_os = "android")]
++    return Err(IoError::from(Errno::NOSYS));
++    #[cfg(not(target_os = "android"))]
++    return create_shm_fd_shm_open();
++}
++
++/// Fallback to using shm_open.
++#[cfg(not(target_os = "android"))]
++fn create_shm_fd_shm_open() -> IoResult<OwnedFd> {
+     let sys_time = SystemTime::now();
+     let mut mem_file_handle = format!(
+         "/wayland-cursor-rs-{}",

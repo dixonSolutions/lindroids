@@ -5,10 +5,16 @@
 #
 # Produces (VERSION from scripts/version.sh, e.g. 0.1.42):
 #   dist/bin/<triple>/lindroids                         the CLI for all 8 targets
+#   dist/xwayland-satellite/{termux,debian}-<arch>/     xwayland-satellite, 4 bionic + 4 glibc
 #   dist/lindroids-VERSION.apk                          the app, all 4 ABIs, with proot
 #   dist/debs/lindroids_VERSION_<arch>.deb              Termux and Debian packages
-#   dist/lindroids-VERSION-<arch>-linux-musl.tar.gz     static CLI + README, for other distros
+#   dist/lindroids-VERSION-<arch>-linux-musl.tar.gz     static CLI (bin/lindroids) + the glibc
+#                                                       libexec/lindroids/xwayland-satellite
 #   dist/SHA256SUMS, dist/VERSION
+#
+# xwayland-satellite (X11 support) is built from its pinned source by
+# scripts/build-xwayland-satellite.sh, which skips builds that are up to date; the Debian half
+# needs podman or docker.
 #
 # The CLI is built twice per ABI on purpose:
 #   * against bionic (cargo-ndk, API 24) for Termux: Android's app seccomp filter kills static
@@ -51,7 +57,8 @@ MUSL_TRIPLES="aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf x86_64-u
 
 DIST=$ROOT/dist
 if [ $CLEAN = 1 ]; then rm -rf "$DIST"; fi
-rm -rf "${DIST:?}/bin" "${DIST:?}/debs" "$DIST"/lindroids-*.tar.gz "$DIST"/lindroids-*.apk "$DIST/SHA256SUMS"
+rm -rf "${DIST:?}/bin" "${DIST:?}/debs" "${DIST:?}/xwayland-satellite" "$DIST"/lindroids-*.tar.gz \
+  "$DIST"/lindroids-*.apk "$DIST/SHA256SUMS"
 mkdir -p "$DIST/bin"
 
 echo "==> CLI for Termux (bionic, API 24)"
@@ -83,6 +90,15 @@ for t in $MUSL_TRIPLES; do
   fi
 done
 
+# Both flavours before the .debs: a Termux .deb carries the glibc build too (for proot distros).
+scripts/build-xwayland-satellite.sh all
+XWLS=$DIST/xwayland-satellite
+mkdir -p "$XWLS"
+cp -r "$ROOT"/target/xwls/out/termux-* "$ROOT"/target/xwls/out/debian-* "$XWLS/"
+rm -f "$XWLS"/*/.stamp
+install -m 644 "$ROOT"/target/xwls/out/LICENSE.xwayland-satellite \
+  "$ROOT"/target/xwls/out/xwayland-satellite-crates.txt "$XWLS/"
+
 if [ $SKIP_PROOT = 0 ]; then
   scripts/fetch-proot.sh
 fi
@@ -100,19 +116,31 @@ else
   exit 1
 fi
 
-packaging/build-debs.sh --version "$VER" --dist "$DIST" --apk "$APK" --out "$DIST/debs"
+packaging/build-debs.sh --version "$VER" --dist "$DIST" --apk "$APK" --out "$DIST/debs" --xwls "$XWLS"
 
 echo "==> tarballs"
 : "${SOURCE_DATE_EPOCH:=$(git log -1 --format=%ct 2>/dev/null || date +%s)}"
+# Laid out as a prefix (bin/, libexec/), so <bindir>/../libexec/lindroids/ finds the satellite;
+# install.sh installs it that way. The satellite is the glibc build: it needs glibc
+# 2.34+, libxcb, libxcb-cursor and Xwayland from the distro (only for `run --x11`).
 for t in $MUSL_TRIPLES; do
   arch=${t%%-*}
+  case "$arch" in
+    aarch64) deb_arch=arm64 ;;
+    armv7) deb_arch=armhf ;;
+    x86_64) deb_arch=amd64 ;;
+    i686) deb_arch=i386 ;;
+  esac
   name=lindroids-$VER-$arch-linux-musl
   stage=$ROOT/target/tarball/$name
-  rm -rf "$stage" && mkdir -p "$stage"
-  install -m 755 "$DIST/bin/$t/lindroids" "$stage/lindroids"
+  rm -rf "$stage" && mkdir -p "$stage/bin" "$stage/libexec/lindroids"
+  install -m 755 "$DIST/bin/$t/lindroids" "$stage/bin/lindroids"
+  install -m 755 "$XWLS/debian-$deb_arch/xwayland-satellite" "$stage/libexec/lindroids/xwayland-satellite"
   for f in README.md LICENSE LICENSE-MIT LICENSE-APACHE docs/INSTALL.md; do
     [ -f "$f" ] && install -m 644 "$f" "$stage/$(basename "$f")"
   done
+  install -m 644 third_party/README.md "$stage/THIRD-PARTY.md"
+  install -m 644 "$XWLS/LICENSE.xwayland-satellite" "$XWLS/xwayland-satellite-crates.txt" "$stage/"
   tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$SOURCE_DATE_EPOCH" \
     -C "$ROOT/target/tarball" -czf "$DIST/$name.tar.gz" "$name"
   rm -rf "$stage"

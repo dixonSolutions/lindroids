@@ -77,6 +77,10 @@ curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh | sh
 lindroids setup        # installs the Lindroids app, then pairs it with this terminal
 ```
 
+The installer is [`install.sh`](install.sh) in this repository (the same file is served from the
+site above and from `https://raw.githubusercontent.com/dixonSolutions/lindroids/main/install.sh`).
+Later, `lindroids update` brings the CLI and the app to the newest release.
+
 This adds the Lindroids APT repository, so `pkg upgrade` keeps both the CLI and the app current
 (the package carries the matching APK). The same line works in **Debian/Ubuntu under proot**
 (proot-distro, UserLAnd, Andronix) and on desktop Linux; anywhere else it installs a static
@@ -134,7 +138,7 @@ Useful environment: `LINDROIDS_SCALE=2` (output scale; default follows the scree
   allowed. Both sides prove they know a shared secret (HMAC-SHA256 over each other's nonce); the
   first pairing uses a one-time code shown in the terminal, so no other app can watch your windows
   or type into your terminal.
-- An exported bundle is a tar stream of the program's dpkg closure (plus its plugins: pixbuf
+- An exported bundle is a tar stream of the program's package closure (dpkg, apk or pacman; plus its plugins: pixbuf
   loaders, GIO/GTK modules…) sent over the link into the app's storage. The app runs it under the
   proot it ships, against a server running inside the app itself. Flatpaks export as their
   runtime + app + extensions.
@@ -146,7 +150,7 @@ More: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | | |
 |---|---|
 | Android | 7.0 (API 24) and newer; arm64-v8a, armeabi-v7a, x86_64, x86 |
-| Terminals | Termux; Debian/Ubuntu under proot (proot-distro, UserLAnd, Andronix…); desktop Linux (for testing) |
+| Terminals | Termux; distros under proot (proot-distro, UserLAnd, Andronix…): Debian, Ubuntu, Alpine and Arch tested; desktop Linux (for testing) |
 | Tested apps | GTK 3 (Galculator, Mousepad), GTK 4 (widget factory; GNOME Calculator, Characters and Pinta as Flatpaks), SDL 3 (Tux Paint Flatpak from Flathub, on Android), Flutter (RustDesk Flatpak), Qt 6.11 Widgets (PyQt6 from the KDE 6.11 Flatpak runtime), foot, xterm (X11), paplay/GStreamer/SDL/ALSA sound |
 | Should work, not yet tested | Qt 5 on Wayland, SDL games, Firefox/Electron on Wayland |
 | Not yet working | Chromium-based engines under the Flatpak runner (Qt WebEngine, e.g. ZapZap: Chromium stops itself while creating its profile under proot, [#11](https://github.com/dixonSolutions/lindroids/issues/11)) |

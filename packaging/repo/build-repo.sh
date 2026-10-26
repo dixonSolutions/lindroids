@@ -207,16 +207,16 @@ sed_args=()
 [ -n "$BASE_URL" ] && sed_args+=(-e "s|^DEFAULT_REPO_URL=.*|DEFAULT_REPO_URL=\"${BASE_URL%/}\"|")
 [ -n "$GITHUB_REPO" ] && sed_args+=(-e "s|^DEFAULT_GITHUB_REPO=.*|DEFAULT_GITHUB_REPO=\"$GITHUB_REPO\"|")
 if [ ${#sed_args[@]} -gt 0 ]; then
-  sed "${sed_args[@]}" "$ROOT/packaging/install.sh" > "$OUTDIR/install.sh"
+  sed "${sed_args[@]}" "$ROOT/install.sh" > "$OUTDIR/install.sh"
 else
-  cp "$ROOT/packaging/install.sh" "$OUTDIR/install.sh"
+  cp "$ROOT/install.sh" "$OUTDIR/install.sh"
 fi
 chmod 644 "$OUTDIR/install.sh"
 # VERSION: the newest version in the pool (the static installer downloads that release).
 latest=$(find "$OUTDIR/pool" -name '*.deb' -printf '%f\n' | awk -F_ '{print $2}' | sort -uV | tail -1)
 [ -n "$latest" ] && echo "$latest" > "$OUTDIR/VERSION"
 touch "$OUTDIR/.nojekyll"
-site_url=${BASE_URL:-$(sed -n 's/^DEFAULT_REPO_URL="\(.*\)"/\1/p' "$ROOT/packaging/install.sh")}
+site_url=${BASE_URL:-$(sed -n 's/^DEFAULT_REPO_URL="\(.*\)"/\1/p' "$ROOT/install.sh")}
 site_url=${site_url%/}
 cat > "$OUTDIR/index.html" <<EOF
 <!doctype html>

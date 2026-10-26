@@ -14,7 +14,7 @@ use std::time::Duration;
 use base64::Engine;
 use lindroids_proto::{BundleKind, BundleManifest, CliReply, CliRequest, ExportRequest, LaunchSpec, TERMUX_PREFIX};
 
-use crate::pkgdb::{self, Db};
+use crate::pkgdb::{self, Db, Format};
 use crate::run::{self, Opts, Target};
 use crate::{client, flatpak, sandbox};
 
@@ -51,8 +51,8 @@ fn needs_x11(o: &Opts, program: &Path) -> bool {
     x11
 }
 
-/// A glibc build of satellite for a Debian-family distro: the distro's own (Lindroids' Debian
-/// package, or a distro package), else the one the Termux package carries for this CPU.
+/// A glibc build of satellite for a glibc distro (Debian, Arch): the distro's own (Lindroids'
+/// Debian package, or a distro package), else the one the Termux package carries for this CPU.
 fn glibc_satellite(rootfs: &Path) -> Option<PathBuf> {
     let candidates = [rootfs.join("usr/libexec/lindroids/xwayland-satellite"), rootfs.join("usr/bin/xwayland-satellite")];
     if let Some(p) = candidates.into_iter().find(|p| p.is_file()) {
@@ -61,6 +61,48 @@ fn glibc_satellite(rootfs: &Path) -> Option<PathBuf> {
     let bin_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
     let p = bin_dir.join("../libexec/lindroids/glibc/xwayland-satellite");
     p.is_file().then_some(p)
+}
+
+/// What a distro family calls the packages an X11 bundle needs (Xwayland, and what satellite
+/// links), and the command that installs them.
+fn x11_packages(format: Format) -> (&'static [&'static str], &'static str) {
+    match format {
+        Format::Dpkg => (&["xwayland", "libxcb1", "libxcb-cursor0"], "apt install"),
+        Format::Apk => (&["xwayland", "libxcb", "xcb-util-cursor"], "apk add"),
+        Format::Pacman => (&["xorg-xwayland", "libxcb", "xcb-util-cursor"], "pacman -S"),
+    }
+}
+
+/// Satellite for an X11 bundle from a distro. Alpine is musl, so no glibc build will run there:
+/// only its own package (community/xwayland-satellite) will do.
+fn distro_satellite(format: Format, rootfs: &Path, distro: &str, prog: &str) -> Result<PathBuf, String> {
+    let login = format!("proot-distro login {distro} --");
+    match format {
+        Format::Apk => {
+            let p = rootfs.join("usr/bin/xwayland-satellite");
+            p.is_file().then_some(p).ok_or_else(|| format!("{prog} is an X11 program; its bundle needs xwayland-satellite in {distro} ({login} apk add xwayland-satellite)"))
+        }
+        Format::Pacman => glibc_satellite(rootfs)
+            .ok_or_else(|| format!("{prog} is an X11 program; its bundle needs xwayland-satellite in {distro} ({login} pacman -S xwayland-satellite)")),
+        Format::Dpkg => glibc_satellite(rootfs).ok_or_else(|| {
+            format!("{prog} is an X11 program, and no xwayland-satellite built for {distro} was found (Lindroids ships one in libexec/lindroids/glibc/)")
+        }),
+    }
+}
+
+/// Alpine's busybox applets (/bin/ls -> /bin/busybox...) are symlinks its trigger makes, in no
+/// package's file list: without them a terminal in the bundle has a shell and no commands.
+fn busybox_applets(rootfs: &Path) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    for d in ["bin", "sbin", "usr/bin", "usr/sbin"] {
+        let Ok(rd) = std::fs::read_dir(rootfs.join(d)) else { continue };
+        for e in rd.flatten() {
+            if std::fs::read_link(e.path()).is_ok_and(|t| t.file_name().is_some_and(|n| n == "busybox")) {
+                out.push((e.path(), format!("root/{d}/{}", e.file_name().to_string_lossy())));
+            }
+        }
+    }
+    out
 }
 
 /// Turn a command into argv for inside the bundle: shell lines go through sh.
@@ -74,7 +116,7 @@ fn bundle_argv(o: &Opts, sh: &str, resolved: &Path) -> Vec<String> {
     }
 }
 
-/// The files of the packages a program needs, from a dpkg database whose recorded paths are
+/// The files of the packages a program needs, from a package database whose recorded paths are
 /// under `root` on this system; `strip` is removed from recorded paths before `prefix_in_bundle`
 /// is put in front.
 fn closure_files(db: &Db, roots: Vec<String>, essential: bool, root: &Path, prefix_in_bundle: &str, strip: &str) -> Vec<(PathBuf, String)> {
@@ -108,47 +150,7 @@ fn plan(o: &Opts, target: &Target, sb: &sandbox::Sandbox, id: &str, name: &str) 
         }
         Target::Program(_) if o.distro.is_some() => {
             let distro = o.distro.as_deref().unwrap();
-            let rootfs = run::distro_rootfs(distro);
-            let db = Db::open(&rootfs.join("var/lib/dpkg")).map_err(|e| format!("only Debian-family distros can be exported yet ({e})"))?;
-            let prog = run::program_of(&o.command);
-            let bin_dirs: Vec<PathBuf> = ["usr/local/bin", "usr/bin", "bin", "usr/games", "usr/sbin", "sbin"].iter().map(|d| rootfs.join(d)).collect();
-            let host = which_in(&bin_dirs, &prog).ok_or_else(|| format!("{prog} is not installed in {distro}"))?;
-            let inside = format!("/{}", host.strip_prefix(&rootfs).unwrap_or(&host).display());
-            // dpkg records /usr/bin/foo; merged-usr systems may have it as /bin/foo too.
-            let owner = db.owner(&inside).or_else(|| db.owner(&inside.replacen("/usr", "", 1))).or_else(|| db.owner(&format!("/usr{inside}")));
-            let mut roots: Vec<String> = owner.into_iter().collect();
-            let x11 = needs_x11(o, &host);
-            if x11 {
-                let missing: Vec<&str> = ["xwayland", "libxcb1", "libxcb-cursor0"].into_iter().filter(|p| !db.installed(p)).collect();
-                if !missing.is_empty() {
-                    return Err(format!(
-                        "{prog} is an X11 program; its bundle needs {} in {distro} (proot-distro login {distro} -- apt install {})",
-                        missing.join(", "),
-                        missing.join(" ")
-                    ));
-                }
-                roots.extend(["xwayland".to_string(), "libxcb1".into(), "libxcb-cursor0".into()]);
-            }
-            let mut files = closure_files(&db, roots, true, &rootfs, "root", "");
-            if x11 {
-                let sat = glibc_satellite(&rootfs).ok_or_else(|| {
-                    format!("{prog} is an X11 program, and no xwayland-satellite built for {distro} was found (Lindroids ships one in libexec/lindroids/glibc/)")
-                })?;
-                files.push((sat, format!("root{SATELLITE_IN_ROOTFS}")));
-                manifest.x11_satellite = Some(SATELLITE_IN_ROOTFS.into());
-            }
-            // /etc whole (small; holds generated files like ld.so.cache and passwd).
-            for e in walk(&rootfs.join("etc")) {
-                let rel = e.strip_prefix(&rootfs).unwrap().display().to_string();
-                files.push((e.clone(), format!("root/{rel}")));
-            }
-            manifest.kind = BundleKind::Rootfs { binds: Vec::new() };
-            manifest.workdir = Some("/root".into());
-            let dirs = ["root/tmp", "root/root", "root/root/.config", "root/root/.local/share", "root/root/.cache", "root/run", "root/proc", "root/dev", "root/sys", "root/sdcard", "root/storage"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-            Ok(Plan { manifest, files, dirs, argv: bundle_argv(o, "/bin/sh", Path::new(&inside)) })
+            plan_distro(o, distro, &run::distro_rootfs(distro), manifest)
         }
         Target::Program(_) => {
             if sb.kind != sandbox::Kind::Termux {
@@ -190,6 +192,78 @@ fn plan(o: &Opts, target: &Target, sb: &sandbox::Sandbox, id: &str, name: &str) 
             Ok(Plan { manifest, files, dirs, argv: bundle_argv(o, &format!("{TERMUX_PREFIX}/bin/sh"), &host) })
         }
     }
+}
+
+/// A bundle of a program from the distro whose root filesystem is `rootfs`: the closure of its
+/// package with the base packages and /etc, run with the copy as its root.
+fn plan_distro(o: &Opts, distro: &str, rootfs: &Path, mut manifest: BundleManifest) -> Result<Plan, String> {
+    let db = Db::open_rootfs(rootfs)
+        .map_err(|e| format!("{distro} cannot be exported: {e}; only Debian-, Alpine- and Arch-family distros can be exported yet"))?;
+    let prog = run::program_of(&o.command);
+    let bin_dirs: Vec<PathBuf> = ["usr/local/bin", "usr/bin", "bin", "usr/games", "usr/sbin", "sbin"].iter().map(|d| rootfs.join(d)).collect();
+    let host = which_in(&bin_dirs, &prog).ok_or_else(|| format!("{prog} is not installed in {distro}"))?;
+    let inside = format!("/{}", host.strip_prefix(rootfs).unwrap_or(&host).display());
+    // Databases record /usr/bin/foo; merged-usr systems may have it as /bin/foo too.
+    let owner = db.owner(&inside).or_else(|| db.owner(&inside.replacen("/usr", "", 1))).or_else(|| db.owner(&format!("/usr{inside}")));
+    let mut roots: Vec<String> = owner.into_iter().collect();
+    let x11 = needs_x11(o, &host);
+    let mut satellite = None;
+    if x11 {
+        let (pkgs, install) = x11_packages(db.format);
+        let missing: Vec<&str> = pkgs.iter().copied().filter(|p| !db.installed(p)).collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "{prog} is an X11 program; its bundle needs {} in {distro} (proot-distro login {distro} -- {install} {})",
+                missing.join(", "),
+                missing.join(" ")
+            ));
+        }
+        roots.extend(pkgs.iter().map(|p| p.to_string()));
+        let sat = distro_satellite(db.format, rootfs, distro, &prog)?;
+        // The distro's own satellite brings what it links through its package; a build from
+        // outside the rootfs goes where bundles keep it.
+        let sat_inside = match sat.strip_prefix(rootfs) {
+            Ok(rel) => {
+                let p = format!("/{}", rel.display());
+                roots.extend(db.owner(&p));
+                p
+            }
+            Err(_) => SATELLITE_IN_ROOTFS.to_string(),
+        };
+        satellite = Some((sat, sat_inside));
+    }
+    let mut files = closure_files(&db, roots, true, rootfs, "root", "");
+    if let Some((sat, sat_inside)) = satellite {
+        if !files.iter().any(|(h, _)| *h == sat) {
+            files.push((sat, format!("root{sat_inside}")));
+        }
+        manifest.x11_satellite = Some(sat_inside);
+    }
+    if db.format == Format::Apk && db.installed("busybox") {
+        let have: BTreeSet<String> = files.iter().map(|(_, n)| n.clone()).collect();
+        files.extend(busybox_applets(rootfs).into_iter().filter(|(_, n)| !have.contains(n)));
+    }
+    // /etc whole (small; holds generated files like ld.so.cache and passwd).
+    for e in walk(&rootfs.join("etc")) {
+        let rel = e.strip_prefix(rootfs).unwrap().display().to_string();
+        files.push((e.clone(), format!("root/{rel}")));
+    }
+    // glibc on x86 Android needs our alarm() (third_party/compat); musl's already works.
+    if db.format != Format::Apk {
+        let staging = sandbox::runtime_dir().join("proot-bin");
+        if let Some(name) = sandbox::write_compat_preload(&staging) {
+            let inside = format!("/usr/lib/lindroids/{name}");
+            files.push((staging.join(name), format!("root{inside}")));
+            manifest.env.push(("LD_PRELOAD".into(), inside));
+        }
+    }
+    manifest.kind = BundleKind::Rootfs { binds: Vec::new() };
+    manifest.workdir = Some("/root".into());
+    let dirs = ["root/tmp", "root/root", "root/root/.config", "root/root/.local/share", "root/root/.cache", "root/run", "root/proc", "root/dev", "root/sys", "root/sdcard", "root/storage"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    Ok(Plan { manifest, files, dirs, argv: bundle_argv(o, "/bin/sh", Path::new(&inside)) })
 }
 
 fn walk(dir: &Path) -> Vec<PathBuf> {
@@ -427,5 +501,154 @@ pub fn cmd_remove(args: &[String]) -> i32 {
         Ok(CliReply::Error { message }) => crate::fail(&message),
         Ok(other) => crate::fail(&format!("unexpected reply {other:?}")),
         Err(e) => crate::fail(&e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    fn manifest() -> BundleManifest {
+        BundleManifest { id: "t".into(), name: "t".into(), kind: BundleKind::Termux, env: Vec::new(), workdir: None, x11_satellite: None }
+    }
+
+    fn write(root: &Path, rel: &str, text: &str) {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+
+    #[test]
+    fn x11_bundles_per_family() {
+        let root = std::env::temp_dir().join(format!("lindroids-export-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let o = Opts { distro: Some("alpine".into()), x11: true, command: vec!["app".into()], ..Default::default() };
+        let pkg = |name: &str, dir: &str, file: &str| format!("P:{name}\nF:{dir}\nR:{file}\n\n");
+        let mut db = pkg("app", "usr/bin", "app") + &pkg("busybox", "bin", "busybox") + &pkg("busybox-binsh", "bin", "sh");
+        write(&root, "lib/apk/db/installed", &db);
+        for f in ["usr/bin/app", "bin/busybox", "etc/os-release"] {
+            write(&root, f, "");
+        }
+        std::os::unix::fs::symlink("/bin/busybox", root.join("bin/sh")).unwrap();
+        std::os::unix::fs::symlink("/bin/busybox", root.join("bin/ls")).unwrap();
+        let e = plan_distro(&o, "alpine", &root, manifest()).err().unwrap();
+        assert!(e.contains("xwayland, libxcb, xcb-util-cursor") && e.contains("-- apk add xwayland libxcb xcb-util-cursor"), "{e}");
+        db += &(pkg("xwayland", "usr/bin", "Xwayland") + &pkg("libxcb", "usr/lib", "libxcb.so.1") + &pkg("xcb-util-cursor", "usr/lib", "libxcb-cursor.so.0"));
+        write(&root, "lib/apk/db/installed", &db);
+        // Alpine is musl: no glibc build of satellite, only the distro's own package.
+        let e = plan_distro(&o, "alpine", &root, manifest()).err().unwrap();
+        assert!(e.contains("apk add xwayland-satellite"), "{e}");
+        db += &(pkg("xwayland-satellite", "usr/bin", "xwayland-satellite") + "P:libsat\nF:usr/lib\nR:libsat.so\n\n");
+        db = db.replace("P:xwayland-satellite\n", "P:xwayland-satellite\nD:libsat\n");
+        write(&root, "lib/apk/db/installed", &db);
+        for f in ["usr/bin/xwayland-satellite", "usr/lib/libsat.so", "usr/bin/Xwayland"] {
+            write(&root, f, "");
+        }
+        let plan = plan_distro(&o, "alpine", &root, manifest()).unwrap();
+        assert_eq!(plan.manifest.x11_satellite.as_deref(), Some("/usr/bin/xwayland-satellite"));
+        let names: Vec<&str> = plan.files.iter().map(|(_, n)| n.as_str()).collect();
+        for want in ["root/usr/bin/app", "root/usr/bin/Xwayland", "root/usr/bin/xwayland-satellite", "root/usr/lib/libsat.so", "root/bin/sh", "root/bin/ls", "root/etc/os-release"] {
+            assert!(names.contains(&want), "{want} not in {names:?}");
+        }
+        assert_eq!(names.iter().filter(|n| **n == "root/bin/sh").count(), 1);
+        assert_eq!(plan.argv, vec!["/usr/bin/app"]);
+
+        let _ = std::fs::remove_dir_all(&root);
+        write(&root, "var/lib/pacman/local/app-1-1/desc", "%NAME%\napp\n\n");
+        write(&root, "var/lib/pacman/local/app-1-1/files", "%FILES%\nusr/bin/app\n\n");
+        write(&root, "usr/bin/app", "");
+        let e = plan_distro(&o, "arch", &root, manifest()).err().unwrap();
+        assert!(e.contains("-- pacman -S xorg-xwayland libxcb xcb-util-cursor"), "{e}");
+
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("usr/lib/sysimage/rpm")).unwrap();
+        let e = plan_distro(&o, "fedora", &root, manifest()).err().unwrap();
+        assert!(e.starts_with("fedora cannot be exported: it uses rpm") && e.contains("only Debian-, Alpine- and Arch-family"), "{e}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `host`, with symlinks followed inside `root` rather than on this system.
+    fn in_root(root: &Path, host: &Path) -> PathBuf {
+        let mut p = host.to_path_buf();
+        for _ in 0..20 {
+            let Ok(t) = std::fs::read_link(&p) else { break };
+            p = if t.is_absolute() { root.join(t.strip_prefix("/").unwrap()) } else { p.parent().unwrap().join(t) };
+        }
+        p
+    }
+
+    /// The bundle plan of programs from a real root filesystem (an exported container image, a
+    /// proot-distro rootfs): every library that what the bundle starts (the program, Xwayland,
+    /// satellite) loads, transitively, must be in it. Other ELF files whose libraries are missing
+    /// (plugins for optional dependencies, which Arch does not split off) are listed, not fatal.
+    /// `LINDROIDS_TEST_ROOTFS=<rootfs> [LINDROIDS_TEST_PROGRAMS="xterm mousepad"]
+    /// [LINDROIDS_TEST_LIST=<dir>] cargo test -p lindroids real_rootfs -- --ignored --nocapture`.
+    /// With LINDROIDS_TEST_LIST, each plan's host paths are written to `<dir>/<program>.files`.
+    #[test]
+    #[ignore]
+    fn real_rootfs_plan() {
+        let Ok(root) = std::env::var("LINDROIDS_TEST_ROOTFS") else { return eprintln!("LINDROIDS_TEST_ROOTFS is not set") };
+        let root = PathBuf::from(root);
+        let programs = std::env::var("LINDROIDS_TEST_PROGRAMS").unwrap_or_else(|_| "xterm mousepad".into());
+        let db = Db::open_rootfs(&root).unwrap();
+        let all = db.all_files();
+        for prog in programs.split_whitespace() {
+            let o = Opts { distro: Some("test".into()), command: vec![prog.into()], ..Default::default() };
+            let manifest = BundleManifest { id: "t".into(), name: prog.into(), kind: BundleKind::Termux, env: Vec::new(), workdir: None, x11_satellite: None };
+            let plan = plan_distro(&o, "test", &root, manifest).unwrap_or_else(|e| panic!("{prog}: {e}"));
+            let is_file = |h: &Path| std::fs::symlink_metadata(h).is_ok_and(|m| m.is_file());
+            let bundled: HashSet<&str> = plan.files.iter().filter(|(h, _)| !h.is_dir()).filter_map(|(_, n)| n.strip_prefix("root")).collect();
+            let packages = all.iter().filter(|(_, fs)| fs.iter().any(|f| bundled.contains(f.as_str()))).count();
+            let bytes: u64 = plan.files.iter().filter(|(h, _)| is_file(h)).filter_map(|(h, _)| std::fs::symlink_metadata(h).ok()).map(|m| m.len()).sum();
+            // Libraries by file name, the way the loader finds them in its directories.
+            let mut by_name: HashMap<&str, &Path> = HashMap::new();
+            for (h, n) in &plan.files {
+                by_name.entry(n.rsplit('/').next().unwrap()).or_insert(h);
+            }
+            let mut start = vec![root.join(plan.argv[0].trim_start_matches('/'))];
+            if let Some(sat) = &plan.manifest.x11_satellite {
+                start.push(root.join(sat.trim_start_matches('/')));
+                start.push(root.join("usr/bin/Xwayland"));
+            }
+            let mut seen = HashSet::new();
+            let mut missing = Vec::new();
+            while let Some(h) = start.pop() {
+                let h = in_root(&root, &h);
+                if !seen.insert(h.clone()) {
+                    continue;
+                }
+                for l in crate::elf::needed(&h).unwrap_or_else(|| panic!("{}: not a dynamic ELF file", h.display())) {
+                    match by_name.get(l.as_str()) {
+                        Some(lib) => start.push(lib.to_path_buf()),
+                        None => missing.push(format!("{l} (for {})", h.display())),
+                    }
+                }
+            }
+            let mut elves = 0;
+            let mut optional = BTreeSet::new();
+            for (h, n) in plan.files.iter().filter(|(h, _)| is_file(h)) {
+                let Some(libs) = crate::elf::needed(h) else { continue };
+                elves += 1;
+                optional.extend(libs.into_iter().filter(|l| !by_name.contains_key(l.as_str())).map(|l| format!("{n} needs {l}")));
+            }
+            println!(
+                "{:?} {prog}: {packages} packages, {} files, {}; {} ELF objects loaded from {:?}, {elves} ELF files in the bundle, x11 satellite {:?}",
+                db.format,
+                plan.files.len(),
+                human(bytes),
+                seen.len(),
+                plan.argv,
+                plan.manifest.x11_satellite
+            );
+            for l in &optional {
+                println!("  not loaded at start, library not bundled: {l}");
+            }
+            if let Ok(dir) = std::env::var("LINDROIDS_TEST_LIST") {
+                let list: String = plan.files.iter().map(|(h, _)| format!("{}\n", h.display())).collect();
+                std::fs::write(Path::new(&dir).join(format!("{prog}.files")), list).unwrap();
+            }
+            assert!(missing.is_empty(), "{prog}: libraries needed and not bundled: {missing:#?}");
+        }
     }
 }

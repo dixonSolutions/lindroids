@@ -1,5 +1,6 @@
-# Pull requests: unit tests, the host integration test, and a check that the packaging scripts
-# still build. Nothing is signed with release keys and nothing is published.
+# Pull requests: unit tests, the host integration test, xwayland-satellite for all 8 targets
+# (cached by its pin), and a check that the packaging scripts still build. Nothing is signed with
+# release keys and nothing is published.
 name: ci
 
 on:
@@ -15,8 +16,72 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  NDK_VERSION: 27.2.12479018
 
 jobs:
+  # scripts/build-xwayland-satellite.sh: 4 Termux builds (cargo-ndk) and 4 Debian builds (in a
+  # debian:bookworm container). The outputs are cached keyed by the script (it holds the pins)
+  # and the patches, so this only compiles when they change; with a cache hit it re-checks the
+  # binaries with readelf.
+  xwayland-satellite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      LINDROIDS_CONTAINER_ENGINE: docker
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache xwayland-satellite
+        id: xwls-cache
+        uses: actions/cache@v4
+        with:
+          path: target/xwls/out
+          key: xwls-${{ hashFiles('scripts/build-xwayland-satellite.sh', 'third_party/xwayland-satellite/*.patch') }}
+
+      - name: Rust toolchain
+        if: steps.xwls-cache.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: >-
+            aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android,
+            aarch64-unknown-linux-gnu,armv7-unknown-linux-gnueabihf,i686-unknown-linux-gnu
+
+      - name: cargo-ndk
+        if: steps.xwls-cache.outputs.cache-hit != 'true'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      - name: JDK (for sdkmanager)
+        if: steps.xwls-cache.outputs.cache-hit != 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android NDK
+        if: steps.xwls-cache.outputs.cache-hit != 'true'
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "ndk;${{ env.NDK_VERSION }}"
+
+      - name: Build tools
+        if: steps.xwls-cache.outputs.cache-hit != 'true'
+        run: |
+          test -d "$ANDROID_HOME/ndk/$NDK_VERSION"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          # libclang for bindgen (xcb-util-cursor-sys); patch for the Android crate patches.
+          sudo apt-get update -q && sudo apt-get install -y -q libclang-dev pkg-config patch
+
+      - name: Build (or check the cached build)
+        run: scripts/build-xwayland-satellite.sh all
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xwayland-satellite
+          path: target/xwls/out
+          if-no-files-found: error
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -39,8 +104,9 @@ jobs:
       - name: Shell scripts
         run: |
           shellcheck -S warning scripts/build-release.sh scripts/fetch-proot.sh scripts/version.sh \
-            scripts/set-github-secrets.sh packaging/*.sh packaging/repo/*.sh tests/*.sh
-          sh -n packaging/install.sh
+            scripts/set-github-secrets.sh scripts/build-xwayland-satellite.sh \
+            packaging/*.sh packaging/repo/*.sh tests/*.sh
+          sh -n install.sh
 
       - name: Tests
         run: cargo test --workspace --exclude lindroids-android
@@ -56,8 +122,31 @@ jobs:
           path: target/host-integration-last.png
           if-no-files-found: ignore
 
-      # The Debian flavour end to end with a throwaway signing key: static build, build-debs.sh,
-      # build-repo.sh, then install.sh against that repository in a Debian container.
+  # The Debian flavour end to end with a throwaway signing key: static build, build-debs.sh (with
+  # the xwayland-satellite job's binaries), build-repo.sh, then install.sh against that repository
+  # in a Debian container, which must resolve the satellite's libraries through Recommends.
+  package:
+    needs: xwayland-satellite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-package
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: xwayland-satellite
+          path: target/xwls/out
+
       - name: Package smoke test
         run: |
           eval "$(scripts/version.sh)"
@@ -68,7 +157,8 @@ jobs:
           cp target/x86_64-unknown-linux-musl/release/lindroids "$stage/dist/bin/x86_64-unknown-linux-musl/"
           echo "not an APK: CI does not build the app" > "$stage/dist/lindroids.apk"
           packaging/build-debs.sh --version "$LINDROIDS_VERSION" --dist "$stage/dist" \
-            --apk "$stage/dist/lindroids.apk" --out "$stage/debs" --arches amd64
+            --apk "$stage/dist/lindroids.apk" --out "$stage/debs" --arches amd64 \
+            --xwls target/xwls/out
           GNUPGHOME=$(mktemp -d)
           export GNUPGHOME
           gpg --batch --pinentry-mode loopback --passphrase '' --quick-generate-key "ci <ci@example.invalid>" ed25519 sign never
@@ -81,5 +171,9 @@ jobs:
           docker run --rm --network host debian:stable sh -ec '
             apt-get update -q >/dev/null && apt-get install -y -q curl >/dev/null
             curl -fsSL http://127.0.0.1:8790/install.sh | sh
-            lindroids version'
+            lindroids version
+            xwls=/usr/libexec/lindroids/xwayland-satellite
+            if ldd "$xwls" | grep "not found"; then exit 1; fi
+            "$xwls" -help >/dev/null
+            command -v Xwayland'
           kill "$server" || true

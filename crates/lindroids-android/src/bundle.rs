@@ -123,7 +123,11 @@ pub fn proot_command(p: &SpawnPaths, m: &Manifest, argv: &[String], extra_env: &
                 ("HOME".into(), "/root".into()),
                 ("USER".into(), "root".into()),
                 ("TMPDIR".into(), "/tmp".into()),
-                ("PATH".into(), "/app/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into()),
+                ("PATH".into(), {
+                    // bwrap that admits it cannot work under proot (lindroids_proto::BWRAP_UNDER_PROOT).
+                    let _ = lindroids_proto::write_proot_bin(&p.runtime.join("proot-bin"));
+                    format!("/app/bin:{}", lindroids_proto::proot_distro_path("/run/lindroids/proot-bin"))
+                }),
                 ("SHELL".into(), "/bin/sh".into()),
                 ("XDG_RUNTIME_DIR".into(), "/run/lindroids".into()),
                 ("WAYLAND_DISPLAY".into(), "wayland-0".into()),

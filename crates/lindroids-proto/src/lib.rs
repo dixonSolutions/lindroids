@@ -70,6 +70,30 @@ pub fn toolkit_env() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+/// `bwrap` for programs under proot. proot fakes the namespace calls bubblewrap makes and then
+/// cannot do the mounts, so a real bwrap "succeeds" and leaves the sandboxed program without a
+/// filesystem. Programs that try bubblewrap and fall back when namespaces are unavailable (glycin,
+/// which loads GTK's images since gdk-pixbuf 2.44) then fail outright. This one says what is true
+/// there, in the words glycin recognises.
+pub const BWRAP_UNDER_PROOT: &str = "#!/bin/sh\n\
+# Lindroids: under proot there are no namespaces, so bubblewrap cannot work here.\n\
+echo \"bwrap: No permissions to create a new namespace (proot)\" >&2\n\
+exit 1\n";
+
+/// Write [`BWRAP_UNDER_PROOT`] into `dir` (created if needed).
+pub fn write_proot_bin(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir)?;
+    let p = dir.join("bwrap");
+    std::fs::write(&p, BWRAP_UNDER_PROOT)?;
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755))
+}
+
+/// PATH for a glibc/musl distro under proot, with `bin_dir` (holding the bwrap above) first.
+pub fn proot_distro_path(bin_dir: &str) -> String {
+    format!("{bin_dir}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+}
+
 // ------------------------------------------------------------------ server -> app
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

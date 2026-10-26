@@ -147,10 +147,27 @@ install_static() {
   tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
   dir=${LINDROIDS_INSTALL_DIR:-$HOME/.local/bin}
   mkdir -p "$dir"
-  cp "$tmp/$name/lindroids" "$dir/lindroids.new"
+  bin=$tmp/$name/bin/lindroids
+  [ -f "$bin" ] || bin=$tmp/$name/lindroids   # releases before the bin/ + libexec/ layout
+  cp "$bin" "$dir/lindroids.new"
   chmod 755 "$dir/lindroids.new"
   mv "$dir/lindroids.new" "$dir/lindroids"
   say "installed $dir/lindroids"
+  # xwayland-satellite (for `lindroids run --x11`) goes where the CLI looks for it:
+  # <bindir>/../libexec/lindroids/. It is a glibc build that uses the distro's libxcb.
+  xwls=$tmp/$name/libexec/lindroids/xwayland-satellite
+  if [ -f "$xwls" ]; then
+    libexec=$(dirname "$dir")/libexec/lindroids
+    mkdir -p "$libexec"
+    cp "$xwls" "$libexec/xwayland-satellite.new"
+    chmod 755 "$libexec/xwayland-satellite.new"
+    mv "$libexec/xwayland-satellite.new" "$libexec/xwayland-satellite"
+    say "installed $libexec/xwayland-satellite"
+    if have ldd && ldd "$libexec/xwayland-satellite" 2>&1 | grep -qiE 'not found|error'; then
+      warn "for X11 programs (lindroids run --x11), install glibc 2.34+, libxcb and libxcb-cursor"
+    fi
+    have Xwayland || warn "for X11 programs (lindroids run --x11), install Xwayland"
+  fi
   case ":$PATH:" in
     *":$dir:"*) ;;
     *) warn "$dir is not in PATH; add: export PATH=\"$dir:\$PATH\""; PATH=$dir:$PATH ;;
