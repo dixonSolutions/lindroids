@@ -12,10 +12,9 @@ import android.content.Intent;
 public final class HelloReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context ctx, Intent intent) {
         String socket = intent.getStringExtra("socket");
-        int uid = intent.getIntExtra("uid", -1);
-        if (uid < 0) {
-            try { uid = Integer.parseInt(intent.getStringExtra("uid")); } catch (Exception ignored) {}
-        }
+        // The CLI sends the uid as a string (`am --es`).
+        int uid = -1;
+        try { uid = Integer.parseInt(intent.getStringExtra("uid")); } catch (Exception ignored) {}
         if (socket == null || uid < 0) return;
         LinkService.onHello(ctx, socket, uid, intent.getStringExtra("sandbox"), intent.getStringExtra("secret"));
     }

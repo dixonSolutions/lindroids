@@ -76,7 +76,24 @@ fetch_one() {
   echo "$name: ready ($dir)"
 }
 
+# magiskpolicy (from the Magisk APK) patches the live SELinux policy for SELINUX=late runs; see
+# lab/selinux-shim.rules. Pinned: sha256 of the extracted x86_64 binary of Magisk v28.1.
+MAGISK_URL=https://github.com/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk
+MAGISKPOLICY_SHA256=aa9dd9e31fb9e01a9f4e43eb2d988b38f9cb5cb84ba58c8e7d0d2aecaa9c60f4
+fetch_magiskpolicy() {
+  local t=$LAB_HOME/tools
+  mkdir -p "$t"
+  if [[ -x $t/magiskpolicy ]] && echo "$MAGISKPOLICY_SHA256  $t/magiskpolicy" | sha256sum -c --quiet - 2>/dev/null; then return 0; fi
+  echo "tools: fetching magiskpolicy (Magisk v28.1)"
+  curl -fL --retry 5 -o "$t/magisk.apk" "$MAGISK_URL"
+  bsdtar -xOf "$t/magisk.apk" lib/x86_64/libmagiskpolicy.so >"$t/magiskpolicy"
+  rm -f "$t/magisk.apk"
+  chmod 755 "$t/magiskpolicy"
+  echo "$MAGISKPOLICY_SHA256  $t/magiskpolicy" | sha256sum -c --quiet - || { echo "magiskpolicy checksum mismatch" >&2; rm -f "$t/magiskpolicy"; return 1; }
+}
+
 rc=0
+fetch_magiskpolicy || rc=1
 while IFS='|' read -r name what url md5 size; do
   [[ -z $name ]] && continue
   if ((${#want[@]})) && [[ ! " ${want[*]} " == *" $name "* ]]; then continue; fi

@@ -146,7 +146,9 @@ More: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | Tested apps | GTK 3 (Galculator, Mousepad), GTK 4 (widget factory; GNOME Calculator, Characters and Pinta as Flatpaks), SDL 3 (Tux Paint Flatpak from Flathub, on Android), Flutter (RustDesk Flatpak), foot, xterm (X11), paplay/GStreamer/SDL/ALSA sound |
 | Should work, not yet tested | Qt 5/6 on Wayland, SDL games, Firefox/Chromium/Electron on Wayland |
 
-Tested versions are listed in [lab/README.md](lab/README.md), with the QEMU lab that runs them.
+Tested in the [QEMU lab](lab/README.md) — pairing, windows, typing, reconnecting — on Android 7.1,
+9, 12L and 13, each with SELinux permissive and enforcing (on enforcing Android 9+ the link runs
+over loopback TCP, as designed), plus manual runs of everything above on Android 13.
 
 ## Build from source
 

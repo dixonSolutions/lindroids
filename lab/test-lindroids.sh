@@ -72,7 +72,12 @@ finish() {
   { cat "$OUT/logcat-1.txt" 2>/dev/null; adb_ logcat -d -v threadtime 2>/dev/null; } >"$OUT/logcat.txt"
   rm -f "$OUT/logcat-1.txt"
   # Denials that involve our app or Termux (scontext of either, or tagged app=...).
-  grep -E 'avc: +denied' "$OUT/logcat.txt" | grep -E "app=($PKG|com\.termux)|lindroids|termux" >"$OUT/avc-denied.txt" || true
+  # Denials whose subject is an app domain (Termux and Lindroids are both untrusted_app*; Android 9
+  # logs no app= tag and the socket path is hex), or that name our packages.
+  grep -E 'avc: +denied' "$OUT/logcat.txt" | grep -E "scontext=u:r:untrusted_app|app=($PKG|com\.termux)" >"$OUT/avc-denied.txt" || true
+  # One line per distinct denial, for the report.
+  grep -oE 'avc: +denied \{[^}]*\} for .*tclass=[a-z_]+ permissive=[01]' "$OUT/avc-denied.txt" |
+    sed -E 's/ (ino|pid)=[0-9]+//g; s/pipe:\[[0-9]+\]/pipe:[N]/' | sort | uniq -c >"$OUT/avc-denied-unique.txt" || true
   grep -E 'avc: +granted' "$OUT/logcat.txt" | grep -E "app=($PKG|com\.termux)" >"$OUT/avc-granted.txt" || true
   grep -E "linked over|link [0-9]+ to|failed to authenticate|$PKG|lindroids" "$OUT/logcat.txt" | grep -v 'avc:' >"$OUT/lindroids-logcat.txt" || true
   tsh 'cat $TMPDIR/lindroids-$(id -u)/server.log' >"$OUT/server.log" 2>/dev/null
@@ -131,7 +136,7 @@ if out=$(adb_ install -r -g "$APK" 2>&1 | tail -1) && [[ $out == *Success* ]]; t
 fi
 log "APK installed"
 "$VM" "$NAME" scp "$CLI" "$TERMUX_PREFIX/bin/lindroids.new" &&
-  tsh 'mv $PREFIX/bin/lindroids.new $PREFIX/bin/lindroids && chmod 755 $PREFIX/bin/lindroids && lindroids version' >"$OUT/cli-version.txt" 2>&1 &&
+  tsh 'mv $PREFIX/bin/lindroids.new $PREFIX/bin/lindroids && chmod 755 $PREFIX/bin/lindroids && lindroids version 2>&1 | grep -v "^WARNING: linker"' >"$OUT/cli-version.txt" 2>&1 &&
   R[cli_push]="ok ($(cat "$OUT/cli-version.txt"))" || fail "CLI push: $(cat "$OUT/cli-version.txt")"
 log "CLI: $(cat "$OUT/cli-version.txt")"
 

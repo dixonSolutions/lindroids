@@ -174,7 +174,8 @@ pub fn ensure_app(sb: &sandbox::Sandbox, rt: &Path, quiet: bool) -> bool {
         };
         eprintln!("lindroids: the Lindroids app is not connected yet.");
         if how.is_none() {
-            eprintln!("  This terminal cannot send intents, so open the Lindroids app yourself.");
+            eprintln!("  Could not wake it from here (Termux 0.118.1+ with termux-am-socket can), so open the");
+            eprintln!("  Lindroids app yourself: it finds this server on its own.");
         } else {
             eprintln!("  It was woken up; if it asks, approve it.");
         }

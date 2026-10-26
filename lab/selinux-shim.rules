@@ -1,24 +1,44 @@
-# SELinux policy patches applied by `SELINUX=late lab/vm.sh <name> start` (via magiskpolicy --live)
-# right before `setenforce 1`. One magiskpolicy statement per line; lines that do not apply to an
-# image (unknown type) are skipped.
+# SELinux policy patch applied by `SELINUX=late lab/vm.sh <name> start` (magiskpolicy --live),
+# right before `setenforce 1`. One magiskpolicy statement per line; a line that does not apply to an
+# image (unknown type) is skipped and recorded in run/<name>/shim.txt. "sh <cmd>" lines run <cmd> as
+# root on the device.
 #
-# Why: the BlissOS x86 images ship a policy that only works permissive in QEMU — with
-# androidboot.selinux=enforcing they never finish booting, and a plain late `setenforce 1` crashes
-# SurfaceFlinger (virgl ioctls / llvmpipe execmem), then every app's RenderThread (Mesa cannot
-# enumerate /dev/dri through sysfs), then rescue-party reboots the VM.
+# Why: none of the lab's live-CD images can run the whole platform enforcing in QEMU.
+#   - Android-x86 7.1 / 9.0 with androidboot.selinux=enforcing boot-loop (init reboots at once);
+#     enforcing late, zygote/ueventd/servicemanager are denied on the tmpfs-labelled live root and
+#     the framework restarts.
+#   - BlissOS 16 with androidboot.selinux=enforcing never finishes booting; a plain late
+#     `setenforce 1` kills SurfaceFlinger (virgl ioctls / llvmpipe execmem) and rescue-party
+#     reboots the VM.
 #
-# These rules ONLY cover those image/emulator gaps (graphics stack, a codec HAL mislabelled as init).
-# Nothing here touches what Lindroids depends on: app <-> app unix sockets (MLS categories),
-# TCP, app_data_file, execute of Termux files — those stay exactly as the image's policy says.
-permissive { surfaceflinger }
-permissive { hal_graphics_composer_default }
-permissive { hal_graphics_allocator_default }
+# So the lab enforces what Lindroids is about — the APP SANDBOX — and leaves the platform
+# permissive: every domain is made permissive, then the untrusted_app* domains (Termux, Lindroids,
+# and anything else the user installs) are made enforcing again. Every access whose subject is
+# Termux or Lindroids is then decided, enforced, by the image's own policy: app <-> app unix sockets
+# (MLS categories), TCP sockets, app_data_file, executing Termux binaries, ioctls...
+permissive *
+enforce untrusted_app
+enforce untrusted_app_25
+enforce untrusted_app_27
+enforce untrusted_app_29
+enforce untrusted_app_30
+enforce untrusted_app_32
+#
+# Emulator-only gaps of the app domains themselves (a real device labels these properly). Without
+# them every app's RenderThread aborts, Termux included, before Lindroids is even reached:
+# Mesa enumerates /dev/dri through sysfs; renderD128 is `device` on Android-x86 and gpu_device on
+# Bliss; Bliss runs its FFmpeg Codec2 HAL in the init domain (Termux plays its bell through it).
 allow appdomain sysfs file { read open getattr }
 allow appdomain sysfs dir { read open search getattr }
-allow appdomain graphics_device dir { search getattr }
+allow appdomain graphics_device dir { read open search getattr }
+allow appdomain gpu_device dir { read open search getattr }
 allow appdomain gpu_device chr_file { read write open ioctl getattr map }
-allow appdomain gpu_device dir { search getattr }
 allowxperm appdomain gpu_device chr_file ioctl 0x0000-0xffff
+allow appdomain device chr_file { read write open ioctl getattr map }
+allowxperm appdomain device chr_file ioctl 0x0000-0xffff
+# ...and MLS: apps (s0:cN,cM) may only write s0 objects that are mlstrustedobject. Adding `device`
+# to that attribute live does not reach compiled constraints, so relabel the DRM nodes as
+# gpu_device (what a real device uses). Lines starting with "sh " run as root on the device.
+sh for f in /dev/dri/*; do chcon u:object_r:gpu_device:s0 $f; done
 allow appdomain init binder { call transfer }
 allow appdomain init fd use
-allow init appdomain binder { call transfer }

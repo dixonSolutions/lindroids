@@ -112,7 +112,10 @@ adb_tcp_via_console() {
 
 adbc() {
   # adb against this VM only; (re)connect first — adbd restarts on `adb root`.
-  if ! "$ADB" -s "$SERIAL" get-state >/dev/null 2>&1; then
+  # `shell true`, not get-state: a stale TCP transport still reports "device" but answers
+  # "error: closed" (seen after adbd restarts under enforcing).
+  if ! timeout 10 "$ADB" -s "$SERIAL" shell true </dev/null >/dev/null 2>&1; then
+    "$ADB" disconnect "$SERIAL" >/dev/null 2>&1 || true
     "$ADB" connect "$SERIAL" >/dev/null 2>&1 || true
     local i
     for i in 1 2 3 4 5; do "$ADB" -s "$SERIAL" get-state >/dev/null 2>&1 && break; sleep 1; done
@@ -163,6 +166,13 @@ cmd_start() {
   echo "$cmdline" >"$RUN/cmdline"
 
   local gpu=${GPU:-gl} qemu display
+  if [[ $sel == late && -z ${GPU:-} && $NAME == a? ]]; then
+    # Android-x86 7.1/9 with virgl: apps' Mesa cannot open the (mislabelled) DRM node under
+    # enforcing even with the shim; software rendering keeps apps off /dev/dri.
+    gpu=std
+    cmdline+=" HWACCEL=0"
+    echo "$cmdline" >"$RUN/cmdline"
+  fi
   case $gpu in
     # The VNC socket (no TCP port) gives QMP screendump a surface, for screenshots while adb is down.
     gl) qemu=("${QEMU_FLATPAK[@]}"); display=(-device virtio-vga-gl -display egl-headless,rendernode=/dev/dri/renderD128 -vnc "unix:$RUN/vnc.sock") ;;
@@ -197,6 +207,12 @@ apply_shim() {
   : >"$RUN/shim.txt"
   while IFS= read -r line; do
     [[ -z $line || $line == \#* ]] && continue
+    if [[ $line == "sh "* ]]; then
+      # A shell command run as root on the device (relabelling device nodes, ...).
+      adbc shell "${line#sh }" </dev/null >/dev/null 2>&1 && { ok=$((ok + 1)); echo "ran: $line" >>"$RUN/shim.txt"; } ||
+        { bad=$((bad + 1)); echo "failed: $line" >>"$RUN/shim.txt"; }
+      continue
+    fi
     if adbc shell "/data/local/tmp/magiskpolicy --live '$line'" </dev/null >/dev/null 2>&1; then
       ok=$((ok + 1)); echo "applied: $line" >>"$RUN/shim.txt"
     else
