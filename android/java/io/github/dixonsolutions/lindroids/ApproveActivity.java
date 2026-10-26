@@ -30,8 +30,10 @@ public final class ApproveActivity extends Activity {
         PendingIntent pi = PendingIntent.getActivity(ctx, uid, i,
                 PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0));
         Notification.Builder b = Build.VERSION.SDK_INT >= 26
-                ? new Notification.Builder(ctx, App.CHANNEL) : new Notification.Builder(ctx);
+                ? new Notification.Builder(ctx, App.CHANNEL_PAIR) : new Notification.Builder(ctx);
         Notification n = b.setSmallIcon(R.drawable.ic_stat)
+                .setGroup("pairing")
+                .setPriority(Notification.PRIORITY_HIGH)
                 .setContentTitle(sandbox + " wants to show Linux apps")
                 .setContentText(needCode ? "Tap to pair with the code shown by lindroids" : "Tap to allow")
                 .setContentIntent(pi).setAutoCancel(true).build();

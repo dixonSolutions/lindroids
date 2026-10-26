@@ -92,6 +92,13 @@ public final class HomeActivity extends Activity {
         text(open == 0 ? "No sandbox connected right now." :
                 open + " sandbox" + (open > 1 ? "es" : "") + " connected, " + LinkService.windows.size() + " window(s) open.", 15, false);
 
+        for (final int uid : new java.util.ArrayList<>(LinkService.announcedPairing)) {
+            if (LinkService.linked(uid)) continue;
+            final String name = LinkService.sandboxName(uid, null);
+            button("Pair with " + name + " (enter the code lindroids shows)",
+                    v -> ApproveActivity.ask(this, uid, name, LinkService.secretFor(uid) == null, true));
+        }
+
         text("Permissions", 20, true);
         boolean overlay = Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(this);
         perm("Open windows from the background", overlay, () -> startActivity(

@@ -7,6 +7,7 @@ import android.os.Build;
 
 public final class App extends Application {
     static final String CHANNEL = "lindroids";
+    static final String CHANNEL_PAIR = "pairing";
 
     @Override
     public void onCreate() {
@@ -19,6 +20,8 @@ public final class App extends Application {
             NotificationChannel ch = new NotificationChannel(CHANNEL, "Running apps", NotificationManager.IMPORTANCE_LOW);
             ch.setShowBadge(false);
             getSystemService(NotificationManager.class).createNotificationChannel(ch);
+            NotificationChannel pair = new NotificationChannel(CHANNEL_PAIR, "Pairing requests", NotificationManager.IMPORTANCE_HIGH);
+            getSystemService(NotificationManager.class).createNotificationChannel(pair);
         }
     }
 }

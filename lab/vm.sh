@@ -43,7 +43,7 @@ QEMU_BREW=/home/linuxbrew/.linuxbrew/bin/qemu-system-x86_64
 # name | adb port | ssh port (-> guest 8022) | kernel cmdline (SRC= finds the ISO on the cdrom)
 vm_conf() {
   case $1 in
-    a7)  echo "5601|8601|root=/dev/ram0 androidboot.selinux=permissive buildvariant=userdebug quiet SRC= DATA=vda" ;;
+    a7)  echo "5601|8601|root=/dev/ram0 androidboot.selinux=permissive buildvariant=userdebug quiet SRC= DATA=vda VIRT_WIFI=0" ;;
     a9)  echo "5603|8603|root=/dev/ram0 quiet SRC= DATA=vda VIRT_WIFI=0" ;;
     b15) echo "5605|8605|root=/dev/ram0 quiet SRC= DATA=vda HWC=drm_minigbm GRALLOC=minigbm_arcvm SETUPWIZARD=0" ;;
     b16) echo "5607|8607|root=/dev/ram0 quiet SRC= DATA=vda HWC=drm_minigbm GRALLOC=minigbm_arcvm SETUPWIZARD=0" ;;
