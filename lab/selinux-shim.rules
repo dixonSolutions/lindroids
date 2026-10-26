@@ -1,0 +1,23 @@
+# SELinux policy patches applied by `SELINUX=late lab/vm.sh <name> start` (via magiskpolicy --live)
+# right before `setenforce 1`. One magiskpolicy statement per line; lines that do not apply to an
+# image (unknown type) are skipped.
+#
+# Why: the BlissOS x86 images ship a policy that only works permissive in QEMU — with
+# androidboot.selinux=enforcing they never finish booting, and a plain late `setenforce 1` crashes
+# SurfaceFlinger (virgl ioctls / llvmpipe execmem), then every app's RenderThread (Mesa cannot
+# enumerate /dev/dri through sysfs), then rescue-party reboots the VM.
+#
+# These rules ONLY cover those image/emulator gaps (graphics stack, a codec HAL mislabelled as init).
+# Nothing here touches what Lindroids depends on: app <-> app unix sockets (MLS categories),
+# TCP, app_data_file, execute of Termux files — those stay exactly as the image's policy says.
+permissive { surfaceflinger }
+permissive { hal_graphics_composer_default }
+permissive { hal_graphics_allocator_default }
+allow appdomain sysfs file { read open getattr }
+allow appdomain sysfs dir { read open search getattr }
+allow appdomain graphics_device dir { search getattr }
+allow appdomain gpu_device chr_file { read write open ioctl getattr map }
+allow appdomain gpu_device dir { search getattr }
+allowxperm appdomain gpu_device chr_file ioctl 0x0000-0xffff
+allow appdomain init binder { call transfer }
+allow appdomain init fd use

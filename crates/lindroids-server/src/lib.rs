@@ -736,7 +736,7 @@ pub fn run(cfg: Config) -> i32 {
         }
     };
     cli_listener.set_nonblocking(true).ok();
-    let uid = unsafe { libc::getuid() };
+    let uid = proto::real_uid();
     let app_name = cfg.socket_name.clone().unwrap_or_else(|| proto::server_socket_name(uid));
     // The abstract socket is the fast path (same uid, or devices whose policy allows it); loopback
     // TCP works between any two apps.

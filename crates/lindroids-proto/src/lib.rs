@@ -29,6 +29,15 @@ pub const APP_PACKAGE: &str = "io.github.dixonsolutions.lindroids";
 /// Broadcast the CLI sends to wake the app and tell it where the server is.
 pub const ACTION_SERVER_HELLO: &str = "io.github.dixonsolutions.lindroids.SERVER_HELLO";
 
+/// The real uid of this process. Under proot's fake root (proot-distro, UserLAnd) getuid() says
+/// 0, but the app looks for the sandbox app's own uid; the kernel's view in /proc is not faked.
+pub fn real_uid() -> u32 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| s.lines().find(|l| l.starts_with("Uid:")).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse().ok()))
+        .unwrap_or_else(|| unsafe { libc::getuid() })
+}
+
 /// Abstract socket a server listens on. One server per uid (per sandbox app).
 pub fn server_socket_name(uid: u32) -> String {
     format!("lindroids.server.{uid}")

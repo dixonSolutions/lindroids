@@ -58,7 +58,9 @@ public final class ApproveActivity extends Activity {
         LinkService.app = getApplicationContext();
         final int uid = getIntent().getIntExtra("uid", -1);
         final String sandbox = getIntent().getStringExtra("sandbox");
-        final boolean needCode = getIntent().getBooleanExtra("needCode", true) || LinkService.secretFor(uid) == null;
+        // A code is needed unless this is only about allowing a server we already share a secret
+        // with (a second server in the same app has a secret of its own: the caller says so).
+        final boolean needCode = getIntent().getBooleanExtra("needCode", true);
         String error = getIntent().getStringExtra("error");
         String[] pkgs = getPackageManager().getPackagesForUid(uid);
         String pkg = pkgs != null && pkgs.length > 0 ? pkgs[0] : "uid " + uid;

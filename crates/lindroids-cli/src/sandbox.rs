@@ -25,7 +25,7 @@ pub struct Sandbox {
 }
 
 pub fn detect() -> Sandbox {
-    let uid = unsafe { libc::getuid() };
+    let uid = lindroids_proto::real_uid();
     let prefix = std::env::var("PREFIX").unwrap_or_default();
     let on_android = Path::new("/system/build.prop").exists() || Path::new("/system/bin/app_process").exists();
     if prefix.contains("/com.termux") || (on_android && Path::new(TERMUX_PREFIX).exists() && std::env::var_os("TERMUX_VERSION").is_some()) {
@@ -53,6 +53,10 @@ pub fn client_env(runtime: &Path) -> Vec<(String, String)> {
         ("WAYLAND_DISPLAY".into(), "wayland-0".into()),
         ("PULSE_SERVER".into(), format!("unix:{}/pulse/native", runtime.display())),
     ];
+    // Minimal distros start with LANG unset or "C"; terminals and toolkits want UTF-8.
+    if std::env::var("LANG").map_or(true, |l| l.is_empty() || l == "C" || l == "POSIX") {
+        v.push(("LANG".into(), "C.UTF-8".into()));
+    }
     for (k, val) in proto::toolkit_env() {
         if std::env::var_os(k).is_none() {
             v.push((k.into(), val.into()));

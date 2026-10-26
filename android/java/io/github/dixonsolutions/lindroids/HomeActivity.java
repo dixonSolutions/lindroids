@@ -96,7 +96,7 @@ public final class HomeActivity extends Activity {
             if (LinkService.linked(uid)) continue;
             final String name = LinkService.sandboxName(uid, null);
             button("Pair with " + name + " (enter the code lindroids shows)",
-                    v -> ApproveActivity.ask(this, uid, name, LinkService.secretFor(uid) == null, true));
+                    v -> ApproveActivity.ask(this, uid, name, true, true));
         }
 
         text("Permissions", 20, true);

@@ -188,6 +188,24 @@ cmd_start() {
   echo "$NAME started (pid $(pid_of)), adb $SERIAL, ssh 127.0.0.1:$SSH_PORT, gpu $gpu, selinux=$sel"
 }
 
+apply_shim() {
+  # Patch image-specific policy gaps (lab/selinux-shim.rules) before enforcing; see that file.
+  local mp=$LAB_HOME/tools/magiskpolicy rules=$LAB_DIR/selinux-shim.rules line ok=0 bad=0
+  [[ ${SHIM:-1} == 1 && -x $mp && -f $rules ]] || { echo "$NAME: no SELinux shim applied" | tee "$RUN/shim.txt"; return 0; }
+  adbc push "$mp" /data/local/tmp/magiskpolicy >/dev/null 2>&1
+  adbc shell chmod 755 /data/local/tmp/magiskpolicy
+  : >"$RUN/shim.txt"
+  while IFS= read -r line; do
+    [[ -z $line || $line == \#* ]] && continue
+    if adbc shell "/data/local/tmp/magiskpolicy --live '$line'" </dev/null >/dev/null 2>&1; then
+      ok=$((ok + 1)); echo "applied: $line" >>"$RUN/shim.txt"
+    else
+      bad=$((bad + 1)); echo "skipped: $line" >>"$RUN/shim.txt"
+    fi
+  done <"$rules"
+  echo "$NAME: SELinux shim: $ok rules applied, $bad skipped ($RUN/shim.txt)"
+}
+
 cmd_wait_boot() {
   local t=${1:-300} t0=$SECONDS kicked=0
   while ((SECONDS - t0 < t)); do
@@ -201,6 +219,7 @@ cmd_wait_boot() {
       if [[ $(cat "$RUN/selinux-requested" 2>/dev/null) == late && $(adbc shell getenforce | tr -d '\r') != Enforcing ]]; then
         adbc root >/dev/null 2>&1 || true
         sleep 3
+        apply_shim
         adbc shell setenforce 1 >/dev/null 2>&1 || true
         echo "$NAME: setenforce 1 -> $(adbc shell getenforce | tr -d '\r')"
       fi

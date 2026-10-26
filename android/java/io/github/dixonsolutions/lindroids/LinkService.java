@@ -135,7 +135,30 @@ public final class LinkService extends Service {
     }
 
     static void setAllowed(int uid, boolean allowed) { prefs().edit().putBoolean("allow." + uid, allowed).apply(); }
-    static String secretFor(int uid) { return prefs().getString("secret." + uid, null); }
+
+    /**
+     * Secrets from earlier pairings with this uid, newest first. One app uid can hold several
+     * servers over time (Termux itself, and a proot-distro distro inside it), each with its own.
+     */
+    static List<String> secretsFor(int uid) {
+        ArrayList<String> out = new ArrayList<>();
+        String s = prefs().getString("secret." + uid, null);
+        if (s != null) for (String x : s.split("\n")) if (!x.isEmpty()) out.add(x);
+        return out;
+    }
+
+    static String secretFor(int uid) {
+        List<String> s = secretsFor(uid);
+        return s.isEmpty() ? null : s.get(0);
+    }
+
+    static void addSecret(int uid, String secret) {
+        List<String> s = secretsFor(uid);
+        s.remove(secret);
+        s.add(0, secret);
+        while (s.size() > 4) s.remove(s.size() - 1);
+        prefs().edit().putString("secret." + uid, android.text.TextUtils.join("\n", s)).apply();
+    }
     static String socketFor(int uid) { return "lindroids.server." + uid; }
 
     static String sandboxName(int uid, String hint) {
@@ -160,10 +183,8 @@ public final class LinkService extends Service {
     /** The CLI announced a server. */
     static void onHello(Context ctx, String socket, int uid, String sandbox, String secret) {
         ensureRunning(ctx);
-        SharedPreferences.Editor e = prefs().edit();
-        if (secret != null && !secret.isEmpty()) e.putString("secret." + uid, secret);
-        if (sandbox != null) e.putString("sandbox." + uid, sandbox);
-        e.apply();
+        if (secret != null && !secret.isEmpty()) addSecret(uid, secret);
+        if (sandbox != null) prefs().edit().putString("sandbox." + uid, sandbox).apply();
         announcedPairing.remove(uid);
         connect(uid, socket, null, true);
     }
@@ -192,12 +213,22 @@ public final class LinkService extends Service {
             }
             int id;
             synchronized (links) { id = nextLink++; }
-            String r = Native.linkConnect(id, socket, uid, code != null ? null : secret, code);
+            String r = null;
+            if (code != null) {
+                r = Native.linkConnect(id, socket, uid, null, code);
+            } else {
+                // Each secret this uid ever paired with, newest first.
+                for (String s : secretsFor(uid)) {
+                    r = Native.linkConnect(id, socket, uid, s, null);
+                    if (!r.equals("wrong-server")) break;
+                }
+            }
+            if (r == null) return;
             Log.i(TAG, "link " + id + " to " + sandbox + " (uid " + uid + "): " + r.split(" ")[0]);
             if (r.startsWith("ok ") || r.startsWith("paired ")) {
                 if (r.startsWith("paired ")) {
-                    String[] parts = r.split(" ", 3);
-                    prefs().edit().putString("secret." + uid, parts[2]).putBoolean("allow." + uid, true).apply();
+                    addSecret(uid, r.split(" ", 3)[2]);
+                    setAllowed(uid, true);
                 }
                 final Link l = new Link(id, uid, socket, sandbox);
                 main.post(() -> {
@@ -222,7 +253,7 @@ public final class LinkService extends Service {
     }
 
     static void needPairingAgain(int uid, String sandbox, boolean interactive) {
-        prefs().edit().remove("secret." + uid).apply();
+        // Keep the old secrets: the server they belong to may come back (Termux vs a distro).
         if (!announcedPairing.contains(uid) || interactive) {
             announcedPairing.add(uid);
             main.post(() -> ApproveActivity.ask(app, uid, sandbox, true, interactive));
@@ -374,12 +405,12 @@ public final class LinkService extends Service {
     private static Thread localServer;
 
     static String localSecret() {
-        String s = prefs().getString("secret." + android.os.Process.myUid(), null);
+        String s = secretFor(android.os.Process.myUid());
         if (s == null) {
             byte[] b = new byte[32];
             new SecureRandom().nextBytes(b);
             s = android.util.Base64.encodeToString(b, android.util.Base64.NO_WRAP | android.util.Base64.URL_SAFE | android.util.Base64.NO_PADDING);
-            prefs().edit().putString("secret." + android.os.Process.myUid(), s).apply();
+            addSecret(android.os.Process.myUid(), s);
         }
         return s;
     }
