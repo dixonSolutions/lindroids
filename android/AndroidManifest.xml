@@ -79,7 +79,8 @@
             android:exported="true"
             android:excludeFromRecents="true"
             android:noHistory="true"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+            android:taskAffinity="io.github.dixonsolutions.lindroids.launch"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
 
         <service android:name=".LinkService" android:exported="false" />
 

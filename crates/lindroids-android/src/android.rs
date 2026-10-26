@@ -319,6 +319,7 @@ fn dispatch(link: i32, msg: ToApp, payload: Vec<u8>) {
             call("onExport", "(ILjava/lang/String;)V", |env| vec![Int(link), jstring_owned(env, &json)]);
         }
         ToApp::PickFolder { request } => call("onPickFolder", "(II)V", |_| vec![Int(link), Int(request as i32)]),
+        ToApp::Unexport { id } => call("onUnexport", "(ILjava/lang/String;)V", |env| vec![Int(link), jstring_owned(env, &id)]),
         ToApp::Log { level, msg } => info!("server {level}: {msg}"),
         ToApp::AudioOpen { stream, rate, channels, format } => crate::sound::open(link, stream, rate, channels, format),
         ToApp::AudioData { stream, .. } => {

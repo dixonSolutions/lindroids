@@ -279,6 +279,7 @@ public final class LinkService extends Service {
             } catch (Throwable t) {
                 Log.e(TAG, "cannot open a window from the background; allow 'Display over other apps'", t);
             }
+            LaunchActivity.windowOpened();
             updateNotification();
         });
     }
@@ -323,6 +324,32 @@ public final class LinkService extends Service {
     static void onExport(int link, String json) { main.post(() -> ExportActivity.start(app, link, json)); }
 
     static void onPickFolder(int link, int request) { main.post(() -> FolderActivity.start(app, link, request)); }
+
+    static void onUnexport(int link, String id) {
+        main.post(() -> {
+            boolean existed = new File(exportsDir(), ExportActivity.safe(id) + ".json").exists();
+            removeExport(app, id);
+            Native.linkExportResult(link, id, existed, existed ? "removed " + id : id + " was not exported");
+        });
+    }
+
+    /** Forget an exported program: its bundle, its description and its shortcut. */
+    static void removeExport(Context ctx, String id) {
+        try {
+            org.json.JSONObject launch = LaunchActivity.load(id).getJSONObject("launch");
+            if (launch.getString("mode").equals("bundle")) {
+                HomeActivity.deleteTree(new File(bundlesDir(), ExportActivity.safe(launch.getString("bundle"))));
+            }
+        } catch (Exception ignored) {}
+        new File(exportsDir(), ExportActivity.safe(id) + ".json").delete();
+        new File(exportsDir(), ExportActivity.safe(id) + ".png").delete();
+        if (Build.VERSION.SDK_INT >= 26) {
+            try {
+                ctx.getSystemService(android.content.pm.ShortcutManager.class)
+                        .disableShortcuts(java.util.Collections.singletonList("app-" + id), "Removed from Lindroids");
+            } catch (Throwable ignored) {}
+        }
+    }
 
     static void onLinkClosed(int link) {
         main.post(() -> {

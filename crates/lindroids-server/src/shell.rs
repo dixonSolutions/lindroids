@@ -166,6 +166,14 @@ pub fn layers_for_window(state: &State, win: u32) -> Layers {
     out
 }
 
+/// The logical size of a window's content (its window geometry).
+pub fn content_size(state: &State, win: u32) -> (i32, i32) {
+    state.windows.get(&win).map(|w| {
+        let g = xdg_geometry(state, &w.surface);
+        (g.w, g.h)
+    }).unwrap_or((0, 0))
+}
+
 /// Topmost surface under a logical point of a window, with surface-local coordinates.
 pub fn surface_at(state: &State, win: u32, x: f64, y: f64) -> Option<(ObjectId, f64, f64)> {
     let layers = layers_for_window(state, win);
@@ -471,6 +479,8 @@ impl Dispatch<xdg_surface::XdgSurface, ObjectId> for State {
                         waiting: Vec::new(),
                         popups: Vec::new(),
                         fullscreen: false,
+                        fit: 1.0,
+                        fit_offset: (0, 0),
                     },
                 );
             }

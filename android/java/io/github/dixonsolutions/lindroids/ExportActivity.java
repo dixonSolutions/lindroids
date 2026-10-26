@@ -74,6 +74,24 @@ public final class ExportActivity extends Activity {
         return i;
     }
 
+    /**
+     * The program's icon as an adaptive icon: drawn into the inner safe zone of a 108dp canvas over
+     * a light background, so launchers mask it into their shape instead of shrinking it into a
+     * white disc.
+     */
+    static Icon adaptive(Bitmap icon) {
+        if (Build.VERSION.SDK_INT < 26) return Icon.createWithBitmap(icon);
+        int size = 432;
+        Bitmap out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas c = new android.graphics.Canvas(out);
+        c.drawColor(0xfff4f6f8);
+        int inner = (int) (size * 0.58);
+        int off = (size - inner) / 2;
+        android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG | android.graphics.Paint.ANTI_ALIAS_FLAG);
+        c.drawBitmap(icon, null, new android.graphics.Rect(off, off, off + inner, off + inner), p);
+        return Icon.createWithAdaptiveBitmap(out);
+    }
+
     /** Returns a description of what happened, for the terminal. */
     static String pin(Context ctx, String id, String name, Bitmap icon) {
         Intent launch = launchIntent(ctx, id);
@@ -82,7 +100,7 @@ public final class ExportActivity extends Activity {
             ShortcutInfo info = new ShortcutInfo.Builder(ctx, "app-" + id)
                     .setShortLabel(name)
                     .setLongLabel(name)
-                    .setIcon(Icon.createWithBitmap(icon))
+                    .setIcon(adaptive(icon))
                     .setIntent(launch)
                     .build();
             // Keep it current if it was pinned before (icon or name changed).

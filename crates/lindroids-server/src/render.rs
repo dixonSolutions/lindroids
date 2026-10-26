@@ -79,13 +79,27 @@ fn blit(dst: &mut [u32], dw: u32, dh: u32, stride: usize, l: &Placed) {
             }
             continue;
         }
+        // Shrinking: average 2x2 source pixels, so text stays legible instead of losing strokes.
+        let shrink = l.w < img.width || l.h < img.height;
+        let next_row = if shrink {
+            let ny = (sy + 1).min(img.height as usize - 1);
+            Some(&img.data[ny * img.width as usize..(ny + 1) * img.width as usize])
+        } else {
+            None
+        };
         for x in x0..x1 {
             let sx = if scaled {
                 ((((x - l.x) as u64) * sx_step) >> 16).min(img.width as u64 - 1) as usize
             } else {
                 (x - l.x) as usize
             };
-            let s = src_row[sx];
+            let s = match next_row {
+                Some(nr) => {
+                    let sx1 = (sx + 1).min(img.width as usize - 1);
+                    avg4(src_row[sx], src_row[sx1], nr[sx], nr[sx1])
+                }
+                None => src_row[sx],
+            };
             let d = &mut drow[x as usize];
             if !blend {
                 *d = s | 0xff00_0000;
@@ -94,6 +108,16 @@ fn blit(dst: &mut [u32], dw: u32, dh: u32, stride: usize, l: &Placed) {
             }
         }
     }
+}
+
+/// Average of four pixels, per channel.
+#[inline]
+fn avg4(a: u32, b: u32, c: u32, d: u32) -> u32 {
+    let lo = |p: u32| p & 0x00ff_00ff;
+    let hi = |p: u32| (p >> 8) & 0x00ff_00ff;
+    let l = (lo(a) + lo(b) + lo(c) + lo(d) + 0x0002_0002) >> 2 & 0x00ff_00ff;
+    let h = (hi(a) + hi(b) + hi(c) + hi(d) + 0x0002_0002) >> 2 & 0x00ff_00ff;
+    l | (h << 8)
 }
 
 /// Premultiplied "source over destination" for one RGBA pixel.

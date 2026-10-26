@@ -1,0 +1,83 @@
+# Pull requests: unit tests, the host integration test, and a check that the packaging scripts
+# still build. Nothing is signed with release keys and nothing is published.
+name: ci
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+
+      - name: Test dependencies
+        run: sudo apt-get update -q && sudo apt-get install -y -q foot shellcheck
+
+      - name: Shell scripts
+        run: |
+          shellcheck -S warning scripts/*.sh packaging/*.sh packaging/repo/*.sh tests/*.sh
+          sh -n packaging/install.sh
+
+      - name: Tests
+        run: cargo test --workspace --exclude lindroids-android
+
+      - name: Host integration test
+        run: tests/host-integration.sh
+
+      - name: Upload the last frame
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-integration-frame
+          path: target/host-integration-last.png
+          if-no-files-found: ignore
+
+      # The Debian flavour end to end with a throwaway signing key: static build, build-debs.sh,
+      # build-repo.sh, then install.sh against that repository in a Debian container.
+      - name: Package smoke test
+        run: |
+          eval "$(scripts/version.sh)"
+          export LINDROIDS_BUILD_ID
+          cargo build -p lindroids --release --target x86_64-unknown-linux-musl
+          stage=target/ci-pkg
+          rm -rf "$stage" && mkdir -p "$stage/dist/bin/x86_64-unknown-linux-musl"
+          cp target/x86_64-unknown-linux-musl/release/lindroids "$stage/dist/bin/x86_64-unknown-linux-musl/"
+          echo "not an APK: CI does not build the app" > "$stage/dist/lindroids.apk"
+          packaging/build-debs.sh --version "$LINDROIDS_VERSION" --dist "$stage/dist" \
+            --apk "$stage/dist/lindroids.apk" --out "$stage/debs" --arches amd64
+          GNUPGHOME=$(mktemp -d)
+          export GNUPGHOME
+          gpg --batch --pinentry-mode loopback --passphrase '' --quick-generate-key "ci <ci@example.invalid>" ed25519 sign never
+          gpg --export > "$stage/ci.gpg"
+          packaging/repo/build-repo.sh "$stage/site" --debs "$stage/debs" --public-key "$stage/ci.gpg" \
+            --base-url http://127.0.0.1:8790
+          (cd "$stage/site" && exec python3 -m http.server 8790 --bind 127.0.0.1 >/dev/null 2>&1) &
+          sleep 1
+          docker run --rm --network host debian:stable sh -ec '
+            apt-get update -q >/dev/null && apt-get install -y -q curl >/dev/null
+            curl -fsSL http://127.0.0.1:8790/install.sh | sh
+            lindroids version'
+          kill %1 || true

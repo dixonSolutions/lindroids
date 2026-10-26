@@ -5,6 +5,7 @@ mod debug;
 mod desktop;
 mod export;
 mod flatpak;
+mod pkgdb;
 mod run;
 mod sandbox;
 

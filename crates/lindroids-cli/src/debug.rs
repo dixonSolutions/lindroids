@@ -11,6 +11,9 @@
 //!   resize <win> <w> <h>
 //!   close <win>
 //!   clip <text...>           set the "Android" clipboard
+//!
+//! Sound streams are acknowledged as they arrive; each one's running byte count is kept in
+//! `<dir>/audio-<n>.bytes`. `--socket-name <name>` links to a server started with the same flag.
 
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
@@ -36,6 +39,7 @@ pub fn cmd_debug_app(args: &[String]) -> i32 {
     let mut dir = PathBuf::from("lindroids-frames");
     let mut size = (800u32, 600u32);
     let mut force_tcp = false;
+    let mut socket_name: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -49,6 +53,10 @@ pub fn cmd_debug_app(args: &[String]) -> i32 {
                 size = (w.parse().unwrap_or(800), h.parse().unwrap_or(600));
             }
             "--tcp" => force_tcp = true,
+            "--socket-name" => {
+                i += 1;
+                socket_name = args.get(i).cloned();
+            }
             _ => {}
         }
         i += 1;
@@ -60,7 +68,7 @@ pub fn cmd_debug_app(args: &[String]) -> i32 {
     let secret_file = dir.join(".secret");
     let secret = std::fs::read_to_string(&secret_file).ok();
     let code = if secret.is_none() { std::fs::read_to_string(rt.join("pairing-code")).ok() } else { None };
-    let socket = force_tcp.then_some("lindroids.nothing-listens-here");
+    let socket = if force_tcp { Some("lindroids.nothing-listens-here") } else { socket_name.as_deref() };
     let (conn, mut framer, backlog) = match applink::connect(uid, socket, secret.as_deref(), code.as_deref().map(str::trim), 1.0, "debug-app") {
         Outcome::Linked { conn, framer, paired, sandbox, backlog } => {
             if let Some(s) = paired {
@@ -173,6 +181,7 @@ fn handle(m: ToApp, payload: Vec<u8>, wins: &mut HashMap<u32, Win>, writer: &Mut
             let _ = std::fs::write(&p, (n + payload.len() as u64).to_string());
             send(writer, &ToServer::AudioCredit { stream, bytes: payload.len() as u32 });
         }
+        ToApp::AudioCork { stream, corked } => println!("audio {stream} {}", if corked { "corked" } else { "uncorked" }),
         ToApp::AudioClose { stream } => println!("audio {stream} closed"),
         other => {
             println!("{}", String::from_utf8_lossy(&proto::encode(&other)).trim_end());

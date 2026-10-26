@@ -1,0 +1,166 @@
+# Every push to main is a release: v<major>.<minor>.<commit count> (scripts/version.sh).
+# Builds the CLI for 8 targets, the APK, the .debs and tarballs (scripts/build-release.sh),
+# publishes the signed APT repository to gh-pages and a GitHub Release with the artifacts.
+# Commits whose message contains "[skip ci]" do not release. See docs/PACKAGING.md.
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One publish at a time; a newer push waits for the running one instead of racing on gh-pages.
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  NDK_VERSION: 27.2.12479018
+
+jobs:
+  release:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Version
+        id: version
+        run: |
+          eval "$(scripts/version.sh)"
+          {
+            echo "version=$LINDROIDS_VERSION"
+            echo "code=$LINDROIDS_VERSION_CODE"
+            echo "build_id=$LINDROIDS_BUILD_ID"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing v$LINDROIDS_VERSION (versionCode $LINDROIDS_VERSION_CODE)"
+          # A re-run of the same commit may reuse its tag; another commit must not.
+          tagged=$(git ls-remote --tags origin "refs/tags/v$LINDROIDS_VERSION" | cut -f1)
+          if [ -n "$tagged" ] && [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "::error::tag v$LINDROIDS_VERSION already exists on $tagged (history rewritten?)"
+            exit 1
+          fi
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: >-
+            aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android,
+            aarch64-unknown-linux-musl,armv7-unknown-linux-musleabihf,x86_64-unknown-linux-musl,i686-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+
+      - name: cargo-ndk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      - name: JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # The runner image ships the SDK (and usually this NDK); setup-android installs what is
+      # missing and is a no-op otherwise.
+      - name: Android SDK and NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "build-tools;35.0.0 platforms;android-35 ndk;${{ env.NDK_VERSION }}"
+
+      - name: Select the NDK
+        run: |
+          test -d "$ANDROID_HOME/ndk/$NDK_VERSION"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Packaging tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q patchelf dpkg-dev foot
+
+      - name: Cache proot debs
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/proot
+            target/proot-debs
+          key: proot-${{ hashFiles('scripts/fetch-proot.sh') }}
+
+      - name: Tests
+        run: cargo test --workspace --exclude lindroids-android
+
+      - name: Host integration test
+        run: tests/host-integration.sh
+
+      - name: Build release
+        env:
+          LINDROIDS_KEYSTORE_B64: ${{ secrets.LINDROIDS_KEYSTORE_B64 }}
+          LINDROIDS_KEYSTORE_PASS: ${{ secrets.LINDROIDS_KEYSTORE_PASS }}
+          LINDROIDS_KEY_ALIAS: ${{ secrets.LINDROIDS_KEY_ALIAS }}
+          LINDROIDS_GITHUB_REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$LINDROIDS_KEYSTORE_B64" ] || [ -z "$LINDROIDS_KEYSTORE_PASS" ]; then
+            echo "::error::LINDROIDS_KEYSTORE_B64 / LINDROIDS_KEYSTORE_PASS are not set (scripts/set-github-secrets.sh)"
+            exit 1
+          fi
+          export LINDROIDS_KEYSTORE="$RUNNER_TEMP/release.keystore"
+          printf '%s' "$LINDROIDS_KEYSTORE_B64" | base64 -d > "$LINDROIDS_KEYSTORE"
+          export LINDROIDS_KEY_ALIAS="${LINDROIDS_KEY_ALIAS:-lindroids}"
+          scripts/build-release.sh
+          rm -f "$LINDROIDS_KEYSTORE"
+
+      - name: Fetch the published site
+        run: |
+          mkdir -p site
+          if git fetch --depth 1 origin gh-pages 2>/dev/null; then
+            git archive FETCH_HEAD | tar -x -C site
+          else
+            echo "no gh-pages branch yet: starting an empty repository"
+          fi
+
+      - name: Build the APT repository
+        env:
+          LINDROIDS_GPG_PRIVATE_KEY: ${{ secrets.LINDROIDS_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "$LINDROIDS_GPG_PRIVATE_KEY" ]; then
+            echo "::error::LINDROIDS_GPG_PRIVATE_KEY is not set (scripts/set-github-secrets.sh)"
+            exit 1
+          fi
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          packaging/repo/build-repo.sh site --debs dist/debs --keep 3 \
+            --base-url "https://$owner.github.io/$repo" --github-repo "$GITHUB_REPOSITORY"
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Lindroids ${{ steps.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/lindroids-*.apk
+            dist/lindroids-*.tar.gz
+            dist/debs/*.deb
+            dist/SHA256SUMS
+
+      # After the release, so install.sh's VERSION never points at a release that does not exist.
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: site
+          force_orphan: true
+          user_name: github-actions[bot]
+          user_email: 41898282+github-actions[bot]@users.noreply.github.com
+          full_commit_message: "Publish Lindroids ${{ steps.version.outputs.version }} [skip ci]"

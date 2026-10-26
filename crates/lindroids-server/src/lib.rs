@@ -191,6 +191,11 @@ pub struct Window {
     /// Popups above this window, bottom to top (their wl_surface ids).
     pub popups: Vec<ObjectId>,
     pub fullscreen: bool,
+    /// Below 1 when the client insists on being larger than the Android window: the frame is
+    /// scaled down to fit instead of cut off (and input scaled back up).
+    pub fit: f32,
+    /// Where the scaled-down content starts (it is centred), in physical pixels.
+    pub fit_offset: (i32, i32),
 }
 
 /// A bundle on its way from the CLI to the app.
@@ -420,8 +425,9 @@ impl State {
                 self.link = Some(link);
                 let hello = ToApp::Hello { version: proto::PROTOCOL_VERSION, build: BUILD.into(), sandbox: self.cfg.sandbox.clone() };
                 self.send_app(&hello);
+                audio::link_up();
                 if self.cfg.scale.is_none() {
-                    let s = density.round().clamp(1.0, 4.0) as u32;
+                    let s = scale_for_density(density);
                     if s != self.scale {
                         self.scale = s;
                         output::scale_changed(self);
@@ -442,7 +448,8 @@ impl State {
 
     fn handle_app_message(&mut self, msg: ToServer) {
         match msg {
-            ToServer::Hello { .. } | ToServer::Auth { .. } | ToServer::AudioCredit { .. } => {}
+            ToServer::Hello { .. } | ToServer::Auth { .. } => {}
+            ToServer::AudioCredit { stream, bytes } => audio::credit(stream, bytes),
             ToServer::Resize { win, width, height, .. } => {
                 if let Some(w) = self.windows.get_mut(&win) {
                     w.phys = Some((width, height));
@@ -578,6 +585,15 @@ impl State {
                     None
                 }
             },
+            CliRequest::Unexport { id } => {
+                if self.link.is_none() {
+                    Some(no_app())
+                } else {
+                    self.send_app(&ToApp::Unexport { id: id.clone() });
+                    self.clis[idx].waiting = Some(Waiting::Export(id));
+                    None
+                }
+            }
             CliRequest::PickFolder => {
                 if self.link.is_none() {
                     Some(no_app())
@@ -597,6 +613,13 @@ impl State {
             c.stream.set_nonblocking(true).ok();
         }
     }
+}
+
+/// Integer output scale for a screen density. A bit below the density: desktop apps are laid out
+/// for ~800px-wide windows, and 540 logical pixels across a 440 dpi phone fit far more of them
+/// than 360 would, while text stays readable.
+pub fn scale_for_density(density: f32) -> u32 {
+    (density * 0.75).round().clamp(1.0, 4.0) as u32
 }
 
 fn new_pairing_code() -> String {
@@ -987,9 +1010,27 @@ fn render_dirty(state: &mut State) {
         .map(|(k, _)| *k)
         .collect();
     for win in wins {
-        let layers = shell::layers_for_window(state, win);
+        let mut layers = shell::layers_for_window(state, win);
+        let (cw, ch) = shell::content_size(state, win);
+        let scale = state.scale as f32;
         let Some(w) = state.windows.get_mut(&win) else { continue };
         let (pw, ph) = w.phys.unwrap();
+        let fit = if cw > 0 && ch > 0 { (pw as f32 / (cw as f32 * scale)).min(ph as f32 / (ch as f32 * scale)).min(1.0) } else { 1.0 };
+        w.fit = fit;
+        w.fit_offset = if fit < 1.0 {
+            (((pw as f32 - cw as f32 * scale * fit) / 2.0).max(0.0) as i32, ((ph as f32 - ch as f32 * scale * fit) / 2.0).max(0.0) as i32)
+        } else {
+            (0, 0)
+        };
+        if fit < 1.0 {
+            let (ox, oy) = w.fit_offset;
+            for p in &mut layers.placed {
+                p.x = (p.x as f32 * fit).round() as i32 + ox;
+                p.y = (p.y as f32 * fit).round() as i32 + oy;
+                p.w = ((p.w as f32 * fit).round() as u32).max(1);
+                p.h = ((p.h as f32 * fit).round() as u32).max(1);
+            }
+        }
         let n = (pw * ph) as usize;
         w.canvas.resize(n, 0);
         render::compose(&mut w.canvas, pw, ph, pw as usize, &layers.placed);

@@ -104,6 +104,8 @@ pub enum ToApp {
     Export(ExportRequest),
     /// Ask the app to open its folder picker and report the chosen path.
     PickFolder { request: u32 },
+    /// Remove an exported program (its shortcut and bundle); answered with ExportResult.
+    Unexport { id: String },
     /// Sound: a stream opens, gets PCM payloads, is paused/resumed, and closes.
     AudioOpen { stream: u32, rate: u32, channels: u32, format: AudioFormat },
     AudioData { stream: u32, len: u32 },
@@ -252,6 +254,8 @@ pub enum CliRequest {
     /// with this line as SCM_RIGHTS.
     ImportBundle { id: String },
     PickFolder,
+    /// Remove an exported program from the app.
+    Unexport { id: String },
     /// The CLI started a program: windows from this process (or its children) get this name and
     /// icon.
     Launch {

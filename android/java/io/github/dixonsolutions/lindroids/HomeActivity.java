@@ -171,21 +171,7 @@ public final class HomeActivity extends Activity {
     }
 
     void remove(String id) {
-        try {
-            JSONObject spec = LaunchActivity.load(id);
-            JSONObject launch = spec.getJSONObject("launch");
-            if (launch.getString("mode").equals("bundle")) {
-                deleteTree(new File(LinkService.bundlesDir(), ExportActivity.safe(launch.getString("bundle"))));
-            }
-        } catch (Exception ignored) {}
-        new File(LinkService.exportsDir(), id + ".json").delete();
-        new File(LinkService.exportsDir(), id + ".png").delete();
-        if (Build.VERSION.SDK_INT >= 26) {
-            try {
-                getSystemService(android.content.pm.ShortcutManager.class)
-                        .disableShortcuts(java.util.Collections.singletonList("app-" + id), "Removed from Lindroids");
-            } catch (Throwable ignored) {}
-        }
+        LinkService.removeExport(this, id);
     }
 
     static void deleteTree(File f) {

@@ -289,8 +289,10 @@ pub fn window_focus(state: &mut State, win: u32, focused: bool) {
 
 // ------------------------------------------------------------------ pointer
 
-fn to_logical(state: &State, x: f32, y: f32) -> (f64, f64) {
-    (x as f64 / state.scale as f64, y as f64 / state.scale as f64)
+fn to_logical(state: &State, win: u32, x: f32, y: f32) -> (f64, f64) {
+    let (fit, (ox, oy)) = state.windows.get(&win).map_or((1.0, (0, 0)), |w| (w.fit, w.fit_offset));
+    let k = state.scale as f64 * fit as f64;
+    ((x as f64 - ox as f64) / k, (y as f64 - oy as f64) / k)
 }
 
 fn pointer_motion(state: &mut State, win: u32, lx: f64, ly: f64, time: u32) {
@@ -333,7 +335,7 @@ fn pointer_button(state: &mut State, button: u32, pressed: bool, time: u32) {
 }
 
 pub fn pointer(state: &mut State, win: u32, action: PointerAction, x: f32, y: f32, button: u32, time: u32) {
-    let (lx, ly) = to_logical(state, x, y);
+    let (lx, ly) = to_logical(state, win, x, y);
     match action {
         PointerAction::Enter | PointerAction::Motion => pointer_motion(state, win, lx, ly, time),
         PointerAction::Leave => {
@@ -387,7 +389,7 @@ pub fn scroll(state: &mut State, _win: u32, dx: f32, dy: f32, time: u32) {
 // ------------------------------------------------------------------ touch
 
 pub fn touch(state: &mut State, win: u32, action: TouchAction, id: i32, x: f32, y: f32, time: u32) {
-    let (lx, ly) = to_logical(state, x, y);
+    let (lx, ly) = to_logical(state, win, x, y);
     if action == TouchAction::Down && !shell::in_popup(state, win, lx, ly) {
         shell::dismiss_popups(state, win);
     }
