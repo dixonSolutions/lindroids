@@ -1,0 +1,6 @@
+.scratch/
+target/
+dist/
+*.keystore
+*.apk
+third_party/proot/

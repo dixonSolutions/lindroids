@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = ["crates/lindroids-cli", "crates/lindroids-proto", "crates/lindroids-server", "crates/lindroids-android"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dixonSolutions/lindroids"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+panic = "abort"

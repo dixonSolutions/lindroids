@@ -1,0 +1,22 @@
+[package]
+name = "lindroids"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Run Linux apps in Android windows, and export them to the home screen"
+
+[[bin]]
+name = "lindroids"
+path = "src/main.rs"
+
+[dependencies]
+lindroids-proto = { path = "../lindroids-proto" }
+lindroids-server = { path = "../lindroids-server" }
+serde.workspace = true
+serde_json.workspace = true
+libc.workspace = true
+log.workspace = true
+base64 = "0.22"
+tar = { version = "0.4", default-features = false }
+resvg = { version = "0.45", default-features = false }
+png = "0.17"

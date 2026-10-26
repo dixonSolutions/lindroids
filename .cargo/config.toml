@@ -1,0 +1,13 @@
+# Static musl builds of the CLI for every Android ABI, linked with the lld that ships with Rust:
+# no cross toolchain needed.
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+
+[target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"
+
+[target.i686-unknown-linux-musl]
+linker = "rust-lld"
+
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"

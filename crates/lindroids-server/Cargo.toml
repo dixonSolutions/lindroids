@@ -1,0 +1,17 @@
+[package]
+name = "lindroids-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The Lindroids server: a Wayland compositor and PulseAudio-protocol sound server whose output is the Lindroids Android app"
+
+[dependencies]
+lindroids-proto = { path = "../lindroids-proto" }
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+libc.workspace = true
+wayland-server = "0.31"
+wayland-protocols = { version = "0.32", features = ["server", "unstable", "staging"] }
+base64 = "0.22"
+lz4_flex = { version = "0.11", default-features = false, features = ["std", "safe-encode", "safe-decode"] }

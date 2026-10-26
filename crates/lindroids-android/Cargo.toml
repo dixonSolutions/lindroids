@@ -1,0 +1,25 @@
+[package]
+name = "lindroids-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The native side of the Lindroids Android app"
+
+[lib]
+name = "lindroids"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+lindroids-proto = { path = "../lindroids-proto" }
+lindroids-server = { path = "../lindroids-server" }
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+libc.workspace = true
+base64 = "0.22"
+tar = { version = "0.4", default-features = false }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-sys = "0.6"
+android_logger = "0.14"
