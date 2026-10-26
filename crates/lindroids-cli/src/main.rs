@@ -8,6 +8,8 @@ mod flatpak;
 mod pkgdb;
 mod run;
 mod sandbox;
+mod elf;
+mod setup_x11;
 mod x11wm;
 
 use std::io::Write;
@@ -27,11 +29,12 @@ USAGE
   lindroids export [options] <command> [args...]
   lindroids list | remove <id>
   lindroids setup                    install or update the Lindroids app, then pair
+  lindroids setup x11 [--yes]        install what X11 programs need (Xwayland), restart the server
   lindroids status | start | stop | pair | doctor | version
 
 RUN OPTIONS
   --distro <name>     run inside a proot-distro distribution (Termux)
-  --x11               run an X11-only program under a rootful Xwayland
+  --x11               prefer X11 over Wayland for this program (GTK, Qt and SDL)
   --name <name>       window and shortcut name
   --icon <file>       icon (PNG or SVG)
   -e, --env K=V       extra environment (repeatable)
@@ -43,6 +46,10 @@ EXPORT OPTIONS (as run, plus)
   --id <id>           shortcut id (default: derived from the program)
 
 A program name that looks like a Flatpak id (org.gnome.Calculator) runs that Flatpak.
+
+X11 programs need no option: every program gets DISPLAY as well as WAYLAND_DISPLAY, and each X11
+window becomes its own Android window (xwayland-satellite, started on the first X11 connection).
+`lindroids doctor` shows whether X11 is ready; `lindroids setup x11` installs what is missing.
 
 The first time, the Lindroids app asks for the pairing code that `lindroids pair` shows.
 ";
@@ -69,6 +76,7 @@ fn main() {
         Some("stop") => cmd_stop(),
         Some("status") => cmd_status(),
         Some("pair") => cmd_pair(),
+        Some("setup") if args.get(1).map(String::as_str) == Some("x11") => setup_x11::cmd_setup_x11(&args[2..]),
         Some("setup") => cmd_setup(),
         Some("doctor") => cmd_doctor(),
         Some("run") => run::cmd_run(&args[1..]),
@@ -119,6 +127,7 @@ fn cmd_server(args: &[String]) -> i32 {
     if !args.iter().any(|a| a == "--sandbox") {
         cfg.sandbox = sandbox::detect().name;
     }
+    lindroids_server::stop_on_signals();
     lindroids_server::run(cfg)
 }
 
@@ -348,17 +357,32 @@ fn cmd_doctor() -> i32 {
         ("proot", sandbox::have("proot")),
         ("proot-distro", sandbox::have("proot-distro")),
         ("Xwayland", sandbox::have("Xwayland")),
+        ("satellite", lindroids_server::x11::find_satellite().is_some()),
         ("flatpak", sandbox::have("flatpak")),
         ("termux-am", sandbox::have("termux-am")),
     ] {
         println!("{:<11} {}", what, if ok { "found" } else { "not found" });
     }
+    if let Some(p) = lindroids_server::x11::find_satellite() {
+        println!("            {}", p.display());
+    }
     let rt = sandbox::runtime_dir();
-    match client::status(&rt) {
+    let running = match client::status(&rt) {
         Ok(CliReply::Status { app_connected, .. }) => {
-            println!("server      running, app {}", if app_connected { "connected" } else { "not connected" })
+            println!("server      running, app {}", if app_connected { "connected" } else { "not connected" });
+            true
         }
-        _ => println!("server      not running (`lindroids start`)"),
+        _ => {
+            println!("server      not running (`lindroids start`)");
+            false
+        }
+    };
+    let missing = setup_x11::missing();
+    match (sandbox::x11_display(&rt), running) {
+        (Some(d), _) => println!("X11         display {d} (xwayland-satellite starts on the first X11 connection)"),
+        (None, _) if !missing.is_empty() => println!("X11         off: missing {} (`lindroids setup x11`)", missing.join(", ")),
+        (None, true) => println!("X11         off in the running server (see {}; `lindroids stop` and start again)", rt.join("server.log").display()),
+        (None, false) => println!("X11         ready; starts with the server"),
     }
     0
 }

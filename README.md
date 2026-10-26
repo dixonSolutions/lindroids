@@ -37,7 +37,7 @@ sound effects playing through Android (<a href="media/demo-flatpak.mp4">video</a
 </tr>
 <tr>
 <td align="center"><img src="media/screenshots/phone-mousepad.png" width="200"><br><sub>Text input on a phone</sub></td>
-<td align="center"><img src="media/screenshots/xterm-x11.png" width="300"><br><sub>X11: <code>lindroids run --x11 xterm</code></sub></td>
+<td align="center"><img src="media/screenshots/xterm-x11.png" width="300"><br><sub>X11: <code>lindroids run xterm</code></sub></td>
 <td align="center"><img src="media/screenshots/folder-picker.png" width="300"><br><sub><code>lindroids pick-folder</code></sub></td>
 </tr>
 </table>
@@ -50,8 +50,10 @@ sound effects playing through Android (<a href="media/demo-flatpak.mp4">video</a
   larger than the screen are scaled down to fit instead of cut off.
 - **Anything with a window.** Native Termux packages (GTK, Qt, SDL, foot, mpv…), programs in a
   proot distro (`--distro debian`), installed **Flatpaks** (run without bubblewrap, which cannot
-  work inside an Android app), and X11-only programs (`--x11`, under Xwayland with a built-in
-  window manager).
+  work inside an Android app), and **X11 programs**, with no option needed: every session has an
+  X display, and each X11 window gets its own Android window (rootless Xwayland through
+  [xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite), started on the first X11
+  connection; `lindroids setup x11` installs what is missing).
 - **Sound.** A PulseAudio-compatible server plays every stream through Android (AAudio, or
   AudioTrack on Android 7): paplay, GStreamer, SDL, ALSA via pulse, libcanberra.
 - **Input.** Touch (as touch, or as a mouse for apps that don't do touch), mouse, hardware
@@ -91,7 +93,8 @@ lindroids run <command> [args]          # run a program; its windows open as And
 lindroids run "foot -e htop"            # a whole command line
 lindroids run --distro debian gedit     # from a proot-distro distro
 lindroids run org.gnome.Calculator      # an installed Flatpak (in Termux or any distro)
-lindroids run --x11 xterm               # an X11-only program
+lindroids run xterm                     # X11 programs too: each window is an Android window
+lindroids run --x11 gedit               # a toolkit app on X11 instead of Wayland
 lindroids run --name "Notes" --icon notes.svg mousepad
 
 lindroids export <command> [args]       # home screen shortcut; runs without Termux
@@ -100,6 +103,7 @@ lindroids list                          # what you exported from here
 lindroids remove <id>
 
 lindroids pick-folder                   # Android's folder picker; prints the chosen path
+lindroids setup x11                     # install Xwayland (and satellite where needed)
 lindroids status | doctor | pair | setup | start | stop | version
 ```
 
@@ -114,7 +118,7 @@ Useful environment: `LINDROIDS_SCALE=2` (output scale; default follows the scree
  │ Linux programs                      │                  │ one Activity per Linux window │
  │   │ Wayland    │ PulseAudio  X11    │                  │   SurfaceView ← changed tiles │
  │   ▼            ▼             ▼      │   link: unix     │   touch, keys, IME, clipboard │
- │ lindroids server ◀── Xwayland       │◀═══ socket or ═══▶│   AAudio / AudioTrack         │
+ │ lindroids server ◀── xwayland-sat.  │◀═══ socket or ═══▶│   AAudio / AudioTrack         │
  │  (Rust Wayland compositor +         │   loopback TCP   │   shortcuts, folder picker    │
  │   sound server, plain Linux)        │   (HMAC auth)    │   in-app server + proot for   │
  └────────────────────────────────────┘                  │   exported bundles            │

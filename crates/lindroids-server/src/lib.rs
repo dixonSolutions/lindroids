@@ -22,6 +22,7 @@ mod seat;
 mod shell;
 pub mod shm;
 mod surface;
+pub mod x11;
 
 pub use lindroids_proto::fdpass;
 
@@ -150,6 +151,27 @@ impl Shared {
 }
 
 static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
+
+static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static WAKE_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+extern "C" fn on_stop_signal(_: libc::c_int) {
+    STOP.store(true, std::sync::atomic::Ordering::SeqCst);
+    let fd = WAKE_FD.load(std::sync::atomic::Ordering::SeqCst);
+    if fd >= 0 {
+        unsafe { libc::write(fd, b"s".as_ptr() as *const _, 1) };
+    }
+}
+
+/// SIGTERM, SIGINT and SIGHUP end the main loop the way `lindroids stop` does, so the X display's
+/// socket and lock and the runtime files are removed. Only for the standalone server: the app
+/// that hosts one keeps Android's signal handling.
+pub fn stop_on_signals() {
+    WAKE_FD.store(shared().wake_w.as_raw_fd(), std::sync::atomic::Ordering::SeqCst);
+    for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+        unsafe { libc::signal(sig, on_stop_signal as *const () as libc::sighandler_t) };
+    }
+}
 
 pub fn shared() -> &'static Arc<Shared> {
     SHARED.get_or_init(Shared::new)
@@ -811,6 +833,15 @@ pub fn run(cfg: Config) -> i32 {
     output::register_globals(&dh);
     data::register_globals(&dh);
 
+    let _ = std::fs::remove_file(cfg.runtime_dir.join("x11-display"));
+    let mut x11 = match x11::X11::start(&cfg.runtime_dir, &wl_path) {
+        Ok(x) => Some(x),
+        Err(e) => {
+            info!("X11 is off: {e}");
+            None
+        }
+    };
+
     std::fs::write(cfg.runtime_dir.join("server.pid"), std::process::id().to_string()).ok();
     info!("listening on {}, @{app_name} and 127.0.0.1:{port} (sandbox {:?}, scale {scale})", wl_path.display(), cfg.sandbox);
     // The CLI waits for this line.
@@ -841,9 +872,26 @@ pub fn run(cfg: Config) -> i32 {
         for c in &state.clis {
             fds.push(pfd(c.stream.as_raw_fd()));
         }
-        let timeout = if state.frame_due.is_empty() { 1000 } else { 16 };
+        let x11_base = fds.len();
+        for fd in x11.as_ref().map(|x| x.poll_fds()).unwrap_or_default() {
+            fds.push(pfd(fd));
+        }
+        let mut timeout = if state.frame_due.is_empty() { 1000 } else { 16 };
+        if let Some(t) = x11.as_ref().and_then(|x| x.wants_timeout()) {
+            timeout = timeout.min(t.as_millis() as i32);
+        }
         unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
 
+        if STOP.load(std::sync::atomic::Ordering::SeqCst) {
+            info!("stopping on a signal");
+            state.running = false;
+        }
+        if let Some(x) = x11.as_mut() {
+            if fds[x11_base..].iter().any(|p| p.revents != 0) {
+                x.on_connection();
+            }
+            x.tick();
+        }
         if fds[0].revents != 0 {
             while let Ok(Some(stream)) = socket.accept() {
                 match display.handle().insert_client(stream, Arc::new(ClientState)) {

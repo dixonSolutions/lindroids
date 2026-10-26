@@ -88,9 +88,38 @@ are folded to stereo, stream and sink volumes are applied in the server.
 
 ## X11
 
-`lindroids run --x11` starts a rootful Xwayland on a free display and runs the program on it. A
-small window manager inside the `lindroids` binary (x11rb) makes normal windows fill the Android
-window, follows it when it resizes, centres dialogs and focuses the newest window.
+X11 is integrated: every session has an X display, and each X11 window becomes its own Wayland
+window, and so its own Android window, exactly like a Wayland program's.
+
+- **The display.** At startup the server reserves a free display `:N` the way an X server does
+  (`/tmp/.X<N>-lock`), listens on its socket (`/tmp/.X11-unix/X<N>`, or `$PREFIX/tmp/...` in
+  Termux, whose libraries are patched to look there) and on the abstract `@/tmp/.X11-unix/X<N>`,
+  and writes `:N` to `<runtime>/x11-display`. The CLI sets `DISPLAY` from that file for everything
+  it starts, so X11-only programs need no option. Toolkits that have a Wayland backend still use
+  it (`GDK_BACKEND`, `QT_QPA_PLATFORM`… are set to Wayland); `--x11` flips them to X11.
+- **Started on demand.** Nothing runs until an X11 program connects. Then the server starts
+  [xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite) (MPL-2.0) and hands it
+  the listening sockets (`-listenfd`), the way the niri compositor integrates it. Satellite runs
+  Xwayland *rootless* and turns every X11 toplevel into an `xdg_toplevel` (popups into
+  `xdg_popup`) of ours, with titles and app ids, and bridges the clipboard. Satellite needs only
+  what the server already has: the core interfaces, xdg-shell and viewporter. If it keeps dying,
+  the server stops restarting it and refuses X connections, so clients fail instead of hanging.
+- **Where it comes from.** `LINDROIDS_XWAYLAND_SATELLITE`, else the copy Lindroids ships next to
+  its binary (`<prefix>/libexec/lindroids/xwayland-satellite`: a bionic build in the Termux
+  package, a glibc one in the Debian package and the tarballs), else `xwayland-satellite` on PATH
+  (Fedora, Arch, Alpine and openSUSE package it). Xwayland always comes from the distribution;
+  `lindroids setup x11` installs what is missing with pkg, apt, dnf, pacman, apk or zypper and
+  restarts the server.
+- **proot distros** (`--distro`) share Termux's tmp as their /tmp, so their X11 programs reach the
+  Termux-side display; **Flatpaks** reach it through the abstract socket (their /tmp is private,
+  and the socket directory is bound in too).
+- **Exported X11 programs** (an ELF that links Xlib or XCB and no Wayland-capable toolkit, or
+  `--x11`) carry Xwayland and satellite in their bundle. On each launch the app reserves a display
+  inside the bundle's /tmp and runs satellite on those sockets next to the program, under the
+  bundle's proot.
+- **Fallback.** Without satellite, `--x11` still starts a rootful Xwayland with a small window
+  manager in the `lindroids` binary (x11rb): one Android window for the whole X screen, normal
+  windows filling it, dialogs centred.
 
 ## Flatpak
 

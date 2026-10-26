@@ -243,6 +243,10 @@ pub struct BundleManifest {
     /// Working directory inside the bundle's view of the filesystem.
     #[serde(default)]
     pub workdir: Option<String>,
+    /// An X11 program: the bundle carries Xwayland and xwayland-satellite (this path, in the
+    /// bundle's view), and every launch gets an X display of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x11_satellite: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

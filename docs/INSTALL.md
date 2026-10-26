@@ -37,8 +37,9 @@ lindroids run <command>
 ```
 
 Optional packages: `pkg install proot-distro` to run programs from a Debian/Ubuntu/Arch rootfs
-(`lindroids run --distro debian …`), and `pkg install x11-repo && pkg install xwayland` for
-X11-only programs (`lindroids run --x11 …`).
+(`lindroids run --distro debian …`). For X11 programs, `lindroids setup x11` installs Xwayland
+(from Termux's x11-repo); xwayland-satellite, which gives every X11 window its own Android window,
+comes with Lindroids. Anywhere else, `lindroids setup x11` uses that system's package manager.
 
 **Update:** `pkg upgrade` (or `apt update && apt install lindroids`). The package always carries
 the matching APK; to update the app, open `$PREFIX/share/lindroids/lindroids.apk` again with
@@ -136,4 +137,4 @@ Check a downloaded key with `gpg --show-keys lindroids.gpg`. The same key is in 
 
 - `NO_PUBKEY` or `not signed` from apt: the key file is missing or stale; run the installer again.
 - `apt update` cannot reach the repository from a proot distro: install `ca-certificates`.
-- `lindroids doctor` shows what the CLI found (sandbox, proot, Xwayland, server, app).
+- `lindroids doctor` shows what the CLI found (sandbox, proot, Xwayland, xwayland-satellite, server, app, the X display).

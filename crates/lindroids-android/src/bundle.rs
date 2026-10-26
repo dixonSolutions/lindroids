@@ -7,7 +7,7 @@
 
 use std::fs::File;
 use std::io::Read;
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -152,17 +152,58 @@ pub fn spawn(p: &SpawnPaths, argv: &[String], extra_env: &[(String, String)]) ->
         std::thread::sleep(Duration::from_millis(50));
     }
     let log = File::create(p.log).map_err(|e| e.to_string())?;
+    // An X11 program gets a display of its own: the sockets are reserved here, inside the
+    // bundle's /tmp, and handed to satellite, which starts next to the program (X11_WRAPPER).
+    let x11 = match &m.x11_satellite {
+        Some(sat) => {
+            let (tmp, sh) = match m.kind {
+                Kind::Termux => (p.bundle.join("usr/tmp"), format!("{TERMUX_PREFIX}/bin/sh")),
+                Kind::Rootfs { .. } => (p.bundle.join("root/tmp"), "/bin/sh".to_string()),
+            };
+            let r = lindroids_server::x11::reserve(&tmp.join(".X11-unix"), false)?;
+            let mut v = vec![sh, "-c".into(), X11_WRAPPER.into(), "lindroids-x11".into(), sat.clone(), r.display.to_string()];
+            v.extend(r.fds.iter().map(|f| f.as_raw_fd().to_string()));
+            v.push("--".into());
+            v.extend(argv.iter().cloned());
+            Some((r, v))
+        }
+        None => None,
+    };
+    let argv: &[String] = x11.as_ref().map_or(argv, |(_, v)| v.as_slice());
     let mut cmd = proot_command(p, &m, argv, extra_env);
     cmd.stdin(Stdio::null()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);
+    let inherit: Vec<i32> = x11.as_ref().map(|(r, _)| r.fds.iter().map(|f| f.as_raw_fd()).collect()).unwrap_or_default();
     unsafe {
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             libc::setsid();
+            for &fd in &inherit {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+            }
             Ok(())
         });
     }
     let child = cmd.spawn().map_err(|e| format!("starting proot: {e}"))?;
+    // The child has its copies of the X sockets; ours close here.
+    drop(x11);
     Ok(child.id())
 }
+
+/// Runs inside the bundle: `sh -c X11_WRAPPER lindroids-x11 <satellite> <n> <fd>... -- <argv>`.
+/// Satellite serves display :n on the inherited sockets and starts Xwayland on the first X11
+/// connection; it ends with the program.
+const X11_WRAPPER: &str = r#"
+sat=$1; n=$2; shift 2
+l=
+while [ "$1" != "--" ]; do l="$l -listenfd $1"; shift; done
+shift
+"$sat" ":$n" $l &
+s=$!
+DISPLAY=":$n" _JAVA_AWT_WM_NONREPARENTING=1 "$@"
+rc=$?
+kill $s 2>/dev/null
+exit $rc
+"#;
 
 /// Turn a raw fd from Java into an owned one.
 ///
@@ -186,7 +227,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lindroids-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut b = tar::Builder::new(Vec::new());
-        let m = Manifest { id: "x".into(), name: "X".into(), kind: Kind::Termux, env: vec![], workdir: None };
+        let m = Manifest { id: "x".into(), name: "X".into(), kind: Kind::Termux, env: vec![], workdir: None, x11_satellite: None };
         let text = serde_json::to_vec(&m).unwrap();
         let mut h = tar::Header::new_gnu();
         h.set_size(text.len() as u64);
@@ -210,7 +251,7 @@ mod tests {
 
     #[test]
     fn termux_bundle_command() {
-        let m = Manifest { id: "x".into(), name: "X".into(), kind: Kind::Termux, env: vec![], workdir: None };
+        let m = Manifest { id: "x".into(), name: "X".into(), kind: Kind::Termux, env: vec![], workdir: None, x11_satellite: None };
         let p = SpawnPaths { native_lib_dir: Path::new("/lib"), bundle: Path::new("/b"), runtime: Path::new("/r"), log: Path::new("/l") };
         let c = proot_command(&p, &m, &["xeyes".into()], &[]);
         let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();

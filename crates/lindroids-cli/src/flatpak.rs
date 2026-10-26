@@ -310,8 +310,9 @@ pub fn command(app: &App, args: &[String], o: &Opts, rt: &Path) -> Result<Comman
 }
 
 fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> Result<Command, String> {
-    if o.x11 {
-        return Err("--x11 is not supported for Flatpak apps (Xwayland is not in their runtime)".into());
+    let (x11_env, integrated_x11) = crate::sandbox::x11_env(rt);
+    if o.x11 && !integrated_x11 {
+        return Err("--x11 for a Flatpak needs the integrated X display (xwayland-satellite and Xwayland; `lindroids doctor`)".into());
     }
     let rtd = app.runtime()?;
     let program = app.program()?;
@@ -416,6 +417,12 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
         binds.push((shm, "/dev/shm".into()));
     }
     binds.push((tmp, "/tmp".into()));
+    // The integrated X display: its abstract socket is reachable from here anyway; the socket
+    // directory makes the path form work too.
+    let x_dir = lindroids_server::x11::socket_dir();
+    if integrated_x11 && x_dir.is_dir() {
+        binds.push((x_dir, "/tmp/.X11-unix".into()));
+    }
     binds.push((var_host.join("cache/tmp"), "/var/tmp".into()));
     binds.push((rt.to_path_buf(), format!("/run/user/{uid}")));
     binds.push((home_host.clone(), home.clone()));
@@ -483,6 +490,10 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
     env.push(("LD_LIBRARY_PATH".into(), ld_library_path(app)));
     env.push(("XDG_RUNTIME_DIR".into(), format!("/run/user/{uid}")));
     env.push(("WAYLAND_DISPLAY".into(), "wayland-0".into()));
+    env.extend(x11_env);
+    if o.x11 {
+        env.extend([("GDK_BACKEND", "x11"), ("QT_QPA_PLATFORM", "xcb"), ("SDL_VIDEODRIVER", "x11")].map(|(k, v)| (k.to_string(), v.to_string())));
+    }
     env.push(("PULSE_SERVER".into(), format!("unix:/run/user/{uid}/pulse/native")));
     env.push(("LANG".into(), std::env::var("LANG").ok().filter(|l| !l.is_empty()).unwrap_or_else(|| "C.UTF-8".into())));
     for (k, v) in std::env::vars() {

@@ -141,6 +141,8 @@ pub fn build_command(o: &Opts, target: &Target, rt: &Path) -> Result<Command, St
                 None => rt.to_path_buf(),
             };
             let mut env = sandbox::client_env(&rt_inside);
+            let (x11_env, integrated_x11) = sandbox::x11_env(rt);
+            env.extend(x11_env);
             if o.x11 {
                 env.retain(|(k, _)| !matches!(k.as_str(), "GDK_BACKEND" | "QT_QPA_PLATFORM" | "SDL_VIDEODRIVER" | "WAYLAND_DISPLAY"));
                 env.push(("GDK_BACKEND".into(), "x11".into()));
@@ -153,7 +155,9 @@ pub fn build_command(o: &Opts, target: &Target, rt: &Path) -> Result<Command, St
             } else {
                 argv.clone()
             };
-            let inner: Vec<String> = if o.x11 {
+            // --x11 without the integrated display: a rootful Xwayland of its own, with our
+            // window manager (one Android window for the whole X screen).
+            let inner: Vec<String> = if o.x11 && !integrated_x11 {
                 let tmp = if o.distro.is_some() || !Path::new(TERMUX_PREFIX).exists() { "/tmp".to_string() } else { format!("{TERMUX_PREFIX}/tmp") };
                 let n = free_display(&x11_dir());
                 let mut v = vec!["sh".into(), "-c".into(), X11_WRAPPER.replace("@TMP@", &tmp).replace("@RT@", &rt_inside.display().to_string()), "lindroids-x11".into(), n.to_string()];
@@ -165,6 +169,8 @@ pub fn build_command(o: &Opts, target: &Target, rt: &Path) -> Result<Command, St
             match &o.distro {
                 Some(d) => {
                     let mut c = Command::new("proot-distro");
+                    // `env` below sets what the program needs; DISPLAY must not leak in from here.
+                    c.env_remove("DISPLAY");
                     c.args(["login", d, "--shared-tmp", "--"]);
                     c.arg("env");
                     for (k, v) in &env {
@@ -176,6 +182,9 @@ pub fn build_command(o: &Opts, target: &Target, rt: &Path) -> Result<Command, St
                 None => {
                     let mut c = Command::new(&inner[0]);
                     c.args(&inner[1..]);
+                    if !env.iter().any(|(k, _)| k == "DISPLAY") {
+                        c.env_remove("DISPLAY");
+                    }
                     c.envs(env);
                     Ok(c)
                 }
@@ -235,7 +244,7 @@ pub fn cmd_run(args: &[String]) -> i32 {
         Ok(c) => c,
         Err(e) => return crate::fail(&format!("cannot start {}: {e}", o.command[0])),
     };
-    if o.x11 {
+    if o.x11 && sandbox::x11_display(&rt).is_none() {
         // The display the wrapper was given is the last free one we picked: find its socket.
         let dir = x11_dir();
         let display = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).skip_while(|a| a != "lindroids-x11").nth(1);

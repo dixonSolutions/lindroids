@@ -62,9 +62,31 @@ pub fn client_env(runtime: &Path) -> Vec<(String, String)> {
             v.push((k.into(), val.into()));
         }
     }
-    // The program runs with the server's runtime dir; a stale DISPLAY would send X11 apps to
-    // nowhere.
     v
+}
+
+/// The server's integrated X display (`:N`), if it has one; `runtime` as this process sees it.
+pub fn x11_display(runtime: &Path) -> Option<String> {
+    let d = std::fs::read_to_string(runtime.join("x11-display")).ok()?;
+    let d = d.trim();
+    d.starts_with(':').then(|| d.to_string())
+}
+
+/// DISPLAY for programs started here: the integrated display, so X11-only programs (and X11
+/// helpers of Wayland ones) get Android windows too. Without one, DISPLAY is removed rather than
+/// left pointing at the terminal's own X server or nowhere.
+pub fn x11_env(runtime: &Path) -> (Vec<(String, String)>, bool) {
+    match x11_display(runtime) {
+        Some(d) => (
+            vec![
+                ("DISPLAY".into(), d),
+                // Java's AWT draws nothing under a non-reparenting window manager unless told.
+                ("_JAVA_AWT_WM_NONREPARENTING".into(), "1".into()),
+            ],
+            true,
+        ),
+        None => (Vec::new(), false),
+    }
 }
 
 fn which(cmd: &str) -> Option<PathBuf> {

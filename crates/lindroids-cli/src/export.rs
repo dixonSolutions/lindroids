@@ -35,6 +35,34 @@ fn which_in(dirs: &[PathBuf], prog: &str) -> Option<PathBuf> {
     dirs.iter().map(|d| d.join(prog)).find(|p| p.exists())
 }
 
+/// Where an X11 bundle from a distro keeps satellite, in its own view.
+const SATELLITE_IN_ROOTFS: &str = "/usr/libexec/lindroids/xwayland-satellite";
+
+/// Whether a bundle needs an X display: asked for (`--x11`), or a program that only speaks X11.
+fn needs_x11(o: &Opts, program: &Path) -> bool {
+    if o.x11 {
+        return true;
+    }
+    let libs = crate::elf::needed(program).unwrap_or_default();
+    let x11 = crate::elf::x11_only(&libs);
+    if x11 {
+        eprintln!("lindroids: {} uses X11; the bundle gets Xwayland and xwayland-satellite", program.display());
+    }
+    x11
+}
+
+/// A glibc build of satellite for a Debian-family distro: the distro's own (Lindroids' Debian
+/// package, or a distro package), else the one the Termux package carries for this CPU.
+fn glibc_satellite(rootfs: &Path) -> Option<PathBuf> {
+    let candidates = [rootfs.join("usr/libexec/lindroids/xwayland-satellite"), rootfs.join("usr/bin/xwayland-satellite")];
+    if let Some(p) = candidates.into_iter().find(|p| p.is_file()) {
+        return Some(p);
+    }
+    let bin_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let p = bin_dir.join("../libexec/lindroids/glibc/xwayland-satellite");
+    p.is_file().then_some(p)
+}
+
 /// Turn a command into argv for inside the bundle: shell lines go through sh.
 fn bundle_argv(o: &Opts, sh: &str, resolved: &Path) -> Vec<String> {
     if run::is_shell_line(&o.command) {
@@ -69,7 +97,7 @@ fn closure_files(db: &Db, roots: Vec<String>, essential: bool, root: &Path, pref
 }
 
 fn plan(o: &Opts, target: &Target, sb: &sandbox::Sandbox, id: &str, name: &str) -> Result<Plan, String> {
-    let mut manifest = BundleManifest { id: id.into(), name: name.into(), kind: BundleKind::Termux, env: Vec::new(), workdir: None };
+    let mut manifest = BundleManifest { id: id.into(), name: name.into(), kind: BundleKind::Termux, env: Vec::new(), workdir: None, x11_satellite: None };
     match target {
         Target::Flatpak(app, args) => {
             let p = flatpak::bundle_plan(app, args, o)?;
@@ -89,10 +117,26 @@ fn plan(o: &Opts, target: &Target, sb: &sandbox::Sandbox, id: &str, name: &str) 
             // dpkg records /usr/bin/foo; merged-usr systems may have it as /bin/foo too.
             let owner = db.owner(&inside).or_else(|| db.owner(&inside.replacen("/usr", "", 1))).or_else(|| db.owner(&format!("/usr{inside}")));
             let mut roots: Vec<String> = owner.into_iter().collect();
-            if o.x11 {
-                roots.push("xwayland".into());
+            let x11 = needs_x11(o, &host);
+            if x11 {
+                let missing: Vec<&str> = ["xwayland", "libxcb1", "libxcb-cursor0"].into_iter().filter(|p| !db.installed(p)).collect();
+                if !missing.is_empty() {
+                    return Err(format!(
+                        "{prog} is an X11 program; its bundle needs {} in {distro} (proot-distro login {distro} -- apt install {})",
+                        missing.join(", "),
+                        missing.join(" ")
+                    ));
+                }
+                roots.extend(["xwayland".to_string(), "libxcb1".into(), "libxcb-cursor0".into()]);
             }
             let mut files = closure_files(&db, roots, true, &rootfs, "root", "");
+            if x11 {
+                let sat = glibc_satellite(&rootfs).ok_or_else(|| {
+                    format!("{prog} is an X11 program, and no xwayland-satellite built for {distro} was found (Lindroids ships one in libexec/lindroids/glibc/)")
+                })?;
+                files.push((sat, format!("root{SATELLITE_IN_ROOTFS}")));
+                manifest.x11_satellite = Some(SATELLITE_IN_ROOTFS.into());
+            }
             // /etc whole (small; holds generated files like ld.so.cache and passwd).
             for e in walk(&rootfs.join("etc")) {
                 let rel = e.strip_prefix(&rootfs).unwrap().display().to_string();
@@ -122,10 +166,20 @@ fn plan(o: &Opts, target: &Target, sb: &sandbox::Sandbox, id: &str, name: &str) 
             }
             // A shell and the basic tools: terminals start $SHELL, shell lines need sh.
             roots.extend(["bash".to_string(), "dash".into(), "coreutils".into()]);
-            if o.x11 {
-                roots.push("xwayland".into());
+            let x11 = needs_x11(o, &real);
+            if x11 {
+                if !db.installed("xwayland") {
+                    return Err(format!("{prog} is an X11 program; its bundle needs Xwayland (`lindroids setup x11`)"));
+                }
+                roots.extend(["xwayland".to_string(), "libxcb".into(), "xcb-util-cursor".into()]);
             }
             let mut files = closure_files(&db, roots, false, Path::new("/"), "usr", TERMUX_PREFIX);
+            if x11 {
+                let sat = lindroids_server::x11::find_satellite().ok_or("X11 bundles need xwayland-satellite (`lindroids doctor`)")?;
+                let inside = format!("{TERMUX_PREFIX}/libexec/lindroids/xwayland-satellite");
+                files.push((sat, format!("usr{}", inside.strip_prefix(TERMUX_PREFIX).unwrap())));
+                manifest.x11_satellite = Some(inside);
+            }
             if host.starts_with(TERMUX_PREFIX) && !files.iter().any(|(h, _)| *h == host) {
                 let rel = host.strip_prefix(TERMUX_PREFIX).unwrap().display().to_string();
                 files.push((host.clone(), format!("usr{rel}")));
