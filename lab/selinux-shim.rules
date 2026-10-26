@@ -21,3 +21,4 @@ allow appdomain gpu_device dir { search getattr }
 allowxperm appdomain gpu_device chr_file ioctl 0x0000-0xffff
 allow appdomain init binder { call transfer }
 allow appdomain init fd use
+allow init appdomain binder { call transfer }
