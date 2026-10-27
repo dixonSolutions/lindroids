@@ -184,7 +184,42 @@ pub enum Target {
     Flatpak(flatpak::App, Vec<String>),
 }
 
+/// `flatpak run [options] <app> [args]`: the app and its arguments (Flatpak's own options left
+/// out).
+pub fn flatpak_run(cmd: &[String]) -> Option<(String, Vec<String>)> {
+    let prog = cmd.first()?;
+    if !(prog == "flatpak" || prog.ends_with("/flatpak")) || cmd.get(1).map(String::as_str) != Some("run") {
+        return None;
+    }
+    // Flatpak's options that take their value as the next argument.
+    const VALUED: [&str; 8] = ["--command", "--branch", "--arch", "--runtime", "--runtime-version", "--commit", "--runtime-commit", "--cwd"];
+    let mut i = 2;
+    while let Some(a) = cmd.get(i) {
+        if a == "--" {
+            i += 1;
+            break;
+        }
+        if !a.starts_with('-') {
+            break;
+        }
+        i += if VALUED.contains(&a.as_str()) { 2 } else { 1 };
+    }
+    let id = cmd.get(i)?.clone();
+    flatpak::looks_like_id(&id).then(|| (id, cmd[i + 1..].to_vec()))
+}
+
 pub fn resolve(o: &Opts) -> Result<Target, String> {
+    // On Android Flatpak's own `flatpak run` cannot work (bubblewrap needs root there): run the app
+    // as `lindroids run <app>` does.
+    if sandbox::on_android() && !is_shell_line(&o.command) {
+        if let Some((id, args)) = flatpak_run(&o.command) {
+            let root = o.distro.as_deref().map(distro_rootfs).unwrap_or_else(|| PathBuf::from("/"));
+            return match flatpak::find(&root, &id) {
+                Some(app) => Ok(Target::Flatpak(app, args)),
+                None => Err(format!("{id} is not installed{}", o.distro.as_ref().map(|d| format!(" in {d}")).unwrap_or_default())),
+            };
+        }
+    }
     let first = &o.command[0];
     if !is_shell_line(&o.command) && flatpak::looks_like_id(first) {
         let root = o.distro.as_deref().map(distro_rootfs).unwrap_or_else(|| PathBuf::from("/"));
@@ -544,6 +579,19 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn flatpak_run_names_the_app() {
+        assert_eq!(flatpak_run(&s(&["flatpak", "run", "org.gnome.Calculator"])), Some(("org.gnome.Calculator".into(), vec![])));
+        assert_eq!(
+            flatpak_run(&s(&["/usr/bin/flatpak", "run", "--user", "--branch", "stable", "--command=sh", "org.gnome.TextEditor", "a.txt"])),
+            Some(("org.gnome.TextEditor".into(), s(&["a.txt"])))
+        );
+        assert_eq!(flatpak_run(&s(&["flatpak", "run", "--", "org.x.Y", "-v"])), Some(("org.x.Y".into(), s(&["-v"]))));
+        assert_eq!(flatpak_run(&s(&["flatpak", "install", "org.gnome.Calculator"])), None);
+        assert_eq!(flatpak_run(&s(&["flatpak", "run"])), None);
+        assert_eq!(flatpak_run(&s(&["foot"])), None);
     }
 
     #[test]

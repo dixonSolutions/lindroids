@@ -111,6 +111,7 @@ ticket.
 ```sh
 lindroids run <command> [args]           # run a program in a window of its own
 lindroids run org.gnome.TextEditor       # a Flatpak
+lindroids run flatpak run <app> [args]   # the same (on Android without bubblewrap, which needs root)
 lindroids run --prootdistro=debian gedit # from a proot-distro distro (found without it, too)
 lindroids run xterm                      # X11 programs too
 
