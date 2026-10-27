@@ -4,9 +4,13 @@
 # browser that is on the device as the display:
 #   push the CLI, `lindroids run foot` (which opens the page in the browser), check the page linked
 #   and shows the window, type into it, stop+start the server and check the page relinks, then
-#   export foot, add its shortcut, stop Termux and tap the shortcut.
+#   export foot, add its shortcut, stop Termux and tap the shortcut. Also: whose icon and name the
+#   window has in Recents, and that the program ending closes its window (Chromium; Firefox cannot).
 #
-#   lab/test-lindroids.sh <name>
+#   [LAB_BROWSER=<package>] lab/test-lindroids.sh <name>
+#
+# LAB_BROWSER makes that browser the default first (Cromite: its "Allow custom tab intents" must be
+# on, which the lab's is).
 #
 # Results: lab/results/<name>/<selinux mode>/ (screenshots, logcat, avc denials, result.txt), and a
 # row in lab/results/SUMMARY.md. Uses the x86_64 CLI that is there now.
@@ -34,7 +38,7 @@ REL=$(sh_ getprop ro.build.version.release)
 SDK=$(sh_ getprop ro.build.version.sdk)
 SEL=$(sh_ getenforce)
 MODE=$(tr 'A-Z' 'a-z' <<<"${SEL:-unknown}")
-OUT=$REPO/lab/results/$NAME/$MODE
+OUT=$REPO/lab/results/$NAME/$MODE${LAB_BROWSER:+-$LAB_BROWSER}
 rm -rf "$OUT"
 mkdir -p "$OUT"
 declare -A R
@@ -84,7 +88,7 @@ finish() {
   R[avc_denied]=$(wc -l <"$OUT/avc-denied.txt")
   {
     for k in vm android image kernel selinux cmdline_selinux gpu cli browser cli_push opened_by linked \
-      window window_size typing close_ends_program second_run shortcut avc_denied result notes; do
+      default_browser window window_size recents typing close_ends_program second_run end_closes_window shortcut avc_denied result notes; do
       printf '%-24s %s\n' "$k" "${R[$k]:-}"
     done
   } | tee "$OUT/result.txt"
@@ -92,21 +96,20 @@ finish() {
 }
 
 summary_row() {
-  local f=$REPO/lab/results/SUMMARY.md key="| $NAME | ${R[selinux]} |"
-  if [[ ! -f $f ]]; then
-    cat >"$f" <<'EOF'
-# Lindroids lab results
+  # One row per VM, SELinux mode and browser, in the last section (re-running replaces the row).
+  local f=$REPO/lab/results/SUMMARY.md browser="${R[browser]:-} (default ${R[default_browser]:-none})"
+  local key="| $NAME | ${R[selinux]} | ${R[android]} | $browser |"
+  grep -q '^## Recents and closing both ways' "$f" 2>/dev/null || cat >>"$f" <<'EOF'
 
-Written by lab/test-lindroids.sh (one row per VM and SELinux mode; re-running replaces the row).
+## Recents and closing both ways (from 2026-10-28)
 
-| VM | SELinux | Android | Image | Browser | Linked | Window | Typing | Closing ends it | AVC denials (browser/Termux) | Result | Date |
-|----|---------|---------|-------|---------|--------|--------|--------|-----------|------------------------------|--------|------|
+| VM | SELinux | Android | Browser | Linked | Window | Recents | Typing | Window closed → program ends | Program ends → window closes | Shortcut | AVC denials (browser/Termux) | Result | Date |
+|----|---------|---------|---------|--------|--------|---------|--------|------------------------------|------------------------------|----------|------------------------------|--------|------|
 EOF
-  fi
   grep -vF "$key" "$f" >"$f.tmp" || true
-  printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' "$NAME" "${R[selinux]}" "${R[android]}" \
-    "${R[image]}" "${R[browser]:-}" "${R[linked]:-}" "${R[window]:-}" "${R[typing]:-}" "${R[close_ends_program]:-}" \
-    "${R[avc_denied]:-}" "${R[result]:-}" "$(date +%F)" >>"$f.tmp"
+  printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' "$NAME" "${R[selinux]}" "${R[android]}" \
+    "$browser" "${R[linked]:-}" "${R[window]:-}" "${R[recents]:-}" "${R[typing]:-}" "${R[close_ends_program]:-}" \
+    "${R[end_closes_window]:-}" "${R[shortcut]:-}" "${R[avc_denied]:-}" "${R[result]:-}" "$(date +%F)" >>"$f.tmp"
   mv "$f.tmp" "$f"
 }
 
@@ -127,22 +130,23 @@ log "Termux uid $TUID"
 adb_ logcat -c
 # A clean slate: no Lindroids app (there is none any more), no Termux setting that lets apps run
 # commands in Termux, no display paired (the browser pairs again with the ticket in its URL).
-tsh 'lindroids stop >/dev/null 2>&1; pkill -x foot; rm -rf ~/.local/share/lindroids/displays; sed -i "/allow-external-apps/d" ~/.termux/termux.properties 2>/dev/null; termux-reload-settings 2>/dev/null; true'
+tsh 'lindroids stop >/dev/null 2>&1; pkill -x foot; rm -rf ~/.local/share/lindroids/displays; rm -f $TMPDIR/lindroids-$(id -u)/window-browser $TMPDIR/lindroids-$(id -u)/windows; sed -i "/allow-external-apps/d" ~/.termux/termux.properties 2>/dev/null; termux-reload-settings 2>/dev/null; true'
 sh_ "pm uninstall $OLD_APP" >/dev/null 2>&1 || true
 # The lab images' own crashes (Media Storage on a nearly full disk) put dialogs over the screen
 # that swallow the test's taps: no crash dialogs in the lab.
 sh_ 'settings put global hide_error_dialogs 1' >/dev/null 2>&1 || true
-# The browser whose Custom Tabs are the windows: the first of the CLI's list that is installed
-# (crates/lindroids-cli/src/shortcut.rs, WINDOW_BROWSERS), not the default browser.
-BROWSER=""
+# The browser for the windows is the CLI's choice (crates/lindroids-cli/src/shortcut.rs,
+# WINDOW_BROWSERS: the default browser unless it is Firefox, Chromium ones, Firefox last; one that
+# opens an ordinary tab is passed over), read back once the window is open. LAB_BROWSER makes a
+# browser the default first.
+[[ -n ${LAB_BROWSER:-} ]] && sh_ "cmd role add-role-holder android.app.role.BROWSER $LAB_BROWSER 0" >/dev/null
+R[default_browser]=$(sh_ 'dumpsys role' | grep -A1 'name=android.app.role.BROWSER' | sed -n 's/.*holders=//p' | head -1)
 pkgs=$(sh_ 'pm list packages' | tr -d '\r')
-for b in org.mozilla.firefox com.android.chrome com.microsoft.emmx com.sec.android.app.sbrowser com.brave.browser com.vivaldi.browser org.mozilla.firefox_beta org.mozilla.fenix com.chrome.beta org.chromium.chrome; do
-  grep -qx "package:$b" <<<"$pkgs" && { BROWSER=$b; break; }
+for b in com.android.chrome com.microsoft.emmx com.brave.browser com.vivaldi.browser com.sec.android.app.sbrowser com.chrome.beta org.chromium.chrome org.cromite.cromite org.mozilla.firefox org.mozilla.firefox_beta org.mozilla.fenix; do
+  grep -qx "package:$b" <<<"$pkgs" && sh_ "am force-stop $b" >/dev/null 2>&1
 done
-[[ -n $BROWSER ]] || fail "no browser with Custom Tabs on the device"
-R[browser]=$BROWSER
-sh_ "am force-stop $BROWSER" >/dev/null 2>&1 || true
-log "browser $BROWSER"
+BROWSER=""
+log "default browser ${R[default_browser]:-none}"
 # Termux's `am` (app_process) is killed by seccomp where an ARM translation layer is loaded, as on
 # these x86 images; phones have none, and Termux's am socket server is not up in every Termux. Turn
 # the bridge off for the test, as a phone would have it (needs root and Magisk's resetprop).
@@ -165,8 +169,24 @@ tsh 'lindroids doctor' >"$OUT/doctor.txt" 2>&1
 linked() { tsh 'lindroids status' 2>/dev/null | grep -qE '^display +linked'; }
 for i in $(seq 1 20); do linked && break; sleep 0.5; done
 linked && R[linked]=yes || { R[linked]=no; shot not-linked; fail "the page did not link ($(tr '\n' ' ' <"$OUT/start.txt"))"; }
+# Settle: a browser passed over for an ordinary tab links first; the window's page (a cold
+# browser can take 15 s) then replaces it. Wait until no page has linked for 5 s.
+links() { tsh 'grep -c "app linked" $TMPDIR/lindroids-$(id -u)/server.log' | tr -d '\r '; }
+n=$(links); same=0
+for i in $(seq 1 40); do
+  sleep 1
+  m=$(links)
+  if [[ $m == "$n" ]]; then same=$((same + 1)); else same=0; n=$m; fi
+  [[ $same -ge 5 ]] && break
+done
 R[opened_by]=$(tsh 'grep -oE "browser at [^ ]+ [^ ]+" $TMPDIR/lindroids-$(id -u)/server.log | tail -1' | tr -d '\r')
-log "linked"
+BROWSER=$(tsh 'cat $TMPDIR/lindroids-$(id -u)/window-browser 2>/dev/null' | tr -d '\r ')
+R[browser]=${BROWSER:-none}
+# Chromium's Custom Tabs take the page's title and icon to Recents and close when the page asks.
+[[ $BROWSER == org.mozilla.* ]] && CHROMIUM=no || CHROMIUM=yes
+log "linked, window in ${R[browser]}"
+# A browser passed over for opening an ordinary tab pairs too: the second run must add none.
+DISPLAYS=$(tsh 'ls ~/.local/share/lindroids/displays | wc -l' | tr -d '\r ')
 
 # --------------------------------------------------------------- window
 win=""
@@ -185,6 +205,26 @@ if [[ $top == *"$BROWSER"* && -n ${R[window_size]} && ${R[window_size]} != 0x0 ]
   R[notes]="${R[notes]:-} top=[$(xargs <<<"$top")] status-window=[$win]"
 fi
 log "window: ${R[window]} (${R[window_size]:-?})"
+
+# --------------------------------------------------------------- Recents: the program's name and icon
+# The window's task as Recents draws it: the TaskDescription its activity set (Chromium: the page's
+# title and favicon; Firefox sets none, so Android shows Firefox's own).
+recents() {
+  sh_ 'dumpsys activity activities' >"$OUT/activities.txt"
+  awk '/window&run=/{f=1} f&&/taskDescription:/{print; exit}' "$OUT/activities.txt"
+}
+desc=$(recents)
+label=$(sed -n 's/.*taskDescription: label="\([^"]*\)".*/\1/p' <<<"$desc")
+[[ $label == null ]] && label=""
+iconfile=$(sed -n 's/.*iconFilename=\([^ ]*\).*/\1/p' <<<"$desc")
+[[ $iconfile == null ]] && iconfile=""
+if [[ -n $iconfile ]] && adb_ exec-out cat "$iconfile" >"$OUT/recents-icon.png" 2>/dev/null && [[ $(head -c 4 "$OUT/recents-icon.png" | tail -c 3) == PNG ]]; then
+  R[recents]="program's: \"$label\", icon $(python3 -c 'import struct,sys; d=open(sys.argv[1],"rb").read(24); print("%dx%d" % struct.unpack(">II", d[16:24]))' "$OUT/recents-icon.png" 2>/dev/null) (recents-icon.png)"
+else
+  rm -f "$OUT/recents-icon.png"
+  R[recents]="browser's icon (label \"${label:-none}\")"
+fi
+log "recents: ${R[recents]}"
 
 # --------------------------------------------------------------- typing
 if [[ ${R[window]} == yes ]]; then
@@ -206,9 +246,20 @@ log "typing: ${R[typing]}"
 # --------------------------------------------------------------- closing the window ends the program
 adb_ logcat -d -v threadtime >"$OUT/logcat-1.txt" 2>/dev/null
 adb_ logcat -c
-# Back leaves full screen, then closes the Custom Tab; the page says it is closing, and the relay
-# ends the run 5 s later.
-sh_ 'input keyevent 4'; sleep 1; sh_ 'input keyevent 4'
+# Back leaves full screen, then the window's ✕ (Firefox: "Return to previous app"; Chromium:
+# close_button) closes the Custom Tab; the page says it is closing, and the relay ends the run 5 s
+# later. (A second Back would only send a Chromium window to the background, alive.)
+# Full screen settles first: a Back while it comes in is lost. A Back may only take the keyboard
+# away; press it until the bar (and its ✕) shows, never once more: in Chromium that would send the
+# window to the background.
+sleep 2
+xy=""
+for i in 1 2 3; do
+  sh_ 'input keyevent 4'
+  sleep 1.5
+  xy=$(ui_find '(?i)^(close tab|return to previous app)$|:id/close_button$') && break
+done
+if [[ -n $xy ]]; then sh_ "input tap $xy"; else R[notes]="${R[notes]:-} no-close-button"; fi
 R[close_ends_program]="no (foot still running after 15 s)"
 for i in $(seq 1 15); do
   sleep 1
@@ -222,13 +273,32 @@ sh_ "am start -n com.termux/.app.TermuxActivity" >/dev/null 2>&1
 sleep 2
 tsh 'cd ~; (nohup lindroids run foot >run2.log 2>&1 </dev/null &); sleep 12; lindroids status; lindroids displays' >"$OUT/status-second-run.txt" 2>&1
 shot window-second-run
-if grep -qE '^window .* [1-9][0-9]*x[1-9]' "$OUT/status-second-run.txt" && [[ $(tsh 'ls ~/.local/share/lindroids/displays | wc -l' | tr -d '\r ') == 1 ]]; then
+if grep -qE '^window .* [1-9][0-9]*x[1-9]' "$OUT/status-second-run.txt" && [[ $(tsh 'ls ~/.local/share/lindroids/displays | wc -l' | tr -d '\r ') == "$DISPLAYS" ]]; then
   R[second_run]="yes (same display)"
 else
   R[second_run]=no
 fi
 log "second run: ${R[second_run]}"
-tsh 'pkill -x foot; true'
+
+# --------------------------------------------------------------- the program ending closes its window
+# The window's URL names the run by the pid `lindroids run` started: foot's own.
+run=$(tsh 'pgrep -xn foot' | tr -d '\r ')
+sh_ 'dumpsys activity recents' >"$OUT/recents-before-end.txt"
+if [[ -z $run ]] || ! grep -q "window&run=$run\b" "$OUT/recents-before-end.txt"; then
+  R[end_closes_window]="no window for run ${run:-?} before it ended"
+else
+  tsh 'pkill -x foot; true'
+  R[end_closes_window]="no (window still in Recents after 10 s)"
+  for i in $(seq 1 10); do
+    sleep 1
+    sh_ 'dumpsys activity recents' >"$OUT/recents-after-end.txt"
+    grep -q 'Recent #0' "$OUT/recents-after-end.txt" || continue
+    grep -q "window&run=$run\b" "$OUT/recents-after-end.txt" || { R[end_closes_window]="yes ${i}s"; break; }
+  done
+fi
+shot program-ended
+[[ $CHROMIUM == no && ${R[end_closes_window]} == no* ]] && R[end_closes_window]="no: Firefox ignores window.close(), the ended screen asks for ✕"
+log "program ending closes the window: ${R[end_closes_window]}"
 
 # --------------------------------------------------------------- home screen shortcut
 # `lindroids export` pins a shortcut owned by Termux; tapping it with Termux stopped must bring
@@ -237,16 +307,21 @@ tsh 'lindroids remove lab.foot >/dev/null 2>&1; lindroids export --id lab.foot -
 xy=""
 for i in $(seq 1 10); do xy=$(ui_find '(?i)^add( to home screen)?$') && break; sleep 1; done
 shot pin-dialog
-if [[ -z $xy ]]; then
+# Pinned before (`lindroids remove` can only disable a pinned shortcut): exporting again updates
+# and enables it in place, without the dialog.
+if [[ -z $xy ]] && ! grep -q 'is updated' "$OUT/export.txt"; then
   R[shortcut]="no pin dialog ($(tr '\n' ' ' <"$OUT/export.txt"))"
 else
-  sh_ "input tap $xy"
+  [[ -n $xy ]] && sh_ "input tap $xy"
   sleep 2
   sh_ 'am force-stop com.termux'
   sh_ 'input keyevent KEYCODE_HOME'
   sleep 2
   shot home-shortcut
-  if xy=$(ui_find '^LabFoot$'); then
+  # Exported icons go on the launcher's next page when the first is full.
+  xy=$(ui_find '^LabFoot$') || { read -r W H < <(sh_ wm size | grep -oE '[0-9]+x[0-9]+' | tail -1 | tr x ' '); sh_ "input swipe $((W * 4 / 5)) $((H / 2)) $((W / 5)) $((H / 2)) 300"; sleep 1; xy=$(ui_find '^LabFoot$'); } || xy=""
+  shot home-shortcut-found
+  if [[ -n $xy ]]; then
     t0=$(date +%s)
     sh_ "input tap $xy"
     R[shortcut]="no (no window within 60 s)"
@@ -274,7 +349,10 @@ fi
 log "shortcut: ${R[shortcut]}"
 tsh 'pkill -x foot; lindroids remove lab.foot >/dev/null 2>&1; true'
 
-if [[ ${R[linked]} == yes && ${R[window]} == yes && ${R[typing]} == yes && ${R[close_ends_program]} == yes* && ${R[second_run]} == yes* && ${R[shortcut]} == yes* ]]; then
+# Chromium must also show the program in Recents and close its window when it ends.
+chromium_ok=yes
+[[ $CHROMIUM == yes && ( ${R[recents]} != program* || ${R[end_closes_window]} != yes* ) ]] && chromium_ok=no
+if [[ ${R[linked]} == yes && ${R[window]} == yes && ${R[typing]} == yes && ${R[close_ends_program]} == yes* && ${R[second_run]} == yes* && ${R[shortcut]} == yes* && $chromium_ok == yes ]]; then
   R[result]=PASS
 else
   R[result]=FAIL

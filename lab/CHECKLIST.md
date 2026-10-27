@@ -19,7 +19,9 @@ from Android**, through the window page and Termux, never by giving the containe
 | Full screen, no browser bars | 🟡 | after the first tap (browsers allow full screen only on a tap) |
 | Follows Android's dark mode and accent colour | ✅ | Settings portal; libadwaita, GTK 3 |
 | Program's icons and title bar draw right (Adwaita) | ✅ | portal sends GNOME's icon theme and button layout |
-| Closing the program ends the window | 🟡 | Chromium Custom Tabs: the window closes itself and leaves Recents (b16, Cromite); ⛔ Firefox ignores `window.close()`: the ended screen asks for one tap on ✕ |
+| Closing the program ends the window | 🟡 | Chromium Custom Tabs: the window closes itself and leaves Recents, whatever the default browser (b16: Firefox the default, Cromite's window; lab test); ⛔ with only Firefox: the ended screen asks for one tap on ✕ |
+| Closing the window ends the program | ✅ | ✕ → 5 s (Firefox, Cromite; lab test); Back only sends a Chromium window to the background, alive |
+| Any default browser; Custom Tabs not assumed | ✅ | the helper reads which activity a browser opened (`startActivityAndWait`); an ordinary tab (Cromite with *Allow custom tab intents* off) is passed over and closes itself (b16 lab test: Firefox window) |
 | Closing the window (✕, swipe from Recents) ends the program | ✅ | |
 | Back does not lose the program | ✅ | Back only sends the window behind |
 | Coming back to a window that left full screen in the background | 🟡 | Firefox lays the page under its toolbar until the next tap (which goes full screen again) |
@@ -61,6 +63,7 @@ from Android**, through the window page and Termux, never by giving the containe
 | Microphone | 🟡 | PulseAudio recording from the page's microphone (desktop Chromium: −21 dBFS from a fake mic); the VM has no microphone to check |
 | Screen density, rotation | 🟡 | integer scale fixed at connect; rotation resizes |
 | Soft keyboard, hardware keyboard | 🟡 | US layout only outside text-input programs |
+| Typed text arrives in order | ✅ | what keys can type goes as keys, not text-input (keys overtook it); keys wait while Firefox holds a composition open for one injected key (`echo` had arrived as `eco…h`); lab test in Firefox (b16) |
 
 ## Speed (b16, software rendering)
 

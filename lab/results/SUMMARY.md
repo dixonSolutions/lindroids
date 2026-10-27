@@ -23,3 +23,10 @@ New rows go below.
 |----|---------|---------|-------|---------|--------|--------|--------|-----------------|------------------------------|--------|------|
 | b16 | Permissive | 13 (sdk 33) | TQ3A.230901.001.C1 | org.mozilla.firefox | yes | yes | yes | yes 5s | 10 | PASS | 2026-10-27 |
 | b16 | Enforcing | 13 (sdk 33) | TQ3A.230901.001.C1 | org.mozilla.firefox | yes | yes | yes | yes 5s | 3 | PASS | 2026-10-27 |
+
+## Recents and closing both ways (from 2026-10-28)
+
+| VM | SELinux | Android | Browser | Linked | Window | Recents | Typing | Window closed → program ends | Program ends → window closes | Shortcut | AVC denials (browser/Termux) | Result | Date |
+|----|---------|---------|---------|--------|--------|---------|--------|------------------------------|------------------------------|----------|------------------------------|--------|------|
+| b16 | Enforcing | 13 (sdk 33) | org.mozilla.firefox (default org.mozilla.firefox) | yes | yes | browser's icon (label "none") | yes | yes 5s | no: Firefox ignores window.close(), the ended screen asks for ✕ | yes 2s | 18 | PASS | 2026-10-28 |
+| b16 | Enforcing | 13 (sdk 33) | org.cromite.cromite (default org.mozilla.firefox) | yes | yes | program's: "foot", icon 72x72 (recents-icon.png) | yes | yes 5s | yes 2s | yes 1s | 27 | PASS | 2026-10-28 |
