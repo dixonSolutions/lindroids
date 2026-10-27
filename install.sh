@@ -22,6 +22,7 @@
 #   LINDROIDS_INSTALL_DIR   static install target (default ~/.local/bin)
 #   LINDROIDS_METHOD        force apt-termux | pacman-termux | apt-debian | pacman-arch | static
 #   LINDROIDS_FLATPAK       yes | no: install Flatpak (with Flathub) without asking, or skip it
+#   LINDROIDS_SETUP         no: on Android, do not install the Lindroids app and pair it afterwards
 #   LINDROIDS_DISTRO        proot-distro distro for Flatpak in Termux (default: the first one installed;
 #                           the installer never installs a distro)
 set -eu
@@ -147,6 +148,19 @@ next_steps() {
   fi
   echo
   echo "Update: $update"
+  setup_app
+}
+
+# On Android (Termux, or a distro under proot): install the Lindroids app from the package and pair
+# it, which `lindroids setup` does (it opens Android's installer, then waits for the pairing code).
+# Needs the terminal for that; `lindroids update` does its own.
+setup_app() {
+  [ "${LINDROIDS_SETUP:-}" != no ] || return 0
+  [ -n "$TERMUX" ] || [ -e /system/bin/app_process ] || [ -e /system/build.prop ] || return 0
+  (: < /dev/tty) 2>/dev/null || { echo "Run 'lindroids setup' to install the Lindroids app and pair it."; return 0; }
+  echo
+  say "lindroids setup: installing the Lindroids app and pairing it"
+  lindroids setup < /dev/tty || warn "the app is not set up yet; run 'lindroids setup' again"
 }
 
 FLATHUB=https://dl.flathub.org/repo/flathub.flatpakrepo
@@ -455,8 +469,12 @@ install_static() {
     *":$dir:"*) ;;
     *) warn "$dir is not in PATH; add: export PATH=\"$dir:\$PATH\""; PATH=$dir:$PATH ;;
   esac
-  # Not when `lindroids update` runs this: that is about the CLI only.
-  [ -n "${LINDROIDS_INSTALL_DIR:-}" ] || flatpak_system
+  # Not when `lindroids update` runs this: that is about the CLI only (and it sets up the app).
+  if [ -n "${LINDROIDS_INSTALL_DIR:-}" ]; then
+    LINDROIDS_SETUP=no
+  else
+    flatpak_system
+  fi
   next_steps "" "run this installer again"
 }
 

@@ -311,8 +311,19 @@ pub fn cmd_setup() -> i32 {
     match bundled_apk() {
         Some(apk) => {
             println!("Installing the Lindroids app ({})...", lindroids_server::BUILD);
+            // This build's APK on the release page: the browser can always install it, with its own
+            // permission, where Termux cannot hand the APK to Android's installer (the Google Play
+            // build of Termux, a blocked "install unknown apps").
+            let version = lindroids_server::BUILD.split('+').next().unwrap_or("");
+            let url = if !version.is_empty() && version.split('.').all(|p| p.parse::<u64>().is_ok()) {
+                format!("https://github.com/dixonSolutions/lindroids/releases/download/v{version}/lindroids-{version}.apk")
+            } else {
+                RELEASES.to_string()
+            };
+            let play = std::env::var("TERMUX_APK_RELEASE").map_or(false, |r| r.contains("PLAY"));
             // termux-open runs app_process, which an ARM translation layer gets killed.
-            let opened = sandbox::have("termux-open")
+            let opened = !play
+                && sandbox::have("termux-open")
                 && !sandbox::native_bridge()
                 && Command::new("termux-open")
                     .args(["--view", "--content-type", "application/vnd.android.package-archive"])
@@ -322,24 +333,30 @@ pub fn cmd_setup() -> i32 {
                     .map_or(false, |s| s.success());
             if opened {
                 println!("Android's installer is open: tap Install (allow Termux to install apps if asked).");
-            } else {
-                // Shared storage, where the Files app can open it.
-                let targets = [
-                    std::env::var("HOME").map(|h| Path::new(&h).join("storage/downloads")).unwrap_or_default(),
-                    "/sdcard/Download".into(),
-                    "/storage/emulated/0/Download".into(),
-                ];
-                let copied = targets.iter().filter(|d| d.is_dir()).find_map(|d| {
-                    let dst = d.join("lindroids.apk");
-                    std::fs::copy(&apk, &dst).ok().map(|_| dst)
-                });
-                match copied {
-                    Some(p) => println!("Copied the app to {}: open it from the Files app (Downloads) and tap Install.", p.display()),
-                    None => println!(
-                        "Install the app from {RELEASES}\n(or run `termux-setup-storage` and `lindroids setup` again to get it in Downloads)."
-                    ),
-                }
+            } else if sandbox::have("termux-open-url")
+                && !sandbox::native_bridge()
+                && Command::new("termux-open-url").arg(&url).stderr(Stdio::null()).status().map_or(false, |s| s.success())
+            {
+                println!("The browser is downloading the app: open the download and tap Install.");
             }
+            // Shared storage too, where the Files app can open it.
+            let targets = [
+                std::env::var("HOME").map(|h| Path::new(&h).join("storage/downloads")).unwrap_or_default(),
+                "/sdcard/Download".into(),
+                "/storage/emulated/0/Download".into(),
+            ];
+            let copied = targets.iter().filter(|d| d.is_dir()).find_map(|d| {
+                let dst = d.join("lindroids.apk");
+                std::fs::copy(&apk, &dst).ok().map(|_| dst)
+            });
+            println!("No installer? Any of these works:");
+            match copied {
+                Some(p) => println!("  - open {} in the Files app (Downloads) and tap Install", p.display()),
+                None => println!("  - run `termux-setup-storage`, then `lindroids setup` again: the app goes to Downloads"),
+            }
+            println!("  - download it in the browser: {url}");
+            println!("  Android may ask to allow installing apps for Termux, the Files app or the browser; on");
+            println!("  Samsung, Settings > Security and privacy > Auto Blocker must be off.");
         }
         None => println!("Install the Lindroids app from {RELEASES}"),
     }

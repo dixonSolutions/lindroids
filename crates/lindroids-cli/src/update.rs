@@ -133,6 +133,7 @@ fn update_cli(m: &Method) -> Result<(), String> {
                 .arg("-s")
                 .env("LINDROIDS_METHOD", "static")
                 .env("LINDROIDS_INSTALL_DIR", dir)
+                .env("LINDROIDS_SETUP", "no")
                 .stdin(Stdio::piped())
                 .spawn()
                 .map_err(|e| format!("sh: {e}"))?;

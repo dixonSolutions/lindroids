@@ -41,10 +41,15 @@ Use Termux from F-Droid or GitHub (the Play Store build works too).
 
 ```sh
 curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh | sh
-termux-open $PREFIX/share/lindroids/lindroids.apk     # install the app, once
-lindroids pair                                        # enter the code in the app
 lindroids run <command>
 ```
+
+On Android the installer ends with `lindroids setup`: it opens Android's installer for the app
+that came in the package (or, with the Google Play build of Termux, which cannot, the browser on
+this release's APK), and waits for the pairing code. If no installer appears, open
+`Downloads/lindroids.apk` in the Files app (after `termux-setup-storage`, `lindroids setup` puts it
+there) or the APK link it prints; allow installing apps when Android asks, and on Samsung turn off
+Auto Blocker. `LINDROIDS_SETUP=no` skips this step.
 
 Optional packages: `pkg install proot-distro` to run programs from a Debian/Ubuntu/Arch rootfs
 (`lindroids run --distro debian …`). For X11 programs, `lindroids setup x11` installs Xwayland
