@@ -22,7 +22,8 @@
 #   LINDROIDS_INSTALL_DIR   static install target (default ~/.local/bin)
 #   LINDROIDS_METHOD        force apt-termux | pacman-termux | apt-debian | pacman-arch | static
 #   LINDROIDS_FLATPAK       yes | no: install Flatpak (with Flathub) without asking, or skip it
-#   LINDROIDS_DISTRO        proot-distro distro for Flatpak in Termux (default: debian)
+#   LINDROIDS_DISTRO        proot-distro distro for Flatpak in Termux (default: the first one installed;
+#                           the installer never installs a distro)
 set -eu
 
 # build-repo.sh rewrites these lines for the repository it publishes.
@@ -180,8 +181,8 @@ distro_rootfs() {
   if [ -d "$base/containers/$1/rootfs" ]; then echo "$base/containers/$1/rootfs"; else echo "$base/installed-rootfs/$1"; fi
 }
 
-# Termux has no flatpak package: Flatpak goes into a proot-distro distro, where `lindroids run`
-# finds its apps on its own. Prints the distro that has it (one that already does, or the new one).
+# Termux has no flatpak package: Flatpak goes into a proot-distro distro the user already has, where
+# `lindroids run` finds its apps on its own. Sets FLATPAK_DISTRO to the distro that has it.
 flatpak_termux() {
   for d in "$PREFIX"/var/lib/proot-distro/installed-rootfs/* "$PREFIX"/var/lib/proot-distro/containers/*/rootfs; do
     if [ -x "$d/usr/bin/flatpak" ]; then
@@ -193,29 +194,57 @@ flatpak_termux() {
       return 0
     fi
   done
-  # Lindroids runs in Termux itself; this is only for Flatpak apps, which need glibc and so a whole
-  # distro. Not something Enter should download: the default is no.
-  distro=${LINDROIDS_DISTRO:-debian}
+  # Flatpak has no Termux build. It can only go into a proot-distro distro the user already has,
+  # with that distro's own package manager; the installer never creates a distro for it.
+  distro=''
+  rootfs=''
+  if [ -n "${LINDROIDS_DISTRO:-}" ] && [ -d "$(distro_rootfs "$LINDROIDS_DISTRO")/usr" ]; then
+    distro=$LINDROIDS_DISTRO
+    rootfs=$(distro_rootfs "$distro")
+  else
+    for d in "$PREFIX"/var/lib/proot-distro/containers/*/rootfs "$PREFIX"/var/lib/proot-distro/installed-rootfs/*; do
+      [ -d "$d/usr" ] || continue
+      rootfs=$d
+      case "$d" in
+        */rootfs) d=${d%/rootfs} ;;
+      esac
+      distro=${d##*/}
+      break
+    done
+  fi
+  if [ -z "$distro" ]; then
+    echo "Flatpak: not installed. Flatpak has no Termux package; to use Flatpak apps, install it in a"
+    echo "  proot-distro distro you have (or run this installer inside one)."
+    return 0
+  fi
+  # The distro's package manager, from its root filesystem.
+  dpm=
+  for m in apt-get pacman dnf zypper apk xbps-install; do
+    if [ -e "$rootfs/usr/bin/$m" ] || [ -e "$rootfs/bin/$m" ] || [ -e "$rootfs/sbin/$m" ] || [ -e "$rootfs/usr/sbin/$m" ]; then
+      dpm=$m
+      break
+    fi
+  done
+  case "$dpm" in
+    apt-get) inst="export DEBIAN_FRONTEND=noninteractive; apt-get update -q && apt-get install -y -q flatpak" ;;
+    pacman) inst="pacman -Sy --needed --noconfirm flatpak" ;;
+    dnf) inst="dnf install -y flatpak" ;;
+    zypper) inst="zypper --non-interactive install flatpak" ;;
+    apk) inst="apk add flatpak" ;;
+    xbps-install) inst="xbps-install -Sy flatpak" ;;
+    *) echo "Flatpak: not installed (no known package manager in the distro $distro)."; return 0 ;;
+  esac
+  if ! have proot-distro; then
+    echo "Flatpak: not installed (proot-distro is missing, so the distro $distro cannot be entered)."
+    return 0
+  fi
   echo
-  echo "Optional: Flatpak apps. Lindroids runs Termux programs as they are; Flatpak cannot run in"
-  echo "Termux, so it would go into a $distro installed with proot-distro (several hundred MB)."
-  if ! ask "Install proot-distro, $distro and Flatpak (with Flathub)?" no; then
+  if ! ask "Install Flatpak (with Flathub) in your proot-distro distro $distro, with ${dpm%-install}?" no; then
     echo "Skipping Flatpak (to add it later: LINDROIDS_FLATPAK=yes, then run this installer again)."
     return 0
   fi
-  have proot-distro || { say "$PM: installing proot-distro"; pm_install proot-distro || { warn "cannot install proot-distro"; return 0; }; }
-  if [ ! -d "$(distro_rootfs "$distro")/usr" ]; then
-    say "proot-distro install $distro"
-    proot-distro install "$distro" || { warn "proot-distro install $distro failed"; return 0; }
-  fi
-  say "installing Flatpak in $distro and adding Flathub"
-  proot-distro login "$distro" -- sh -c "
-    if command -v apt-get >/dev/null; then export DEBIAN_FRONTEND=noninteractive; apt-get update -q && apt-get install -y -q flatpak
-    elif command -v pacman >/dev/null; then pacman -Sy --needed --noconfirm flatpak
-    elif command -v apk >/dev/null; then apk add flatpak
-    elif command -v dnf >/dev/null; then dnf install -y flatpak
-    else echo 'no known package manager' >&2; exit 1; fi &&
-    flatpak remote-add --if-not-exists flathub $FLATHUB" \
+  say "installing Flatpak in $distro (${dpm%-install}) and adding Flathub"
+  proot-distro login "$distro" -- sh -c "$inst && flatpak remote-add --if-not-exists flathub $FLATHUB" \
     || { warn "installing Flatpak in $distro failed"; return 0; }
   FLATPAK_DISTRO=$distro
 }

@@ -29,11 +29,10 @@ It honours these variables: `LINDROIDS_METHOD` (`apt-termux`, `pacman-termux`, `
 and `LINDROIDS_REPO_URL` (a mirror or a local test repository).
 
 It also checks for Flatpak and, when it is missing, asks whether to install it with Flathub, with
-the package manager it found: apt, pacman, dnf, yum, zypper, apk or xbps. Termux
-has no flatpak package, so there it would go into a proot-distro distro (Debian unless
-`LINDROIDS_DISTRO` names another), where `lindroids run <app-id>` finds its apps on its own. That
-downloads a whole distro, and Lindroids does not need it for Termux programs, so in Termux the
-question defaults to no.
+the package manager it found: apt, pacman, dnf, yum, zypper, apk or xbps. Termux has no flatpak
+package, so there it offers to install Flatpak into a proot-distro distro you already have (the
+first one, or `LINDROIDS_DISTRO`), with that distro's own package manager; it never installs
+proot-distro or a distro itself, and with no distro it skips Flatpak.
 `LINDROIDS_FLATPAK=yes` or `no` answers the question in advance; with no terminal it is skipped.
 
 ## Termux
