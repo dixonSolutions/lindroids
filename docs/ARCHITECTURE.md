@@ -140,6 +140,14 @@ once played. Browsers start sound only after a tap on the page; until then chunk
 and dropped. Formats other than s16/f32 are converted, more than two channels
 are folded to stereo, stream and sink volumes are applied in the server.
 
+Recording comes the other way: the source `android-mic` (the default) asks the program's page for
+the microphone; the page takes it with `getUserMedia` (the browser asks the user once), sends
+~20 ms of s16 PCM at a time, and the server converts it to what the stream asked for. With no page
+or no microphone, recorders get silence in real time rather than stalling.
+
+Streams go to the page of the program that opened them (its pid → its run) and follow it when that
+page changes or relinks.
+
 ## X11
 
 X11 is integrated: every session has an X display, and each X11 window becomes its own Wayland
