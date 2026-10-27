@@ -9,7 +9,7 @@ installed with Termux's own package manager. No app to install, no permission to
 
 ```sh
 lindroids run mousepad            # its window opens in the browser
-lindroids export xournalpp        # a launcher page: "Add to Home screen" for a one-tap icon
+lindroids export xournalpp        # a home screen icon that starts it, Termux open or not
 ```
 
 <table>
@@ -20,6 +20,9 @@ lindroids export xournalpp        # a launcher page: "Add to Home screen" for a 
 <tr>
 <td align="center"><img src="media/screenshots/browser-xclock-x11.png" width="400"><br><sub>X11: <code>lindroids run xclock</code>, a tab next to Xournal++</sub></td>
 <td align="center"><img src="media/screenshots/browser-phone-dialog.png" width="200"><br><sub>A GTK 4 dialog on a phone-sized screen</sub></td>
+</tr>
+<tr>
+<td align="center" colspan="2"><img src="media/screenshots/home-screen-shortcuts.png" width="400"><br><sub><code>lindroids export</code>: shortcuts owned by Termux (Xournal++ greyed out after <code>lindroids remove</code>)</sub></td>
 </tr>
 </table>
 
@@ -43,11 +46,13 @@ lindroids export xournalpp        # a launcher page: "Add to Home screen" for a 
   on the programs' own session bus: dark mode, opening links (`xdg-open`, `lindroids open`),
   files to open or save through the browser, notifications shown in the page, network state. The
   clipboard goes both ways.
-- **Home screen icons.** `lindroids export <command>` makes a launcher page with the program's
-  own name and icon; the browser's "Add to Home screen" turns it into an icon that starts the
-  program (while the Lindroids server runs in Termux).
-- **Pure Rust**, plus one small web page: the compositor, the sound server, the CLI, the frame
-  transport.
+- **Home screen icons.** `lindroids export <command>` pins a shortcut with the program's own
+  name and icon (Android asks first). It belongs to Termux, not to an app of ours: tapping it
+  has Termux run the program — Termux is started if it is closed — and its windows show in the
+  browser. The program stays where it is installed (Termux, a proot-distro distro, a Flatpak);
+  nothing is copied.
+- **Pure Rust** — the compositor, the sound server, the CLI, the frame transport — plus one
+  small web page and a 7 KB Java helper that asks Android for shortcuts.
 
 ## Install
 
@@ -81,9 +86,10 @@ lindroids run xterm                     # X11 programs too
 lindroids run --x11 gedit               # a toolkit app on X11 instead of Wayland
 lindroids run --name "Notes" --icon notes.svg mousepad
 
-lindroids export <command> [args]       # launcher page, for "Add to Home screen"
-lindroids list                          # what you exported, with its page
-lindroids remove <id>
+lindroids export <command> [args]       # home screen shortcut (Android asks to add it)
+lindroids list                          # what you exported
+lindroids remove <id>                   # its shortcut is greyed out; drag it off
+lindroids launch <id>                   # what the shortcut runs
 
 lindroids open <file|URI>               # open a link or a file through the browser
 lindroids notify <title> [body]         # a notification in the page
@@ -128,7 +134,7 @@ More: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 |---|---|
 | Android | 7.0 (API 24) and newer, with any current browser (Chrome, Firefox, the system WebView browsers); arm64-v8a, armeabi-v7a, x86_64, x86 |
 | Terminals | Termux; distros under proot (proot-distro, UserLAnd, Andronix…): Debian, Ubuntu, Alpine and Arch; desktop Linux (for testing) |
-| Tested in the browser | Android 13 (lab VM, Termux 0.118.3): Mousepad (typing, menus), Xournal++ from Debian (pen), xclock (X11), launcher pages; desktop Chromium: zenity, gtk3-demo (typing, soft-keyboard path, completion popups) |
+| Tested in the browser | Android 13 (lab VM, Termux 0.118.3): Mousepad (typing, menus), Xournal++ from Debian (pen), xclock (X11), home screen shortcuts with Termux closed and open; desktop Chromium: zenity, gtk3-demo (typing, soft-keyboard path, completion popups) |
 | Earlier tested with the old app, same server | GTK 4 and Flatpaks (GNOME Calculator, Characters, Pinta, Tux Paint, RustDesk), Qt 6, SDL 3, foot, xterm, sound |
 
 ## Build from source

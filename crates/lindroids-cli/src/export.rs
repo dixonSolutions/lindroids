@@ -1,15 +1,15 @@
-//! `lindroids export`: a launcher for a Linux program, with its own name and icon.
+//! `lindroids export`: a home screen shortcut for a Linux program, with its own name and icon.
 //!
-//! The server serves `/app/<id>`: the windows page, named and iconed after the program, which
-//! asks the server to start it once it is linked. The browser's "Add to Home screen" turns it
-//! into a home screen icon. Nothing is copied and no app is involved: tapping the icon opens the
-//! page, the page starts the program through the server, and its windows show there.
+//! The program stays where it is installed (Termux, a proot-distro distro, a Flatpak) and its
+//! launch is recorded in `<state>/apps/<id>.json`; the shortcut belongs to Termux (see
+//! shortcut.rs) and runs `lindroids launch <id>` through it, with Termux open or not. Nothing is
+//! copied and no app of Lindroids' own is involved.
 
 use base64::Engine;
-use lindroids_proto::{self as proto, Exported};
+use lindroids_proto::Exported;
 
 use crate::run::{self, Target};
-use crate::sandbox;
+use crate::{sandbox, shortcut};
 
 fn default_id(o: &run::Opts, target: &Target, sb: &sandbox::Sandbox) -> String {
     match target {
@@ -98,31 +98,23 @@ pub fn cmd_export(args: &[String]) -> i32 {
     if let Err(e) = std::fs::write(&path, serde_json::to_vec_pretty(&rec).unwrap()) {
         return crate::fail(&format!("{}: {e}", path.display()));
     }
-    if let Err(e) = crate::ensure_server(&sb) {
-        return crate::fail(&e);
+    match shortcut::create(&sb, &rec, &icon) {
+        Ok(how) => {
+            println!("{name} exported as {id}. {how}");
+            println!("Tapping it starts {name} through Termux (opened if it is closed); the windows show in the browser.");
+            0
+        }
+        Err(e) => {
+            println!("{name} exported as {id}, but no shortcut: {e}");
+            println!("`lindroids launch {id}` starts it.");
+            1
+        }
     }
-    let url = format!("http://127.0.0.1:{}/app/{id}", proto::server_tcp_port(sb.uid));
-    println!("{name} exported as {id}.");
-    // The launcher page starts the program, so this also shows it works.
-    let secret = lindroids_server::load_or_create_secret();
-    if sandbox::open_browser(&format!("{url}#k={secret}")).is_some() {
-        println!("Its page is open in the browser: choose \"Add to Home screen\" (or \"Install app\") in the");
-        println!("browser's menu for an icon that starts it.");
-    } else {
-        println!("Open {url} in the browser and choose \"Add to Home screen\" in its menu.");
-    }
-    println!("The icon works while the Lindroids server runs (`lindroids start` in Termux).");
-    0
 }
 
-/// `lindroids launch <id>`: what a launcher page starts (through the server).
+/// `lindroids launch <id>`: what an exported program's shortcut runs (through Termux).
 pub fn cmd_launch(args: &[String]) -> i32 {
     let Some(id) = args.first() else { return crate::fail("which one? (lindroids list)") };
-    // The server says so when a page asked; the program itself should not inherit that.
-    if std::env::var_os("LINDROIDS_LAUNCHED").is_some() {
-        crate::LAUNCHED_BY_PAGE.store(true, std::sync::atomic::Ordering::Relaxed);
-        std::env::remove_var("LINDROIDS_LAUNCHED");
-    }
     match lindroids_server::load_exported(id) {
         Some(rec) => run::cmd_run(&rec.run),
         None => crate::fail(&format!("nothing exported as {id:?} (lindroids list)")),
@@ -134,9 +126,8 @@ pub fn cmd_list() -> i32 {
     if recs.is_empty() {
         println!("Nothing exported from here yet.");
     }
-    let port = proto::server_tcp_port(sandbox::detect().uid);
     for r in recs {
-        println!("{:<40} {:<24} http://127.0.0.1:{port}/app/{}", r.id, r.name, r.id);
+        println!("{:<40} {:<24} lindroids run {}", r.id, r.name, r.run.join(" "));
     }
     0
 }
@@ -149,7 +140,10 @@ pub fn cmd_remove(args: &[String]) -> i32 {
     if let Err(e) = std::fs::remove_file(&path) {
         return crate::fail(&format!("{}: {e}", path.display()));
     }
-    println!("Removed {id}. A home screen icon for it now only shows that it is gone; remove it there.");
+    match shortcut::remove(&sandbox::detect(), id) {
+        Ok(()) => println!("Removed {id}. Its home screen icon is greyed out now; drag it off to remove it."),
+        Err(e) => println!("Removed {id} (its shortcut stays: {e})."),
+    }
     0
 }
 

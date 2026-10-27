@@ -183,15 +183,29 @@ or a toolbox host), reads the app's and runtime's metadata, resolves extensions 
 codecs), and builds the same filesystem view with proot: runtime at `/usr`, app at `/app`,
 extensions at their mount points, a generated `/etc/passwd`, `~/.var/app/<id>` as the XDG dirs.
 
-## Launchers
+## Home screen shortcuts
 
-`lindroids export <command>` writes `<state>/apps/<id>.json` (name, PNG icon, the `lindroids run`
-arguments, with the distro found pinned) and opens `/app/<id>`: the same page, whose manifest and
-favicon are the program's, so the browser's "Add to Home screen" (or "Install app") makes an icon
-for it. Once linked, that page sends `Launch { id }`; the server starts `lindroids launch <id>`
-detached, which runs the record (a repeat of the same id within seconds is ignored: some browsers
-load the page twice for one tap). A launcher works while the server runs; without it the page says
-so and offers to open Termux.
+`lindroids export <command>` writes `<state>/apps/<id>.json` (name, the `lindroids run`
+arguments, with the distro found pinned) and pins a shortcut — with no app of its own:
+
+- **Who pins it.** `shortcut.dex` (from `crates/lindroids-cli/shortcut/Shortcut.java`, built by
+  `scripts/build-shortcut-dex.sh` and checked in, so releases need no Java or Android SDK; it is
+  embedded in the binary) runs under Android's `/system/bin/app_process`, as Termux's own `am`
+  does. The process has Termux's uid, so Android's shortcut service accepts it as the package
+  `com.termux` (`IShortcutService.requestPinShortcut`, reached by reflection: its signature
+  changes between releases), and the launcher asks the user to add it. Termux has a foreground
+  activity or service at that moment, which the service requires. `lindroids remove` disables it
+  (an app cannot take a pinned shortcut off the home screen).
+- **What it does.** Its intent is a shared URL, `http://127.0.0.1:<port>/launch/termux/<id>`,
+  sent to Termux's share receiver (`TermuxFileReceiverActivity`): no permission or Termux setting
+  is involved, Termux starts if it is closed, and it runs `~/bin/termux-url-opener <url>` in a
+  session. `lindroids export` installs that opener; it runs `lindroids launch <id>` for these URLs
+  and hands every other URL to the opener the user had (kept in
+  `~/.local/share/lindroids/termux-url-opener.before`). `lindroids launch` is `lindroids run` with
+  the recorded arguments: it starts the server if needed and brings the browser to the front.
+- **Where it does not work.** On x86 images with an ARM translation layer, `app_process` is
+  killed by seccomp (see above), so no shortcut is made; `lindroids launch <id>` still works. On
+  a desktop, an exported program gets a `.desktop` file instead.
 
 ## Programs under proot
 

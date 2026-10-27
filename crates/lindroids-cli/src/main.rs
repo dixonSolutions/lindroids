@@ -10,6 +10,7 @@ mod sandbox;
 mod elf;
 mod integration;
 mod setup_x11;
+mod shortcut;
 mod update;
 mod x11wm;
 
@@ -27,7 +28,7 @@ lindroids — Linux apps on Android, their windows in the web browser
 USAGE
   lindroids run [options] <command> [args...]
   lindroids run [options] \"<command line>\"
-  lindroids export [options] <command> [args...]   a launcher page for the home screen
+  lindroids export [options] <command> [args...]   a home screen shortcut that starts it
   lindroids list | remove <id> | launch <id>
   lindroids setup                    start the server and open the windows page in the browser
   lindroids setup x11 [--yes]        install what X11 programs need (Xwayland), restart the server
@@ -46,7 +47,7 @@ RUN OPTIONS
   --touch pointer     treat touch as a mouse for this program's windows
 
 EXPORT OPTIONS (as run, plus)
-  --id <id>           launcher id (default: derived from the program)
+  --id <id>           shortcut id (default: derived from the program)
 
 A program name that looks like a Flatpak id (org.gnome.Calculator) runs that Flatpak.
 
@@ -60,7 +61,8 @@ window becomes its own tab in the page (xwayland-satellite, started on the first
 
 Windows show in the phone's web browser: `lindroids run` opens http://127.0.0.1:<port>/ there (no
 app to install, no permission to grant). A browser opened by hand asks for the pairing code that
-`lindroids pair` shows; \"Add to Home screen\" in the browser's menu keeps the page one tap away.
+`lindroids pair` shows. `lindroids export` puts a program on the home screen (a shortcut that has
+Termux start it).
 ";
 
 fn main() {
@@ -177,9 +179,6 @@ pub fn ensure_server(sb: &sandbox::Sandbox) -> Result<std::path::PathBuf, String
     Err(format!("the server did not start:\n{tail}"))
 }
 
-/// Set for `lindroids launch` started by the server for a launcher page.
-pub static LAUNCHED_BY_PAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 /// Make sure a display (the browser page) is linked: open the page if not, and on Android bring it
 /// to the front, where the windows are about to appear. Never blocks for long: windows show
 /// whenever the page links. Returns whether it is linked.
@@ -190,9 +189,8 @@ pub fn ensure_display(sb: &sandbox::Sandbox, rt: &Path, quiet: bool) -> bool {
         _ => None,
     };
     if let Some(page) = page {
-        // On a desktop a linked page stays where it is; a new tab each time would only pile up. A
-        // program a page started (`lindroids launch`) is already in front of the user.
-        if sandbox::on_android() && !LAUNCHED_BY_PAGE.load(std::sync::atomic::Ordering::Relaxed) {
+        // On a desktop a linked page stays where it is; a new tab each time would only pile up.
+        if sandbox::on_android() {
             // Exactly the page's URL: Firefox switches to that tab, Chrome reuses its tab.
             sandbox::open_browser(&format!("http://127.0.0.1:{}{page}", lindroids_proto::server_tcp_port(sb.uid)));
         }

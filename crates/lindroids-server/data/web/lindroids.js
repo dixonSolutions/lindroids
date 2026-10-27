@@ -24,10 +24,6 @@ let t0 = performance.now();
 const windows = new Map(); // win -> {win, title, appId, icon, canvas, ctx, tab, pendingAck}
 let active = null; // win
 const order = []; // most recently active last
-// A launcher page (/app/<id>, made by `lindroids export`, maybe opened from the home screen)
-// starts its program once it is linked.
-const launchId = (/^\/app\/([A-Za-z0-9._-]+)$/.exec(location.pathname) || [])[1] || null;
-let launched = false;
 
 // ------------------------------------------------------------------ secret and auth
 
@@ -114,7 +110,7 @@ function waitForServer() {
   const termux = /Android/.test(navigator.userAgent)
     ? `<p><a href="intent:#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;package=com.termux;end"><button>Open Termux</button></a></p>` : '';
   showPanel(`<p>Waiting for the Lindroids server…</p>
-    <p>In Termux, run <code>${launchId ? 'lindroids start' : 'lindroids run &lt;program&gt;'}</code>; this page connects by itself.</p>${termux}`);
+    <p>In Termux, run <code>lindroids run &lt;program&gt;</code>; this page connects by itself.</p>${termux}`);
   retry = setTimeout(connect, 2000);
 }
 
@@ -160,11 +156,6 @@ async function handle(m, payload) {
       ready = true;
       hidePanelIfWindows();
       sendSystem();
-      if (launchId && !launched) {
-        launched = true;
-        send({ t: 'launch', id: launchId });
-        if (!windows.size) showPanel(`<p>Starting ${esc(document.title)}…</p>`);
-      }
       return;
     case 'bye':
       replaced = true;

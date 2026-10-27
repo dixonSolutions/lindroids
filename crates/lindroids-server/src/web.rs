@@ -15,7 +15,6 @@ use sha1::{Digest, Sha1};
 
 const INDEX_HTML: &str = include_str!("../data/web/index.html");
 const CLIENT_JS: &str = include_str!("../data/web/lindroids.js");
-const MANIFEST: &str = include_str!("../data/web/manifest.webmanifest");
 const ICON_SVG: &str = include_str!("../data/web/icon.svg");
 
 /// Path of the WebSocket.
@@ -117,55 +116,10 @@ pub fn answer(req: &Request, port: u16) -> Answer {
     let (ctype, body): (&str, std::borrow::Cow<[u8]>) = match req.path.as_str() {
         "/" | "/index.html" => ("text/html; charset=utf-8", INDEX_HTML.as_bytes().into()),
         "/lindroids.js" => ("text/javascript; charset=utf-8", CLIENT_JS.replace("@BUILD@", crate::BUILD).into_bytes().into()),
-        "/manifest.webmanifest" => ("application/manifest+json", MANIFEST.as_bytes().into()),
         "/icon.svg" => ("image/svg+xml", ICON_SVG.as_bytes().into()),
-        path => match exported_page(path) {
-            Some(page) => page,
-            None => return Answer::Close(response(404, "text/plain", b"not found\n")),
-        },
+        _ => return Answer::Close(response(404, "text/plain", b"not found\n")),
     };
     Answer::Close(response(200, ctype, &body))
-}
-
-/// `/app/<id>`: a launcher for an exported program. The same page, with the program's name and
-/// icon in its manifest, so "Add to Home screen" makes an icon that starts it.
-fn exported_page(path: &str) -> Option<(&'static str, std::borrow::Cow<'static, [u8]>)> {
-    let rest = path.strip_prefix("/app/")?;
-    let (id, file) = rest.split_once('/').unwrap_or((rest, ""));
-    let app = crate::load_exported(id)?;
-    match file {
-        "" => {
-            let html = INDEX_HTML
-                .replace("href=\"/manifest.webmanifest\"", &format!("href=\"/app/{id}/manifest.webmanifest\""))
-                .replace("<title>Lindroids</title>", &format!("<title>{}</title>", html_escape(&app.name)))
-                .replace("rel=\"icon\" href=\"/icon.svg\"", &format!("rel=\"icon\" href=\"/app/{id}/icon.png\""));
-            Some(("text/html; charset=utf-8", html.into_bytes().into()))
-        }
-        "manifest.webmanifest" => {
-            let m = serde_json::json!({
-                "name": app.name,
-                "short_name": app.name,
-                "description": "A Linux program, through Lindroids",
-                "start_url": format!("/app/{id}"),
-                "scope": "/",
-                "id": format!("/app/{id}"),
-                "display": "standalone",
-                "background_color": "#000000",
-                "theme_color": "#0F1720",
-                "icons": [{ "src": format!("/app/{id}/icon.png"), "sizes": "any", "type": "image/png", "purpose": "any" }],
-            });
-            Some(("application/manifest+json", m.to_string().into_bytes().into()))
-        }
-        "icon.png" => {
-            let png = base64::engine::general_purpose::STANDARD.decode(&app.icon_png_b64).ok()?;
-            Some(("image/png", png.into()))
-        }
-        _ => None,
-    }
-}
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
 fn response(status: u16, ctype: &str, body: &[u8]) -> Vec<u8> {

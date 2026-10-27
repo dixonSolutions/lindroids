@@ -331,8 +331,6 @@ pub enum ToServer {
     Close { win: u32 },
     Clipboard { text: String },
     FolderPicked { request: u32, path: Option<String> },
-    /// Start an exported program (its launcher page was opened, e.g. from the home screen).
-    Launch { id: String },
     /// Sound flow control: the app has room for this many more bytes of a stream.
     AudioCredit { stream: u32, bytes: u32 },
 
@@ -390,8 +388,8 @@ pub enum PointerAction {
     Release,
 }
 
-/// A program `lindroids export` made a launcher for: the page `/app/<id>` (which the browser
-/// can add to the home screen) starts it. Kept as `<data dir>/apps/<id>.json`.
+/// A program `lindroids export` made a home screen shortcut for; the shortcut runs
+/// `lindroids launch <id>`. Kept as `<state dir>/apps/<id>.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Exported {
     /// Stable id, e.g. "org.gnome.Calculator" or "termux.xeyes": letters, digits, `.`, `-`, `_`.
@@ -403,7 +401,7 @@ pub struct Exported {
     pub run: Vec<String>,
 }
 
-/// Whether `id` is safe as an exported program's id (a file name and a URL path segment).
+/// Whether `id` is safe as an exported program's id (a file name, a URL path segment, a shell word).
 pub fn valid_export_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && !id.starts_with('.') && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }

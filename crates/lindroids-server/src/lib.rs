@@ -276,8 +276,6 @@ pub struct State {
     clis: Vec<CliConn>,
     next_request: u32,
     clients: u32,
-    /// When each exported program was last launched for a page.
-    launched: HashMap<String, Instant>,
 }
 
 impl State {
@@ -548,16 +546,6 @@ impl State {
             ToServer::Text { win, text } => seat::text(self, win, &text),
             ToServer::Clipboard { text } => data::android_clipboard(self, text),
             ToServer::FolderPicked { request, path } => self.reply_cli(&Waiting::Folder(request), CliReply::Folder { path }),
-            ToServer::Launch { id } => {
-                // Browsers that open a new tab per intent (and pages the browser reloads) ask
-                // more than once for one tap.
-                if self.launched.get(&id).map_or(false, |t| t.elapsed() < Duration::from_secs(8)) {
-                    info!("launch of {id}: started a moment ago");
-                } else {
-                    self.launched.insert(id.clone(), Instant::now());
-                    launch_exported(&self.cfg, &id);
-                }
-            }
         }
     }
 
@@ -652,45 +640,6 @@ impl State {
             let _ = c.stream.write_all(&proto::encode(&r));
             c.stream.set_nonblocking(true).ok();
         }
-    }
-}
-
-/// Start an exported program, as its launcher page asked: `lindroids launch <id>`, detached, with
-/// its output in the runtime dir.
-fn launch_exported(cfg: &Config, id: &str) {
-    if load_exported(id).is_none() {
-        warn!("launch of {id:?}: no such exported program");
-        return;
-    }
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(e) => return warn!("launch of {id}: {e}"),
-    };
-    let log = std::fs::File::create(cfg.runtime_dir.join(format!("launch-{id}.log")));
-    let mut cmd = std::process::Command::new(exe);
-    // The page that asked is linked and in front: `lindroids run` need not raise it.
-    cmd.arg("launch").arg(id).env("LINDROIDS_LAUNCHED", "1").stdin(std::process::Stdio::null());
-    if let Ok(l) = log {
-        if let Ok(l2) = l.try_clone() {
-            cmd.stdout(l).stderr(l2);
-        }
-    }
-    unsafe {
-        std::os::unix::process::CommandExt::pre_exec(&mut cmd, || {
-            libc::setsid();
-            Ok(())
-        });
-    }
-    match cmd.spawn() {
-        Ok(child) => {
-            info!("launched {id} (pid {})", child.id());
-            // Reap it whenever it ends.
-            std::thread::spawn(move || {
-                let mut child = child;
-                let _ = child.wait();
-            });
-        }
-        Err(e) => warn!("launch of {id}: {e}"),
     }
 }
 
@@ -866,7 +815,6 @@ pub fn run(cfg: Config) -> i32 {
         clis: Vec::new(),
         next_request: 0,
         clients: 0,
-        launched: HashMap::new(),
     };
     surface::register_globals(&dh);
     shell::register_globals(&dh);
