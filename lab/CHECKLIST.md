@@ -21,6 +21,9 @@ from Android**, through the window page and Termux, never by giving the containe
 | Program's icons and title bar draw right (Adwaita) | ✅ | portal sends GNOME's icon theme and button layout |
 | Closing the program ends the window | 🟡 | Chromium Custom Tabs: the window closes itself and leaves Recents, whatever the default browser (b16: Firefox the default, Cromite's window; lab test); ⛔ with only Firefox: the ended screen asks for one tap on ✕ |
 | Closing the window ends the program | ✅ | ✕ → 5 s (Firefox, Cromite; lab test); Back only sends a Chromium window to the background, alive |
+| Tapping the exported icon again brings the window back | ✅ | Firefox raises its window; Chromium opens a new one, which takes over the run while the old one closes itself (`lab/test-windows.sh`, b16) |
+| Recents icon right after opening | 🟡 | Android writes the task's icon a few seconds after the browser sets it: Recents opened in the first seconds shows the browser's icon (b16) |
+| Recents icon on Samsung (One UI) | ⛔ | Chrome sets the page's title and icon on the task; One UI shows the title and Chrome's own icon (a phone, 2026-10-28) |
 | Any default browser; Custom Tabs not assumed | ✅ | the helper reads which activity a browser opened (`startActivityAndWait`); an ordinary tab (Cromite with *Allow custom tab intents* off) is passed over and closes itself (b16 lab test: Firefox window) |
 | Closing the window (✕, swipe from Recents) ends the program | ✅ | |
 | Back does not lose the program | ✅ | Back only sends the window behind |

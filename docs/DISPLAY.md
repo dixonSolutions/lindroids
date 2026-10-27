@@ -59,8 +59,10 @@ it from its `app_process` helper, as Termux, the way export pins shortcuts
   menu. No tabs, no address bar. On the first tap, the page asks for full screen and gets it:
   nothing of the browser is left, not even the status bar. Firefox briefly shows "Drag from top
   & use back gesture to exit".
-- **Raising a window.** Sending the same intent again (same URL, no `MULTIPLE_TASK`) brings that
-  window's task to the front. Firefox also loads a second copy of the page nobody sees, which the
+- **Raising a window.** Sending the same intent again (the URL it opened with, ticket and all; no
+  `MULTIPLE_TASK`) brings that window's task to the front. Chromium does not: its Custom Tabs
+  always take a new task, so a second window opens, takes over the run, and the old one closes
+  itself *(tested with Cromite)*. Firefox also loads a second copy of the page nobody sees, which the
   relay tells to stand down (see *The handshake*).
 - **Closing by the user.** The close button, Back, or swiping the window from recents gives the
   relay a clean `pagehide` and WebSocket close 1001, and the task goes away.

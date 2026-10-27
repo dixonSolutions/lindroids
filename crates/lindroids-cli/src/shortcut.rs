@@ -63,11 +63,18 @@ const WINDOW_BROWSERS: &[&str] = &[
 pub fn open_window(url: &str) -> Result<String, String> {
     let rt = sandbox::runtime_dir();
     let opened = std::fs::read_to_string(rt.join("windows")).unwrap_or_default();
-    // (url, browser) lines: whether this URL has had a window, and where.
-    let before = opened.lines().rev().find_map(|l| l.split_once(' ').filter(|(u, _)| *u == url).map(|(_, b)| b.to_string()));
+    // (url, browser) lines: whether this page (the URL without its ticket, after #) has had a
+    // window, and where. Bringing it back takes that window's URL as it was: Android finds the
+    // window by its URL, and a new ticket would open another.
+    let page = |u: &str| u.split('#').next().unwrap_or(u).to_string();
+    let before = opened
+        .lines()
+        .rev()
+        .find_map(|l| l.split_once(' ').filter(|(u, _)| page(u) == page(url)).map(|(u, b)| (u.to_string(), b.to_string())));
+    let url = before.as_ref().map_or(url, |(u, _)| u.as_str());
     let mode = if before.is_some() { "raise" } else { "first" };
     let mut args = vec!["open".to_string(), package(), mode.into(), url.to_string()];
-    args.extend(before);
+    args.extend(before.as_ref().map(|(_, b)| b.clone()));
     args.extend(browsers());
     let out = helper(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
     let browser = out.lines().find_map(|l| l.strip_prefix("browser ")).unwrap_or("?").to_string();

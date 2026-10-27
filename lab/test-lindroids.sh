@@ -166,7 +166,7 @@ sh_ "am start -n com.termux/.app.TermuxActivity" >/dev/null 2>&1
 sleep 2
 tsh 'cd ~; rm -f .lab-typed run.log; (nohup sh -c "lindroids run foot; echo RUN-EXIT=\$?" >run.log 2>&1 </dev/null &) ; sleep 12; cat run.log' >"$OUT/start.txt" 2>&1
 tsh 'lindroids doctor' >"$OUT/doctor.txt" 2>&1
-linked() { tsh 'lindroids status' 2>/dev/null | grep -qE '^display +linked'; }
+linked() { grep -qE '^display +linked' <<<"$(tsh 'lindroids status' 2>/dev/null)"; }
 for i in $(seq 1 20); do linked && break; sleep 0.5; done
 linked && R[linked]=yes || { R[linked]=no; shot not-linked; fail "the page did not link ($(tr '\n' ' ' <"$OUT/start.txt"))"; }
 # Settle: a browser passed over for an ordinary tab links first; the window's page (a cold

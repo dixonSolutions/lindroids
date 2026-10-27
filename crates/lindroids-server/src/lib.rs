@@ -815,7 +815,11 @@ impl State {
                         return None;
                     }
                 }
-                if run.is_some() && self.links.iter().any(|l| l.run == run && l.page.as_deref().and_then(via_of_page) == via) {
+                // Bringing a run's window back: Firefox raises it and loads a copy nobody sees,
+                // which stands down; Chromium opens another window instead (its Custom Tabs
+                // always take a new task), which takes over, and the old one closes itself.
+                let raises = via.map_or(true, |v| v.starts_with("org.mozilla."));
+                if run.is_some() && raises && self.links.iter().any(|l| l.run == run && l.page.as_deref().and_then(via_of_page) == via) {
                     info!("{} already has its window: the new page stands down", run.map_or(String::new(), |r| format!("run {r}")));
                     link.send(&ToApp::Bye { reason: "this program's window is open already".into() });
                     let mut l = link;
