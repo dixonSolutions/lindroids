@@ -8,9 +8,11 @@ Three layers, from fastest to closest to a phone.
 cargo test --workspace
 ```
 
-Protocol framing and authentication, tile diffing and packing, compositing and blending, popup
-placement, keymaps, the dpkg closure reader, Flatpak metadata and installation lookup, the
-PulseAudio protocol subset, pacing and format conversion.
+Protocol framing and authentication, the HTTP/WebSocket side of the loopback port (Host and
+Origin checks, framing), tile diffing and packing, compositing and blending, popup placement,
+keymaps, Flatpak metadata, installation and running-instance lookup, export ids and the
+termux-url-opener script, proot's signal reports, the PulseAudio protocol subset, pacing and
+format conversion.
 
 ## 2. The server against real clients, on any Linux machine
 
@@ -26,7 +28,9 @@ close <win>              clip <text...>
 ```
 
 `tests/host-integration.sh` runs the whole loop (server, debug-app, `lindroids run foot`, typing,
-and checks that the frame changed); CI runs it on every push. By hand:
+and checks that the frame changed); CI runs it on every push. The page itself is tested in a real
+browser: headless Chromium (Playwright) with phone emulation, driving taps, typing, the
+soft-keyboard text path, the clipboard and cursors against GTK 3 and GTK 4 programs. By hand:
 
 ```sh
 lindroids start
@@ -41,12 +45,21 @@ Useful switches: `LINDROIDS_LOG=debug` (commits, configures, frames), `LINDROIDS
 ## 3. Android
 
 `lab/` holds a QEMU lab of Android-x86 and BlissOS images (Android 7 to 13): fetch, start,
-provision (Termux, sshd), and a test that installs the CLI, opens a window, types,
-and checks reconnection, with SELinux permissive or enforcing. Results: [lab/README.md](../lab/README.md).
+provision (Termux, sshd), and `lab/test-lindroids.sh`: with no app and no Termux setting, it
+installs the CLI, has `lindroids run foot` open the page in the device's browser, types, checks
+that the page relinks after a server restart, then exports foot, adds its home screen shortcut,
+stops Termux and taps it. Results: [lab/README.md](../lab/README.md).
+
+## 4. Packages
+
+`tests/install-repos.sh` builds every package kind (deb, pacman, rpm, apk, xbps) and the signed
+repositories with throwaway keys, serves them locally, and runs `install.sh` twice (install, then
+update) in containers of 15 distros, checking the method it picks and `lindroids version`. CI runs
+it with docker.
 
 A permissive device is still useful for SELinux work: it logs every access an enforcing one would
 refuse (`logcat | grep "avc: denied"`) — that is how the cross-app `connectto` denial behind the
 TCP link was found.
 
 Screens can be recorded without a hardware encoder by pulling raw `screencap` frames over adb and
-encoding them on the host (the demo videos in `media/` were made that way).
+encoding them on the host.

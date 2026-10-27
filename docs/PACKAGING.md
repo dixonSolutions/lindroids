@@ -51,7 +51,7 @@ default features:
 | Output (`target/xwls/out/`)          | Built                                                              | Shipped at                                         |
 | ------------------------------------ | ------------------------------------------------------------------ | -------------------------------------------------- |
 | `termux-<arch>/xwayland-satellite`   | cargo-ndk, API 24, against a sysroot of Termux's libxcb `.deb`s     | Termux `.deb`: `$PREFIX/libexec/lindroids/`         |
-| `debian-<arch>/xwayland-satellite`   | in `debian:bookworm` (podman or docker), multiarch `-dev` packages and cross gcc | Debian `.deb`: `/usr/libexec/lindroids/`; Termux `.deb` of the same CPU: `$PREFIX/libexec/lindroids/glibc/`; tarball: `libexec/lindroids/` |
+| `debian-<arch>/xwayland-satellite`   | in `debian:bookworm` (podman or docker), multiarch `-dev` packages and cross gcc | Debian `.deb` and `.rpm`, Void glibc `.xbps`: `/usr/libexec/lindroids/`; tarball: `libexec/lindroids/` |
 | `LICENSE.xwayland-satellite`, `xwayland-satellite-crates.txt` | from the source and its `Cargo.lock` | `share/doc/lindroids/` and the tarball |
 
 - **Termux** (`aarch64 arm x86_64 i686`): bindgen (xcb-util-cursor-sys), pkg-config and the
@@ -69,10 +69,9 @@ default features:
   (Debian 12, Ubuntu 22.04 and later) plus `libxcb1`, `libxcb-cursor0` and `xwayland`, which
   the `.deb` *recommends* (the static CLI must still install without them). The host's Rust
   toolchain is mounted into the container read-only; crates are downloaded inside it.
-- **Termux `.deb`s carry both builds**: the glibc one is for `lindroids export --distro`, which
-  copies it into bundles of Debian-family proot distros, which cannot run the bionic one. Together
-  they add about 10 MB installed (2 MB to the download) to a Termux `.deb`, and about 5 MB
-  installed (1.3 MB download) to a Debian `.deb`. Termux recommends `libxcb`,
+- **Termux `.deb`s carry the bionic build only**: X11 programs in proot-distro distros reach
+  Termux's display, so they need no satellite of their own. It adds about 5 MB installed (1.3 MB
+  download) to a `.deb`. Termux recommends `libxcb`,
   `xcb-util-cursor` and `xwayland` (the last two need `pkg install x11-repo`).
 - Every output is checked with `readelf` (NEEDED, RUNPATH, interpreter, alignment, glibc
   version); `scripts/build-xwayland-satellite.sh --check` re-runs the checks. Outputs carry a

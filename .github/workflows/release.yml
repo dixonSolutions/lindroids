@@ -174,6 +174,12 @@ jobs:
             --rpm dist/rpm --apk dist/apk --xbps dist/xbps --keep 3 \
             --base-url "https://$owner.github.io/$repo" --github-repo "$GITHUB_REPOSITORY"
 
+      # What Lindroids is, how to install or upgrade it on every system, and the commits since the
+      # last release (scripts/release-notes.sh).
+      - name: Release notes
+        if: steps.build.outputs.publish == 'true'
+        run: scripts/release-notes.sh "${{ steps.version.outputs.version }}" > "$RUNNER_TEMP/notes.md"
+
       - name: GitHub Release
         if: steps.build.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
@@ -181,12 +187,13 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}
           name: Lindroids ${{ steps.version.outputs.version }}
           target_commitish: ${{ github.sha }}
-          generate_release_notes: true
+          body_path: ${{ runner.temp }}/notes.md
           make_latest: true
           fail_on_unmatched_files: true
           files: |
             dist/lindroids-*.tar.gz
             dist/debs/*.deb
+            dist/rpm/*.rpm
             dist/SHA256SUMS
 
       # After the release, so install.sh's VERSION never points at a release that does not exist.

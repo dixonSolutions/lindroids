@@ -30,7 +30,6 @@ Where it is installed:
 | Package | File | Build |
 | --- | --- | --- |
 | Termux `.deb` | `$PREFIX/libexec/lindroids/xwayland-satellite` | bionic, API 24 |
-| Termux `.deb` | `$PREFIX/libexec/lindroids/glibc/xwayland-satellite` | glibc, for bundles of Debian-family proot distros |
 | Debian `.deb` | `/usr/libexec/lindroids/xwayland-satellite` | glibc (built on Debian 12, needs glibc 2.34+) |
 | static tarball | `libexec/lindroids/xwayland-satellite` | glibc, as for Debian |
 

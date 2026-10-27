@@ -14,9 +14,8 @@
 #
 # Both also carry xwayland-satellite (MPL-2.0, built by scripts/build-xwayland-satellite.sh) at
 # <prefix>/libexec/lindroids/xwayland-satellite, where the CLI looks for it (<bindir>/../libexec):
-#   Termux  the bionic build, plus the glibc build for the same CPU at
-#           libexec/lindroids/glibc/xwayland-satellite, which `lindroids export --distro` copies
-#           into bundles of Debian-family proot distros (they cannot run the bionic one);
+#   Termux  the bionic build (X11 programs in proot distros reach it too: they share Termux's
+#           display);
 #   Debian  the glibc build (bookworm baseline). The CLI stays static; the satellite's libraries
 #           (and Xwayland) are Recommends, so the package installs anywhere.
 # Input: <xwls>/{termux,debian}-<deb arch>/xwayland-satellite, LICENSE.xwayland-satellite and
@@ -83,7 +82,7 @@ License: MIT or Apache-2.0
  see LICENSE-MIT and LICENSE-APACHE in the source repository. On Debian
  systems the Apache License 2.0 is in /usr/share/common-licenses/Apache-2.0.
 
-Files: libexec/lindroids/xwayland-satellite libexec/lindroids/glibc/xwayland-satellite
+Files: libexec/lindroids/xwayland-satellite
 Copyright: Shawn Wallace and the xwayland-satellite contributors
 License: MPL-2.0
  The full text of the Mozilla Public License 2.0 is in
@@ -120,23 +119,11 @@ build() {
   copyright "$flavour" > "$doc/copyright"
   chmod 644 "$doc/copyright"
 
-  # xwayland-satellite: the build for this flavour and, in Termux, also the glibc one.
-  local xwls=$XWLS/$flavour-$arch/xwayland-satellite glibc_arch
+  # xwayland-satellite: the build for this flavour.
+  local xwls=$XWLS/$flavour-$arch/xwayland-satellite
   [ -f "$xwls" ] || { echo "build-debs: missing $xwls" >&2; exit 1; }
   mkdir -p "$d/$prefix/libexec/lindroids"
   install -m 755 "$xwls" "$d/$prefix/libexec/lindroids/xwayland-satellite"
-  if [ "$flavour" = termux ]; then
-    case "$arch" in
-      aarch64) glibc_arch=arm64 ;;
-      arm) glibc_arch=armhf ;;
-      x86_64) glibc_arch=amd64 ;;
-      i686) glibc_arch=i386 ;;
-    esac
-    xwls=$XWLS/debian-$glibc_arch/xwayland-satellite
-    [ -f "$xwls" ] || { echo "build-debs: missing $xwls" >&2; exit 1; }
-    mkdir -p "$d/$prefix/libexec/lindroids/glibc"
-    install -m 755 "$xwls" "$d/$prefix/libexec/lindroids/glibc/xwayland-satellite"
-  fi
 
   # The CLI itself needs none of these (it is static on Debian); xwayland-satellite does, for
   # `lindroids run --x11`. Recommends, so the package still installs without them, e.g. in a

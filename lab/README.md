@@ -106,8 +106,10 @@ apps `s0:c512,c768`, so unix works there enforcing too.
 - Disk: the ISOs (0.9–2 GB each) and data disks (1.5–3 GB used each) were deleted after the
   2026-10-26 runs to free `/var/home`; `fetch-images.sh` and `vm.sh start` recreate them, and
   `provision.sh` then takes ~2–3 minutes per VM.
-- Termux 0.118.0 has no `termux-am` socket server, and Android 10+ refuses `am`/`cmd` from apps,
-  so the CLI cannot wake the app with its hello broadcast there; the app's own scan finds the
-  server instead (pairing then starts from the app's notification, which the test opens as root).
-- Bliss is a `user` build but `adb root` works; the pairing dialog (`ApproveActivity`, not
-  exported) is started as root.
+- Termux 0.118.0 has no `termux-am` socket server, and on b16 even 0.118.3's does not start; the
+  CLI then opens the browser with Termux's `am` (app_process), which needs the ARM translation
+  layer off on these x86 images (the test does it with `resetprop`).
+- Bliss is a `user` build but `adb root` works; the test uses it for `pm clear`, `resetprop` and
+  uiautomator, never for anything Lindroids itself does.
+- When the shortcut test stops Termux, sshd goes with it; the test starts a new Termux session
+  (Ctrl+Alt+C) and types `sshd`.
