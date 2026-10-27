@@ -608,6 +608,15 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
     Ok(c)
 }
 
+/// The app's symbolic icon (`<icon>-symbolic.svg`) as a PNG, for Android's status bar.
+pub fn symbolic(app: &App) -> Option<Vec<u8>> {
+    let dirs = [app.app.dir.join("export/share"), app.app.files().join("share")];
+    let desktop = format!("{}.desktop", app.id);
+    let entry = dirs.iter().find_map(|d| crate::desktop::parse(&d.join("applications").join(&desktop)));
+    let icon = entry.and_then(|e| e.icon).filter(|i| !i.starts_with('/')).unwrap_or_else(|| app.id.clone());
+    crate::desktop::symbolic_png(&dirs, &icon, 96)
+}
+
 /// Name and PNG icon, from the app's exported .desktop file and icons.
 pub fn identify(app: &App, o: &Opts) -> (String, Vec<u8>) {
     let dirs = [app.app.dir.join("export/share"), app.app.files().join("share")];

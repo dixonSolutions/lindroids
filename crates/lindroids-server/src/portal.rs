@@ -895,6 +895,7 @@ fn to_android(pid: Option<u32>, note: &Notification) {
         title,
         body: note.body.clone(),
         icon: note.icon_png_b64.as_deref().or(run_icon.as_deref()).and_then(crate::android::icon_file),
+        small_icon: pid.and_then(crate::android::symbolic_of),
         url,
     });
 }

@@ -468,6 +468,9 @@ pub enum CliRequest {
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         icon_png_b64: Option<String>,
+        /// Its one-colour icon, for Android's status bar.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        symbolic_png_b64: Option<String>,
         /// It gets a window of its own (a page opened for this run) rather than a place in the
         /// shared one.
         #[serde(default)]

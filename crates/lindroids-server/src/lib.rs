@@ -959,8 +959,12 @@ impl State {
                 self.running = false;
                 Some(CliReply::Ok { message: "stopping".into() })
             }
-            CliRequest::Launch { pid, name, icon_png_b64, window } => {
+            CliRequest::Launch { pid, name, icon_png_b64, symbolic_png_b64, window } => {
                 icons::register_launch(pid, name, icon_png_b64, window);
+                android::set_symbolic(pid, symbolic_png_b64);
+                if window {
+                    android::run_started(pid);
+                }
                 // Windows it opened before it was registered move to where they belong.
                 self.reroute();
                 Some(CliReply::Ok { message: "registered".into() })
@@ -1475,6 +1479,12 @@ pub fn run(cfg: Config) -> i32 {
     let _ = std::fs::remove_file(&wl_path);
     let _ = std::fs::remove_file(&cli_path);
     let _ = std::fs::remove_file(cfg.runtime_dir.join("server.pid"));
+    // The programs went with the server; so do their notifications (the helper takes a moment
+    // for each).
+    let n = android::clear_running();
+    if n > 0 {
+        std::thread::sleep(Duration::from_secs(n.min(5) as u64));
+    }
     0
 }
 

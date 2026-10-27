@@ -408,8 +408,9 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
         let _ = std::fs::write(m, child.id().to_string());
     }
     let icon_b64 = Some(base64::engine::general_purpose::STANDARD.encode(icon));
+    let symbolic_b64 = symbolic(&o, &target).map(|s| base64::engine::general_purpose::STANDARD.encode(s));
     let register = |window: bool| {
-        let req = CliRequest::Launch { pid: child.id(), name: name.clone(), icon_png_b64: icon_b64.clone(), window };
+        let req = CliRequest::Launch { pid: child.id(), name: name.clone(), icon_png_b64: icon_b64.clone(), symbolic_png_b64: symbolic_b64.clone(), window };
         let _ = client::request(&rt, &req, Duration::from_secs(3));
     };
     register(own_window);
@@ -477,6 +478,17 @@ fn signal_name(sig: i32) -> &'static str {
         11 => "segmentation fault",
         15 => "terminated",
         _ => "signal",
+    }
+}
+
+/// The symbolic (one-colour) icon of what is being run, if it has one.
+pub fn symbolic(o: &Opts, target: &Target) -> Option<Vec<u8>> {
+    match target {
+        Target::Flatpak(app, _) => flatpak::symbolic(app),
+        Target::Program(argv) => {
+            let root = o.distro.as_deref().map(distro_rootfs).unwrap_or_else(|| PathBuf::from("/"));
+            desktop::symbolic_for(&root, &program_of(argv))
+        }
     }
 }
 

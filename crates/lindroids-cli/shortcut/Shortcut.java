@@ -35,7 +35,8 @@ import java.util.concurrent.TimeUnit;
  *       pin &lt;package&gt; &lt;id&gt; &lt;label&gt; &lt;icon.png&gt; &lt;intent action&gt; &lt;component&gt; &lt;mime type&gt; &lt;extra text&gt;
  *   app_process ... lindroids.Shortcut remove &lt;package&gt; &lt;id&gt;
  *   app_process ... lindroids.Shortcut open &lt;package&gt; new|raise &lt;url&gt; &lt;browser&gt;...
- *   app_process ... lindroids.Shortcut notify &lt;package&gt; &lt;id&gt; &lt;program&gt; &lt;title&gt; &lt;text&gt; &lt;icon.png&gt; &lt;url&gt; &lt;browser&gt;...
+ *   app_process ... lindroids.Shortcut notify &lt;package&gt; &lt;id&gt; &lt;program&gt; &lt;title&gt; &lt;text&gt; &lt;icon.png&gt; &lt;small-icon.png&gt; &lt;url&gt; &lt;browser&gt;...
+ *   app_process ... lindroids.Shortcut running &lt;package&gt; &lt;id&gt; &lt;program&gt; &lt;title&gt; &lt;text&gt; &lt;icon.png&gt; &lt;small-icon.png&gt; &lt;url&gt; &lt;browser&gt;...
  *   app_process ... lindroids.Shortcut cancel &lt;package&gt; &lt;id&gt;
  * </pre>
  *
@@ -74,15 +75,15 @@ public final class Shortcut {
                 remove(a[1], a[2]);
             } else if (a.length >= 5 && a[0].equals("open")) {
                 System.out.println("browser " + open(a[1], a[2], a[3], Arrays.copyOfRange(a, 4, a.length)));
-            } else if (a.length >= 8 && a[0].equals("notify")) {
-                post(a[1], Integer.parseInt(a[2]), a[3], a[4], a[5], a[6], a[7], Arrays.copyOfRange(a, 8, a.length));
+            } else if (a.length >= 9 && (a[0].equals("notify") || a[0].equals("running"))) {
+                post(a[1], Integer.parseInt(a[2]), a[3], a[4], a[5], a[6], a[7], a[8], Arrays.copyOfRange(a, 9, a.length), a[0].equals("running"));
             } else if (a.length >= 3 && a[0].equals("pinned")) {
                 System.out.println("pinned " + pinned(service(), a[1], a[2]));
             } else if (a.length >= 3 && a[0].equals("cancel")) {
                 cancel(a[1], Integer.parseInt(a[2]));
             } else {
                 throw new IllegalArgumentException("usage: pin <package> <id> <label> <icon> <action> <component> <type> <text> | remove <package> <id>"
-                        + " | open <package> new|raise <url> <browser>... | notify <package> <id> <program> <title> <text> <icon> <url> <browser>..."
+                        + " | open <package> new|raise <url> <browser>... | notify|running <package> <id> <program> <title> <text> <icon> <small-icon> <url> <browser>..."
                         + " | cancel <package> <id> | pinned <package> <id>");
             }
             System.out.println("ok");
@@ -306,28 +307,47 @@ public final class Shortcut {
     }
 
     static final String CHANNEL = "lindroids";
+    /** One per running program, its icon in the status bar: default importance, no sound. */
+    static final String RUNNING = "lindroids-programs";
 
     /**
      * Posts a program's notification as the terminal app's (Android shows the terminal app as its
      * source, with the program's name and icon). Tapping it brings back the program's window:
      * {@code url} in the first of {@code browsers} installed, as {@code open raise} does.
+     * {@code running}: the quiet one that stands for a running program (it stays when tapped; the
+     * user can still swipe it away, so it cannot outlive a terminal app that was killed).
      */
-    static void post(String pkg, int id, String program, String title, String text, String iconPath, String url, String[] browsers) throws Exception {
+    static void post(String pkg, int id, String program, String title, String text, String iconPath, String smallIconPath, String url, String[] browsers, boolean running) throws Exception {
         Context ctx = appContext(pkg);
         Object nm = notificationService();
-        NotificationChannel ch = new NotificationChannel(CHANNEL, "Linux programs", NotificationManager.IMPORTANCE_DEFAULT);
+        NotificationChannel ch = running
+                ? new NotificationChannel(RUNNING, "Running Linux programs", NotificationManager.IMPORTANCE_DEFAULT)
+                : new NotificationChannel(CHANNEL, "Linux programs", NotificationManager.IMPORTANCE_DEFAULT);
+        if (running) {
+            // Shown in the status bar (silent ones are not), without a sound.
+            ch.setSound(null, null);
+            ch.enableVibration(false);
+        }
         Object list = Class.forName("android.content.pm.ParceledListSlice").getConstructor(List.class).newInstance(Arrays.asList(ch));
         call(nm, "createNotificationChannels", pkg, list);
-        Notification.Builder b = new Notification.Builder(ctx, CHANNEL)
+        Notification.Builder b = new Notification.Builder(ctx, ch.getId())
                 .setContentTitle(title)
                 .setContentText(text)
-                .setStyle(new Notification.BigTextStyle().bigText(text))
-                .setAutoCancel(true)
-                .setShowWhen(true);
+                .setAutoCancel(!running)
+                .setOnlyAlertOnce(running)
+                .setShowWhen(!running);
+        if (!running) b.setStyle(new Notification.BigTextStyle().bigText(text));
+        // A group of its own: Android does not bundle it with the terminal app's notifications,
+        // so it keeps its own icon in the status bar.
+        b.setGroup("lindroids-" + id);
         if (!program.isEmpty() && !program.equals(title)) b.setSubText(program);
         Bitmap icon = iconPath.isEmpty() ? null : BitmapFactory.decodeFile(iconPath);
-        if (icon != null) {
-            b.setLargeIcon(icon);
+        Bitmap small = smallIconPath.isEmpty() ? null : BitmapFactory.decodeFile(smallIconPath);
+        if (icon != null) b.setLargeIcon(icon);
+        // The status bar draws only the small icon's shape: the one-colour icon if there is one.
+        if (small != null) {
+            b.setSmallIcon(Icon.createWithBitmap(small));
+        } else if (icon != null) {
             b.setSmallIcon(Icon.createWithBitmap(icon));
         } else {
             b.setSmallIcon(Icon.createWithResource("android", android.R.drawable.stat_notify_chat));

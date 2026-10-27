@@ -306,7 +306,16 @@ impl AndroidServices {
 impl lindroids_server::android::Android for AndroidServices {
     fn notify(&self, n: lindroids_server::android::Notice) {
         let icon = n.icon.map(|p| p.display().to_string()).unwrap_or_default();
-        let mut args = vec!["notify".to_string(), package(), n.id.to_string(), n.app, n.title, n.body, icon, n.url.unwrap_or_default()];
+        let small = n.small_icon.map(|p| p.display().to_string()).unwrap_or_default();
+        let mut args = vec!["notify".to_string(), package(), n.id.to_string(), n.app, n.title, n.body, icon, small, n.url.unwrap_or_default()];
+        args.extend(browsers());
+        let _ = self.queue.lock().unwrap().send(args);
+    }
+
+    fn running(&self, n: lindroids_server::android::Notice) {
+        let icon = n.icon.map(|p| p.display().to_string()).unwrap_or_default();
+        let small = n.small_icon.map(|p| p.display().to_string()).unwrap_or_default();
+        let mut args = vec!["running".to_string(), package(), n.id.to_string(), n.app, n.title, n.body, icon, small, n.url.unwrap_or_default()];
         args.extend(browsers());
         let _ = self.queue.lock().unwrap().send(args);
     }

@@ -144,6 +144,24 @@ pub fn icon_file(dirs: &[PathBuf], root: &Path, icon: &str) -> Option<PathBuf> {
     None
 }
 
+/// The one-colour ("symbolic") version of icon `icon`, as a PNG `size` pixels square: what
+/// Android's status bar shows (it draws only the shape). GNOME apps ship one.
+pub fn symbolic_png(dirs: &[PathBuf], icon: &str, size: u32) -> Option<Vec<u8>> {
+    let name = format!("{icon}-symbolic.svg");
+    let file = dirs
+        .iter()
+        .flat_map(|d| ["symbolic/apps", "scalable/apps"].map(|sub| d.join("icons/hicolor").join(sub).join(&name)))
+        .find(|p| p.exists())?;
+    render_svg(&std::fs::read(file).ok()?, size)
+}
+
+/// The symbolic icon of `program` (by its .desktop entry) under `root`.
+pub fn symbolic_for(root: &Path, program: &str) -> Option<Vec<u8>> {
+    let dirs = data_dirs(root);
+    let icon = find(&dirs, program)?.icon?;
+    symbolic_png(&dirs, &icon, 96)
+}
+
 /// PNG bytes for an icon file, at most `size` pixels square (SVG rendered at `size`).
 pub fn icon_png(path: &Path, size: u32) -> Option<Vec<u8>> {
     let data = std::fs::read(path).ok()?;
