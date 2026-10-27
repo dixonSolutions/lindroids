@@ -103,13 +103,13 @@ jobs:
 
       - name: Shell scripts
         run: |
-          shellcheck -S warning scripts/build-release.sh scripts/fetch-proot.sh scripts/version.sh \
+          shellcheck -S warning scripts/build-release.sh scripts/version.sh \
             scripts/set-github-secrets.sh scripts/build-xwayland-satellite.sh \
             packaging/*.sh packaging/repo/*.sh tests/*.sh
           sh -n install.sh
 
       - name: Tests
-        run: cargo test --workspace --exclude lindroids-android
+        run: cargo test --workspace
 
       - name: Host integration test
         run: tests/host-integration.sh
@@ -157,10 +157,8 @@ jobs:
           stage=target/ci-pkg
           rm -rf "$stage" && mkdir -p "$stage/dist/bin/x86_64-unknown-linux-musl"
           cp target/x86_64-unknown-linux-musl/release/lindroids "$stage/dist/bin/x86_64-unknown-linux-musl/"
-          echo "not an APK: CI does not build the app" > "$stage/dist/lindroids.apk"
           packaging/build-debs.sh --version "$LINDROIDS_VERSION" --dist "$stage/dist" \
-            --apk "$stage/dist/lindroids.apk" --out "$stage/debs" --arches amd64 \
-            --xwls target/xwls/out
+            --out "$stage/debs" --arches amd64 --xwls target/xwls/out
           packaging/build-pacman.sh --debs "$stage/debs" --out "$stage/pacman"
           GNUPGHOME=$(mktemp -d)
           export GNUPGHOME

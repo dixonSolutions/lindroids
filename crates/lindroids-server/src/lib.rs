@@ -1,13 +1,12 @@
 //! The Lindroids server: a Wayland compositor and a PulseAudio-protocol sound server whose output
-//! is the Lindroids Android app.
+//! is a display on the link: the phone's web browser (`web.rs`), or the older Lindroids app.
 //!
 //! It is a plain Linux program. It runs inside the sandbox next to the Linux programs (Termux, a
-//! proot distro...), as `lindroids server`, or inside the app itself for exported bundles. It never
-//! calls an Android API: frames go to the app as shared memory over a Unix socket, sound as PCM,
-//! and the app does everything Android-side.
+//! proot distro...), as `lindroids server`. It never calls an Android API: changed tiles of each
+//! window and PCM go over a loopback link, and the display does the rest.
 //!
-//! One thread runs the compositor. It polls the Wayland socket and clients, the app link, the CLI
-//! socket, and a wake pipe other threads (sound, clipboard) use to post work.
+//! One thread runs the compositor. It polls the Wayland socket and clients, the display link, the
+//! CLI socket, and a wake pipe other threads (sound, clipboard) use to post work.
 
 pub mod applink;
 pub mod audio;
@@ -23,6 +22,7 @@ mod shell;
 pub mod shm;
 mod surface;
 pub mod portal;
+pub mod web;
 pub mod x11;
 
 pub use lindroids_proto::fdpass;
@@ -91,13 +91,27 @@ pub fn default_runtime_dir() -> PathBuf {
     tmp.join(format!("lindroids-{}", unsafe { libc::getuid() }))
 }
 
-/// Where the long-term pairing secret lives.
-pub fn secret_path() -> PathBuf {
-    let base = std::env::var_os("LINDROIDS_STATE_DIR").map(PathBuf::from).unwrap_or_else(|| {
+/// Where lindroids keeps what lasts: the pairing secret, exported programs.
+pub fn state_dir() -> PathBuf {
+    std::env::var_os("LINDROIDS_STATE_DIR").map(PathBuf::from).unwrap_or_else(|| {
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
         home.join(".local/share/lindroids")
-    });
-    base.join("secret")
+    })
+}
+
+/// Where the long-term pairing secret lives.
+pub fn secret_path() -> PathBuf {
+    state_dir().join("secret")
+}
+
+/// An exported program's record (`lindroids export`), if `id` is one.
+pub fn exported_path(id: &str) -> Option<PathBuf> {
+    proto::valid_export_id(id).then(|| state_dir().join("apps").join(format!("{id}.json")))
+}
+
+pub fn load_exported(id: &str) -> Option<proto::Exported> {
+    let p = exported_path(id)?;
+    std::fs::read(p).ok().and_then(|b| serde_json::from_slice(&b).ok())
 }
 
 pub fn load_or_create_secret() -> String {
@@ -124,8 +138,6 @@ pub enum Inbox {
     ToApp(ToApp),
     /// A message with a binary payload (sound).
     WithPayload(ToApp, Vec<u8>),
-    /// Wake the loop (a bundle chunk is ready).
-    Wake,
 }
 
 pub struct Shared {
@@ -224,13 +236,6 @@ pub struct Window {
     pub decoration_mode: Option<wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode>,
 }
 
-/// A bundle on its way from the CLI to the app.
-struct BundleXfer {
-    id: String,
-    rx: std::sync::mpsc::Receiver<Option<Vec<u8>>>,
-    started: bool,
-}
-
 struct CliConn {
     stream: UnixStream,
     buf: Vec<u8>,
@@ -240,9 +245,7 @@ struct CliConn {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Waiting {
-    Export(String),
     Folder(u32),
-    Import(String),
     /// A worker thread answers this CLI (`lindroids open`).
     Detached,
 }
@@ -259,7 +262,6 @@ pub struct State {
     pub link: Option<Link>,
     /// Links that have not authenticated yet.
     pending: Vec<Link>,
-    bundles: Vec<BundleXfer>,
     secret: String,
     pub pairing_code: String,
     pairing_failures: u32,
@@ -274,6 +276,8 @@ pub struct State {
     clis: Vec<CliConn>,
     next_request: u32,
     clients: u32,
+    /// When each exported program was last launched for a page.
+    launched: HashMap<String, Instant>,
 }
 
 impl State {
@@ -309,12 +313,6 @@ impl State {
             w.shown_size = (0, 0);
             w.dirty = true;
             self.frame_due.extend(w.waiting.drain(..));
-        }
-        for b in self.bundles.drain(..) {
-            self.clis.iter_mut().filter(|c| c.waiting == Some(Waiting::Import(b.id.clone()))).for_each(|c| {
-                let _ = c.stream.write_all(&proto::encode(&CliReply::Error { message: "the app went away".into() }));
-                c.waiting = None;
-            });
         }
     }
 
@@ -460,6 +458,11 @@ impl State {
                 link.build = build.clone();
                 link.version = version;
                 link.phase = Phase::Ready;
+                // One display at a time: the newest wins, and the one before is told why it lost
+                // the link (a browser tab then waits instead of taking it straight back).
+                if let Some(old) = self.link.as_mut() {
+                    old.send(&ToApp::Bye { reason: "another display took over".into() });
+                }
                 self.drop_link();
                 self.link = Some(link);
                 portal::app_changed(version);
@@ -544,26 +547,21 @@ impl State {
             ToServer::Text { win, text } => seat::text(self, win, &text),
             ToServer::Clipboard { text } => data::android_clipboard(self, text),
             ToServer::FolderPicked { request, path } => self.reply_cli(&Waiting::Folder(request), CliReply::Folder { path }),
-            ToServer::ExportResult { id, ok, message } => {
-                let r = if ok { CliReply::Ok { message } } else { CliReply::Error { message } };
-                self.reply_cli(&Waiting::Export(id), r);
-            }
-            ToServer::ImportResult { id, ok, message } => {
-                let r = if ok { CliReply::Ok { message } } else { CliReply::Error { message } };
-                self.reply_cli(&Waiting::Import(id), r);
+            ToServer::Launch { id } => {
+                // Browsers that open a new tab per intent (and pages the browser reloads) ask
+                // more than once for one tap.
+                if self.launched.get(&id).map_or(false, |t| t.elapsed() < Duration::from_secs(8)) {
+                    info!("launch of {id}: started a moment ago");
+                } else {
+                    self.launched.insert(id.clone(), Instant::now());
+                    launch_exported(&self.cfg, &id);
+                }
             }
         }
     }
 
     fn reply_cli(&mut self, what: &Waiting, reply: CliReply) {
-        let mut idx = self.clis.iter().position(|c| c.waiting.as_ref() == Some(what));
-        // An export the app failed early on (empty id) answers the oldest waiter.
-        if idx.is_none() {
-            if let Waiting::Export(_) = what {
-                idx = self.clis.iter().position(|c| matches!(c.waiting, Some(Waiting::Export(_))));
-            }
-        }
-        if let Some(i) = idx {
+        if let Some(i) = self.clis.iter().position(|c| c.waiting.as_ref() == Some(what)) {
             let mut c = self.clis.remove(i);
             c.stream.set_nonblocking(false).ok();
             let _ = c.stream.write_all(&proto::encode(&reply));
@@ -571,7 +569,7 @@ impl State {
     }
 
     fn handle_cli(&mut self, idx: usize, req: CliRequest, fds: Vec<OwnedFd>) {
-        let no_app = || CliReply::Error { message: "the Lindroids app is not connected".into() };
+        let no_app = || CliReply::Error { message: "no display is linked: open the windows page in the browser (`lindroids pair`)".into() };
         let reply = match req {
             CliRequest::Status => Some(CliReply::Status {
                 version: proto::PROTOCOL_VERSION,
@@ -599,56 +597,6 @@ impl State {
             CliRequest::Launch { pid, name, icon_png_b64 } => {
                 icons::register_launch(pid, name, icon_png_b64);
                 Some(CliReply::Ok { message: "registered".into() })
-            }
-            CliRequest::Export(req) => {
-                if self.link.is_none() {
-                    Some(no_app())
-                } else {
-                    let id = req.id.clone();
-                    self.send_app(&ToApp::Export(req));
-                    self.clis[idx].waiting = Some(Waiting::Export(id));
-                    None
-                }
-            }
-            CliRequest::ImportBundle { id } => match fds.into_iter().next() {
-                _ if self.link.is_none() => Some(no_app()),
-                None => Some(CliReply::Error { message: "no bundle stream came with the request".into() }),
-                Some(fd) => {
-                    // A thread reads the pipe; the loop forwards chunks as the link drains.
-                    let (tx, rx) = std::sync::mpsc::sync_channel::<Option<Vec<u8>>>(4);
-                    std::thread::spawn(move || {
-                        let mut f = std::fs::File::from(fd);
-                        loop {
-                            let mut buf = vec![0u8; 256 * 1024];
-                            match std::io::Read::read(&mut f, &mut buf) {
-                                Ok(0) | Err(_) => {
-                                    let _ = tx.send(None);
-                                    shared().post(Inbox::Wake);
-                                    break;
-                                }
-                                Ok(n) => {
-                                    buf.truncate(n);
-                                    if tx.send(Some(buf)).is_err() {
-                                        break;
-                                    }
-                                    shared().post(Inbox::Wake);
-                                }
-                            }
-                        }
-                    });
-                    self.bundles.push(BundleXfer { id: id.clone(), rx, started: false });
-                    self.clis[idx].waiting = Some(Waiting::Import(id));
-                    None
-                }
-            },
-            CliRequest::Unexport { id } => {
-                if self.link.is_none() {
-                    Some(no_app())
-                } else {
-                    self.send_app(&ToApp::Unexport { id: id.clone() });
-                    self.clis[idx].waiting = Some(Waiting::Export(id));
-                    None
-                }
             }
             CliRequest::Info => Some(CliReply::Info { system: portal::system() }),
             CliRequest::Notify { title, body } => {
@@ -702,6 +650,45 @@ impl State {
             let _ = c.stream.write_all(&proto::encode(&r));
             c.stream.set_nonblocking(true).ok();
         }
+    }
+}
+
+/// Start an exported program, as its launcher page asked: `lindroids launch <id>`, detached, with
+/// its output in the runtime dir.
+fn launch_exported(cfg: &Config, id: &str) {
+    if load_exported(id).is_none() {
+        warn!("launch of {id:?}: no such exported program");
+        return;
+    }
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(e) => return warn!("launch of {id}: {e}"),
+    };
+    let log = std::fs::File::create(cfg.runtime_dir.join(format!("launch-{id}.log")));
+    let mut cmd = std::process::Command::new(exe);
+    // The page that asked is linked and in front: `lindroids run` need not raise it.
+    cmd.arg("launch").arg(id).env("LINDROIDS_LAUNCHED", "1").stdin(std::process::Stdio::null());
+    if let Ok(l) = log {
+        if let Ok(l2) = l.try_clone() {
+            cmd.stdout(l).stderr(l2);
+        }
+    }
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(&mut cmd, || {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    match cmd.spawn() {
+        Ok(child) => {
+            info!("launched {id} (pid {})", child.id());
+            // Reap it whenever it ends.
+            std::thread::spawn(move || {
+                let mut child = child;
+                let _ = child.wait();
+            });
+        }
+        Err(e) => warn!("launch of {id}: {e}"),
     }
 }
 
@@ -840,7 +827,7 @@ pub fn run(cfg: Config) -> i32 {
         }
     };
     if app_listener.is_none() && tcp_listener.is_none() {
-        eprintln!("lindroids: the app has no way to reach this server (is another one running?)");
+        eprintln!("lindroids: no port for the browser to reach this server (is another one running?)");
         return 1;
     }
 
@@ -865,7 +852,6 @@ pub fn run(cfg: Config) -> i32 {
         scale,
         link: None,
         pending: Vec::new(),
-        bundles: Vec::new(),
         secret,
         pairing_code,
         pairing_failures: 0,
@@ -878,6 +864,7 @@ pub fn run(cfg: Config) -> i32 {
         clis: Vec::new(),
         next_request: 0,
         clients: 0,
+        launched: HashMap::new(),
     };
     surface::register_globals(&dh);
     shell::register_globals(&dh);
@@ -926,7 +913,11 @@ pub fn run(cfg: Config) -> i32 {
         fds.push(lp);
         let pending_base = fds.len();
         for p in &state.pending {
-            fds.push(pfd(p.fd()));
+            let mut f = pfd(p.fd());
+            if p.wants_write() {
+                f.events |= libc::POLLOUT;
+            }
+            fds.push(f);
         }
         let cli_base = fds.len();
         for c in &state.clis {
@@ -968,7 +959,6 @@ pub fn run(cfg: Config) -> i32 {
                 match item {
                     Inbox::ToApp(m) => state.send_app(&m),
                     Inbox::WithPayload(m, p) => state.send_app_with(&m, &p),
-                    Inbox::Wake => {}
                 }
             }
         }
@@ -992,7 +982,7 @@ pub fn run(cfg: Config) -> i32 {
                 while let Ok((stream, addr)) = l.accept() {
                     stream.set_nonblocking(true).ok();
                     stream.set_nodelay(true).ok();
-                    state.pending.push(Link::new(Box::new(stream), format!("tcp {addr}")));
+                    state.pending.push(Link::new_tcp(Box::new(stream), format!("tcp {addr}"), port));
                 }
             }
         }
@@ -1007,7 +997,14 @@ pub fn run(cfg: Config) -> i32 {
                 }
                 continue;
             }
+            if fds[pending_base + i].revents & libc::POLLOUT != 0 {
+                state.pending[i].flush();
+            }
             let alive = state.pending[i].read();
+            if state.pending[i].finished() || state.pending[i].broken {
+                state.pending.remove(i);
+                continue;
+            }
             match state.pending[i].next() {
                 Some(Ok((m, _))) => {
                     let link = state.pending.remove(i);
@@ -1080,7 +1077,6 @@ pub fn run(cfg: Config) -> i32 {
         if let Err(e) = display.dispatch_clients(&mut state) {
             warn!("dispatch: {e}");
         }
-        forward_bundles(&mut state);
         render_dirty(&mut state);
         if !state.frame_due.is_empty() && last_frame_flush.elapsed() >= Duration::from_millis(16) {
             last_frame_flush = Instant::now();
@@ -1102,33 +1098,6 @@ pub fn run(cfg: Config) -> i32 {
     0
 }
 
-/// Move bundle chunks onto the link while it keeps up.
-fn forward_bundles(state: &mut State) {
-    while let Some(b) = state.bundles.first_mut() {
-        let Some(link) = &mut state.link else { return };
-        if link.pending() > (2 << 20) {
-            return;
-        }
-        if !b.started {
-            b.started = true;
-            let id = b.id.clone();
-            link.send(&ToApp::BundleBegin { id });
-        }
-        match b.rx.try_recv() {
-            Ok(Some(chunk)) => {
-                let id = b.id.clone();
-                link.send_with(&ToApp::BundleChunk { id, len: chunk.len() as u32 }, &chunk);
-            }
-            Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                let id = b.id.clone();
-                link.send(&ToApp::BundleEnd { id, ok: true });
-                state.bundles.remove(0);
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-        }
-    }
-}
-
 /// Compose every window that changed and send what differs from what the app shows.
 fn render_dirty(state: &mut State) {
     if state.link.as_ref().map_or(true, |l| l.pending() > (8 << 20)) {
@@ -1148,12 +1117,14 @@ fn render_dirty(state: &mut State) {
         let (pw, ph) = w.phys.unwrap();
         let fit = if cw > 0 && ch > 0 { (pw as f32 / (cw as f32 * scale)).min(ph as f32 / (ch as f32 * scale)).min(1.0) } else { 1.0 };
         w.fit = fit;
-        w.fit_offset = if fit < 1.0 {
+        // Content smaller than the window (a dialog with a size of its own, a scaled-down client)
+        // sits in the middle rather than in a corner.
+        w.fit_offset = if cw > 0 && ch > 0 {
             (((pw as f32 - cw as f32 * scale * fit) / 2.0).max(0.0) as i32, ((ph as f32 - ch as f32 * scale * fit) / 2.0).max(0.0) as i32)
         } else {
             (0, 0)
         };
-        if fit < 1.0 {
+        if fit < 1.0 || w.fit_offset != (0, 0) {
             let (ox, oy) = w.fit_offset;
             for p in &mut layers.placed {
                 p.x = (p.x as f32 * fit).round() as i32 + ox;

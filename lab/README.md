@@ -26,7 +26,7 @@ lab/fetch-images.sh [a7 a9 b15 b16]   # resumable, md5-checked (SourceForge), + 
 lab/vm.sh b16 start                   # headless, KVM, 3 GB / 4 vCPU; max 2 lab VMs; checks MemAvailable
 lab/vm.sh b16 wait-boot
 lab/provision.sh b16                  # setup wizard off, Termux + openssh + foot + lab key, sshd
-lab/test-lindroids.sh b16             # deploy + pair + window + typing + reconnect -> lab/results/b16/<mode>/
+lab/test-lindroids.sh b16             # CLI + browser page + window + typing + relink -> lab/results/b16/<mode>/
 lab/vm.sh b16 stop                    # adb `reboot -p`, then QMP quit
 ```
 
@@ -63,7 +63,21 @@ running in the init domain). For a7/a9, `late` also switches to software renderi
 (`GPU=std HWACCEL=0`): with virgl their apps still cannot initialise EGL under enforcing.
 `getenforce` reports `Enforcing`; `run/<vm>/shim.txt` lists what was applied.
 
-## Results (2026-10-26)
+## Results with the browser as the display (2026-10-27)
+
+No Lindroids app on the device, `allow-external-apps` removed from Termux's settings, Termux
+0.118.3 (F-Droid), the image's own browser (Jellyfish, WebView-based):
+
+| Android | Image | SELinux | Linked | Window | Typing | Relink after server restart |
+|---------|-------|---------|--------|--------|--------|-----------------------------|
+| 13 | BlissOS 16.9.7 | permissive | yes | yes | yes | 1.0 s |
+
+`lindroids run` opens the page with Termux's `am`; on these x86 images that needs the ARM
+translation layer off (`resetprop ro.dalvik.vm.native.bridge 0`, which the test does when
+`$LAB_HOME/tools/magisk` — Magisk's x86_64 `libmagisk.so` — is there), as on a phone, which has no
+translation layer.
+
+## Results with the old Lindroids app (2026-10-26)
 
 `lab/results/SUMMARY.md` is the table `test-lindroids.sh` maintains; per-run evidence
 (screenshots `home/pair-dialog/pair-code/window/typed/window-after-reconnect.png`, `logcat.txt`,

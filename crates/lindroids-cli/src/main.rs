@@ -1,11 +1,10 @@
-//! `lindroids`: run Linux apps in Android windows, and export them to the home screen.
+//! `lindroids`: run Linux apps on Android, their windows shown in the phone's web browser.
 
 mod client;
 mod debug;
 mod desktop;
 mod export;
 mod flatpak;
-mod pkgdb;
 mod run;
 mod sandbox;
 mod elf;
@@ -23,16 +22,16 @@ use std::time::{Duration, Instant};
 use lindroids_proto::{CliReply, CliRequest};
 
 const HELP: &str = "\
-lindroids — Linux apps in Android windows
+lindroids — Linux apps on Android, their windows in the web browser
 
 USAGE
   lindroids run [options] <command> [args...]
   lindroids run [options] \"<command line>\"
-  lindroids export [options] <command> [args...]
-  lindroids list | remove <id>
-  lindroids setup                    install or update the Lindroids app, then pair
+  lindroids export [options] <command> [args...]   a launcher page for the home screen
+  lindroids list | remove <id> | launch <id>
+  lindroids setup                    start the server and open the windows page in the browser
   lindroids setup x11 [--yes]        install what X11 programs need (Xwayland), restart the server
-  lindroids update [--check]         update the CLI and the app to the latest release
+  lindroids update [--check]         update lindroids to the latest release
   lindroids open <file|URI>          open with Android (what xdg-open does for Linux programs)
   lindroids notify <title> [body]    an Android notification
   lindroids info [--json]            Android's theme, accent, network, memory, battery
@@ -47,22 +46,21 @@ RUN OPTIONS
   --touch pointer     treat touch as a mouse for this program's windows
 
 EXPORT OPTIONS (as run, plus)
-  --link              the shortcut asks Termux to run the program (no copy; Termux must be installed)
-  --bundle            copy the program into the Lindroids app (default): works with Termux closed
-  --id <id>           shortcut id (default: derived from the program)
+  --id <id>           launcher id (default: derived from the program)
 
 A program name that looks like a Flatpak id (org.gnome.Calculator) runs that Flatpak.
 
-Programs also get Android's side of the desktop through the standard portal on their own session
-bus: dark mode and accent colour, Android's file picker, links and files opened in Android apps,
-notifications, low-memory warnings, network and battery-saver state.
+Programs also get the browser's side of the desktop through the standard portal on their own
+session bus: dark mode, the browser's file chooser and downloads, links opened in new tabs,
+notifications in the page, network state.
 
 X11 programs need no option: every program gets DISPLAY as well as WAYLAND_DISPLAY, and each X11
-window becomes its own Android window (xwayland-satellite, started on the first X11 connection).
+window becomes its own tab in the page (xwayland-satellite, started on the first X11 connection).
 `lindroids doctor` shows whether X11 is ready; `lindroids setup x11` installs what is missing.
 
-The first time, the Lindroids app pairs itself with Termux (Android asks to let it run commands
-in Termux); elsewhere it asks for the pairing code that `lindroids pair` shows.
+Windows show in the phone's web browser: `lindroids run` opens http://127.0.0.1:<port>/ there (no
+app to install, no permission to grant). A browser opened by hand asks for the pairing code that
+`lindroids pair` shows; \"Add to Home screen\" in the browser's menu keeps the page one tap away.
 ";
 
 fn main() {
@@ -90,6 +88,7 @@ fn main() {
         Some("setup") if args.get(1).map(String::as_str) == Some("x11") => setup_x11::cmd_setup_x11(&args[2..]),
         Some("setup") => cmd_setup(),
         Some("doctor") => cmd_doctor(),
+        // Older releases run `<new binary> update --app-only` after upgrading; there is no app now.
         Some("update") if args.iter().any(|a| a == "--app-only") => update::cmd_update_app_only(),
         Some("update") => update::cmd_update(&args[1..]),
         Some("open") => integration::cmd_open(&args[1..]),
@@ -97,14 +96,10 @@ fn main() {
         Some("info") => integration::cmd_info(&args[1..]),
         Some("run") => run::cmd_run(&args[1..]),
         Some("export") => export::cmd_export(&args[1..]),
+        Some("launch") => export::cmd_launch(&args[1..]),
         Some("list") => export::cmd_list(),
         Some("remove") => export::cmd_remove(&args[1..]),
         Some("pick-folder") => cmd_pick_folder(),
-        // For the app, through Termux's RUN_COMMAND (TermuxPairing.java): the pairing secret.
-        Some("app-secret") => {
-            println!("{}", lindroids_server::load_or_create_secret());
-            0
-        }
         Some("debug-app") => debug::cmd_debug_app(&args[1..]),
         Some(other) => {
             eprintln!("lindroids: unknown command {other:?}\n");
@@ -182,17 +177,28 @@ pub fn ensure_server(sb: &sandbox::Sandbox) -> Result<std::path::PathBuf, String
     Err(format!("the server did not start:\n{tail}"))
 }
 
-/// Make sure the app is linked; wake it if not. Never blocks for long: windows open whenever the
-/// app connects. Returns whether it is connected.
-pub fn ensure_app(sb: &sandbox::Sandbox, rt: &Path, quiet: bool) -> bool {
-    if matches!(client::status(rt), Ok(CliReply::Status { app_connected: true, .. })) {
+/// Set for `lindroids launch` started by the server for a launcher page.
+pub static LAUNCHED_BY_PAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Make sure a display (the browser page) is linked: open the page if not, and on Android bring it
+/// to the front, where the windows are about to appear. Never blocks for long: windows show
+/// whenever the page links. Returns whether it is linked.
+pub fn ensure_display(sb: &sandbox::Sandbox, rt: &Path, quiet: bool) -> bool {
+    let linked = || matches!(client::status(rt), Ok(CliReply::Status { app_connected: true, .. }));
+    let was = linked();
+    // On a desktop a linked page stays where it is; a new tab each time would only pile up. A
+    // program a page started (`lindroids launch`) is already in front of the user.
+    if was && (!sandbox::on_android() || LAUNCHED_BY_PAGE.load(std::sync::atomic::Ordering::Relaxed)) {
         return true;
     }
     let secret = lindroids_server::load_or_create_secret();
-    let how = sandbox::wake_app(sb, &secret);
+    let how = sandbox::open_browser(&sandbox::display_url(sb.uid, Some(&secret)));
+    if was {
+        return true;
+    }
     let t0 = Instant::now();
-    while t0.elapsed() < Duration::from_secs(if how.is_some() { 6 } else { 2 }) {
-        if let Ok(CliReply::Status { app_connected: true, .. }) = client::status(rt) {
+    while t0.elapsed() < Duration::from_secs(if how.is_some() { 10 } else { 1 }) {
+        if linked() {
             return true;
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -202,16 +208,14 @@ pub fn ensure_app(sb: &sandbox::Sandbox, rt: &Path, quiet: bool) -> bool {
             Ok(CliReply::Status { pairing_code: Some(c), .. }) => c,
             _ => "(see `lindroids pair`)".into(),
         };
-        eprintln!("lindroids: the Lindroids app is not connected yet.");
-        if how.is_none() {
-            eprintln!("  Could not wake it from here (Termux 0.118.1+ with termux-am-socket can), so open the");
-            eprintln!("  Lindroids app yourself: it finds this server on its own.");
+        let url = sandbox::display_url(sb.uid, None);
+        if how.is_some() {
+            eprintln!("lindroids: the browser has not opened the windows page yet. It shows the windows as soon as");
+            eprintln!("  it does. If it asks for a pairing code: {code}");
         } else {
-            eprintln!("  It was woken up. If Android asks to let it run commands in Termux, allow it: that pairs");
-            eprintln!("  it with this server. Otherwise it asks for the pairing code below.");
+            eprintln!("lindroids: open {url} in a web browser on this device to see the windows");
+            eprintln!("  (pairing code {code}).");
         }
-        eprintln!("  Pairing code: {code}");
-        eprintln!("  Windows appear as soon as the app is connected.");
     }
     false
 }
@@ -232,13 +236,11 @@ fn cmd_status() -> i32 {
     match client::status(&rt) {
         Ok(CliReply::Status { build, app_connected, app_build, pairing_code, windows, clients, .. }) => {
             println!("server      {build} ({})", rt.display());
-            match (&app_build, app_connected) {
-                // Dev builds ("+dev") are not comparable; release builds must match.
-                (Some(b), true) if *b != build && !b.ends_with("+dev") && !build.ends_with("+dev") => {
-                    println!("app         connected, build {b}: older or newer than this CLI — `lindroids setup` updates it")
-                }
-                (Some(b), true) => println!("app         connected, build {b}"),
-                _ => println!("app         not connected"),
+            let _ = app_build;
+            if app_connected {
+                println!("display     linked (browser)");
+            } else {
+                println!("display     none: open {} in a browser, or `lindroids run <program>`", sandbox::display_url(sandbox::detect().uid, None));
             }
             if !app_connected {
                 if let Some(c) = pairing_code {
@@ -262,14 +264,13 @@ fn cmd_pair() -> i32 {
         Ok(rt) => rt,
         Err(e) => return fail(&e),
     };
-    if ensure_app(&sb, &rt, true) {
-        println!("The Lindroids app is connected.");
+    if ensure_display(&sb, &rt, true) {
+        println!("The browser is showing this server's windows ({}).", sandbox::display_url(sb.uid, None));
         return 0;
     }
     match client::status(&rt) {
         Ok(CliReply::Status { pairing_code: Some(c), .. }) => {
-            println!("Open the Lindroids app and enter this code when it asks:\n\n    {c}\n");
-            println!("(The app finds this server on its own while it is running.)");
+            println!("Open {} in a web browser on this device and enter this code:\n\n    {c}\n", sandbox::display_url(sb.uid, None));
             let t0 = Instant::now();
             while t0.elapsed() < Duration::from_secs(120) {
                 if let Ok(CliReply::Status { app_connected: true, .. }) = client::status(&rt) {
@@ -285,90 +286,20 @@ fn cmd_pair() -> i32 {
     }
 }
 
-/// The APK that came with this package (Termux and Debian packages ship it).
-fn bundled_apk() -> Option<std::path::PathBuf> {
-    let mut c = Vec::new();
-    if let Ok(p) = std::env::var("PREFIX") {
-        c.push(Path::new(&p).join("share/lindroids/lindroids.apk"));
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent().and_then(|d| d.parent()) {
-            c.push(dir.join("share/lindroids/lindroids.apk"));
-        }
-    }
-    c.push("/usr/share/lindroids/lindroids.apk".into());
-    c.into_iter().find(|p| p.exists())
-}
-
-const RELEASES: &str = "https://github.com/dixonSolutions/lindroids/releases/latest";
-
+/// `lindroids setup`: start the server and open the windows page, so the first program has
+/// somewhere to show. Nothing to install on the Android side: the browser is the display.
 pub fn cmd_setup() -> i32 {
     let sb = sandbox::detect();
     let rt = match ensure_server(&sb) {
         Ok(rt) => rt,
         Err(e) => return fail(&e),
     };
-    let connected = ensure_app(&sb, &rt, true);
-    if let Ok(CliReply::Status { app_build: Some(b), .. }) = client::status(&rt) {
-        if connected && b == lindroids_server::BUILD {
-            println!("The Lindroids app ({b}) is installed and connected. Try: lindroids run <command>");
-            return 0;
-        }
+    if ensure_display(&sb, &rt, false) {
+        println!("Ready: windows show in the browser ({}). Try: lindroids run <program>", sandbox::display_url(sb.uid, None));
+        0
+    } else {
+        1
     }
-    match bundled_apk() {
-        Some(apk) => {
-            println!("Installing the Lindroids app ({})...", lindroids_server::BUILD);
-            // This build's APK on the release page: the browser can always install it, with its own
-            // permission, where Termux cannot hand the APK to Android's installer (the Google Play
-            // build of Termux, a blocked "install unknown apps").
-            let version = lindroids_server::BUILD.split('+').next().unwrap_or("");
-            let url = if !version.is_empty() && version.split('.').all(|p| p.parse::<u64>().is_ok()) {
-                format!("https://github.com/dixonSolutions/lindroids/releases/download/v{version}/lindroids-{version}.apk")
-            } else {
-                RELEASES.to_string()
-            };
-            let play = std::env::var("TERMUX_APK_RELEASE").map_or(false, |r| r.contains("PLAY"));
-            // termux-open runs app_process, which an ARM translation layer gets killed.
-            let opened = !play
-                && sandbox::have("termux-open")
-                && !sandbox::native_bridge()
-                && Command::new("termux-open")
-                    .args(["--view", "--content-type", "application/vnd.android.package-archive"])
-                    .arg(&apk)
-                    .stderr(Stdio::null())
-                    .status()
-                    .map_or(false, |s| s.success());
-            if opened {
-                println!("Android's installer is open: tap Install (allow Termux to install apps if asked).");
-            } else if sandbox::have("termux-open-url")
-                && !sandbox::native_bridge()
-                && Command::new("termux-open-url").arg(&url).stderr(Stdio::null()).status().map_or(false, |s| s.success())
-            {
-                println!("The browser is downloading the app: open the download and tap Install.");
-            }
-            // Shared storage too, where the Files app can open it.
-            let targets = [
-                std::env::var("HOME").map(|h| Path::new(&h).join("storage/downloads")).unwrap_or_default(),
-                "/sdcard/Download".into(),
-                "/storage/emulated/0/Download".into(),
-            ];
-            let copied = targets.iter().filter(|d| d.is_dir()).find_map(|d| {
-                let dst = d.join("lindroids.apk");
-                std::fs::copy(&apk, &dst).ok().map(|_| dst)
-            });
-            println!("No installer? Any of these works:");
-            match copied {
-                Some(p) => println!("  - open {} in the Files app (Downloads) and tap Install", p.display()),
-                None => println!("  - run `termux-setup-storage`, then `lindroids setup` again: the app goes to Downloads"),
-            }
-            println!("  - download it in the browser: {url}");
-            println!("  Android may ask to allow installing apps for Termux, the Files app or the browser; on");
-            println!("  Samsung, Settings > Security and privacy > Auto Blocker must be off.");
-        }
-        None => println!("Install the Lindroids app from {RELEASES}"),
-    }
-    println!();
-    cmd_pair()
 }
 
 fn cmd_pick_folder() -> i32 {
@@ -377,7 +308,7 @@ fn cmd_pick_folder() -> i32 {
         Ok(rt) => rt,
         Err(e) => return fail(&e),
     };
-    ensure_app(&sb, &rt, false);
+    ensure_display(&sb, &rt, false);
     match client::request(&rt, &CliRequest::PickFolder, Duration::from_secs(300)) {
         Ok(CliReply::Folder { path: Some(p) }) => {
             println!("{p}");
@@ -402,7 +333,7 @@ fn cmd_doctor() -> i32 {
         ("satellite", lindroids_server::x11::find_satellite().is_some()),
         ("dbus-daemon", sandbox::have("dbus-daemon")),
         ("flatpak", sandbox::have("flatpak")),
-        ("termux-am", sandbox::have("termux-am")),
+        ("termux-am", sandbox::have("termux-am") || Path::new(&format!("{}/bin/termux-am", lindroids_proto::TERMUX_PREFIX)).exists()),
     ] {
         println!("{:<11} {}", what, if ok { "found" } else { "not found" });
     }
@@ -412,7 +343,8 @@ fn cmd_doctor() -> i32 {
     let rt = sandbox::runtime_dir();
     let running = match client::status(&rt) {
         Ok(CliReply::Status { app_connected, .. }) => {
-            println!("server      running, app {}", if app_connected { "connected" } else { "not connected" });
+            println!("server      running, display {}", if app_connected { "linked (browser)" } else { "not linked" });
+            println!("windows at  {}", sandbox::display_url(sb.uid, None));
             true
         }
         _ => {

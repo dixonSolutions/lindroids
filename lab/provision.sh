@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Provision a booted lab VM: skip the setup wizard, install Termux, bootstrap it, and make it run a
-# setup script (openssh + foot, the lab key, allow-external-apps, sshd) by typing into it.
+# setup script (openssh + foot, the lab key, sshd) by typing into it.
 #
 #   lab/provision.sh <name>
 #
@@ -127,7 +127,6 @@ apt-get \$A install openssh foot
 mkdir -p ~/.ssh ~/.termux
 curl -fsS http://10.0.2.2:$HTTP_PORT/k > ~/.ssh/authorized_keys
 chmod 700 ~/.ssh; chmod 600 ~/.ssh/authorized_keys
-grep -q '^allow-external-apps' ~/.termux/termux.properties 2>/dev/null || echo allow-external-apps=true >> ~/.termux/termux.properties
 pgrep sshd >/dev/null || sshd
 id > ~/lab-id
 }

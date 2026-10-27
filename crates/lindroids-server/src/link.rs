@@ -1,4 +1,5 @@
-//! One connection to the app, over an abstract Unix socket or loopback TCP.
+//! One connection to a display: the app over an abstract Unix socket or loopback TCP, or a
+//! browser over a WebSocket on the same loopback port (see `web.rs`).
 //!
 //! Writes never block the compositor: they queue and drain when the socket is writable.
 
@@ -8,6 +9,8 @@ use std::time::Instant;
 
 use lindroids_proto::{self as proto, Framer, ToApp, ToServer};
 use serde::Serialize;
+
+use crate::web;
 
 pub trait Io: Read + Write + AsRawFd + Send {}
 impl<T: Read + Write + AsRawFd + Send> Io for T {}
@@ -21,8 +24,25 @@ pub enum Phase {
     Ready,
 }
 
+/// What the connection speaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wire {
+    /// Loopback TCP whose first bytes have not said yet: the link protocol or HTTP.
+    Sniffing,
+    /// The link protocol as is.
+    Raw,
+    /// A WebSocket from a browser.
+    WebSocket,
+    /// An HTTP answer is on its way out; then the connection closes.
+    Closing,
+}
+
 pub struct Link {
     io: Box<dyn Io>,
+    wire: Wire,
+    /// Bytes not yet sorted out: a request head while sniffing, partial frames on a WebSocket.
+    inbuf: Vec<u8>,
+    port: u16,
     framer: Framer,
     out: Vec<u8>,
     out_pos: usize,
@@ -38,7 +58,40 @@ pub struct Link {
 
 impl Link {
     pub fn new(io: Box<dyn Io>, peer: String) -> Link {
-        Link { io, framer: Framer::default(), out: Vec::new(), out_pos: 0, phase: Phase::Hello, peer, since: Instant::now(), density: 1.0, build: String::new(), version: 0, broken: false }
+        Link {
+            io,
+            wire: Wire::Raw,
+            inbuf: Vec::new(),
+            port: 0,
+            framer: Framer::default(),
+            out: Vec::new(),
+            out_pos: 0,
+            phase: Phase::Hello,
+            peer,
+            since: Instant::now(),
+            density: 1.0,
+            build: String::new(),
+            version: 0,
+            broken: false,
+        }
+    }
+
+    /// A loopback TCP connection to `port`: the app, or a browser.
+    pub fn new_tcp(io: Box<dyn Io>, peer: String, port: u16) -> Link {
+        Link { wire: Wire::Sniffing, port, ..Link::new(io, peer) }
+    }
+
+    pub fn wire(&self) -> Wire {
+        self.wire
+    }
+
+    pub fn is_browser(&self) -> bool {
+        self.wire == Wire::WebSocket
+    }
+
+    /// An HTTP answer went out in full: the connection is done.
+    pub fn finished(&self) -> bool {
+        self.wire == Wire::Closing && !self.wants_write()
     }
 
     pub fn fd(&self) -> RawFd {
@@ -53,7 +106,13 @@ impl Link {
         if self.broken {
             return;
         }
-        self.out.extend_from_slice(&proto::encode_with(msg, payload));
+        let bytes = proto::encode_with(msg, payload);
+        if self.wire == Wire::WebSocket {
+            // One message per WebSocket message: the browser needs no framer of its own.
+            self.out.extend_from_slice(&web::frame(web::OP_BINARY, &bytes));
+        } else {
+            self.out.extend_from_slice(&bytes);
+        }
         self.flush();
     }
 
@@ -97,12 +156,67 @@ impl Link {
         loop {
             match self.io.read(&mut buf) {
                 Ok(0) => return false,
-                Ok(n) => self.framer.push(&buf[..n]),
+                Ok(n) => {
+                    if !self.take(&buf[..n]) {
+                        return false;
+                    }
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return true,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => return false,
             }
         }
+    }
+
+    /// Bytes from the socket, by what the connection speaks. False: close it.
+    fn take(&mut self, data: &[u8]) -> bool {
+        match self.wire {
+            Wire::Raw => self.framer.push(data),
+            Wire::Closing => {}
+            Wire::Sniffing => {
+                self.inbuf.extend_from_slice(data);
+                match web::sniff(&self.inbuf) {
+                    web::Sniff::More => {}
+                    web::Sniff::Raw => {
+                        self.wire = Wire::Raw;
+                        let b = std::mem::take(&mut self.inbuf);
+                        self.framer.push(&b);
+                    }
+                    web::Sniff::Bad => return false,
+                    web::Sniff::Http(req, rest) => {
+                        self.inbuf.clear();
+                        match web::answer(&req, self.port) {
+                            web::Answer::Close(bytes) => {
+                                self.wire = Wire::Closing;
+                                self.out.extend_from_slice(&bytes);
+                            }
+                            web::Answer::Upgrade(bytes) => {
+                                log::info!("browser at {} opened the link", self.peer);
+                                self.wire = Wire::WebSocket;
+                                self.peer = format!("browser ({})", self.peer);
+                                self.out.extend_from_slice(&bytes);
+                                self.flush();
+                                return self.take(&rest);
+                            }
+                        }
+                        self.flush();
+                    }
+                }
+            }
+            Wire::WebSocket => {
+                self.inbuf.extend_from_slice(data);
+                let u = web::unframe(&mut self.inbuf);
+                self.framer.push(&u.data);
+                if !u.reply.is_empty() {
+                    self.out.extend_from_slice(&u.reply);
+                    self.flush();
+                }
+                if u.closed {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     /// The next message and its payload (FileChunk carries one).

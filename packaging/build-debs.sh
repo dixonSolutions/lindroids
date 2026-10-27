@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build the lindroids .deb packages from the outputs of scripts/build-release.sh.
 #
-#   packaging/build-debs.sh --version 0.1.42 [--dist dist] [--apk dist/lindroids-0.1.42.apk]
-#                           [--out dist/debs] [--arches "amd64 aarch64"]   (default: all eight)
+#   packaging/build-debs.sh --version 0.1.42 [--dist dist] [--out dist/debs]
+#                           [--arches "amd64 aarch64"]   (default: all eight)
 #                           [--xwls dist/xwayland-satellite]
 #
 # Two flavours, one package name (`lindroids`):
@@ -10,8 +10,7 @@
 #           /data/data/com.termux/files/usr, the CLI built against bionic (cargo-ndk, API 24).
 #   Debian  (suite `stable`): Architecture arm64/armhf/amd64/i386, files under /usr, the static
 #           musl CLI. For Debian/Ubuntu under proot-distro, UserLAnd, Andronix, and plain Linux.
-# Both carry the APK at <prefix>/share/lindroids/lindroids.apk so the CLI can install or update
-# the app. Input binaries: <dist>/bin/<rust triple>/lindroids.
+# Input binaries: <dist>/bin/<rust triple>/lindroids.
 #
 # Both also carry xwayland-satellite (MPL-2.0, built by scripts/build-xwayland-satellite.sh) at
 # <prefix>/libexec/lindroids/xwayland-satellite, where the CLI looks for it (<bindir>/../libexec):
@@ -31,7 +30,6 @@ ROOT=$PWD
 
 VERSION=
 DIST=dist
-APK=
 OUT=
 XWLS=
 ARCHES="aarch64 arm x86_64 i686 arm64 armhf amd64 i386"
@@ -39,7 +37,6 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION=$2; shift 2 ;;
     --dist) DIST=$2; shift 2 ;;
-    --apk) APK=$2; shift 2 ;;
     --out) OUT=$2; shift 2 ;;
     --arches) ARCHES=$2; shift 2 ;;
     --xwls) XWLS=$2; shift 2 ;;
@@ -47,10 +44,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$VERSION" ] || { echo "build-debs: --version is required" >&2; exit 2; }
-APK=${APK:-$DIST/lindroids-$VERSION.apk}
 OUT=${OUT:-$DIST/debs}
 XWLS=${XWLS:-$DIST/xwayland-satellite}
-[ -f "$APK" ] || { echo "build-debs: no APK at $APK" >&2; exit 1; }
 for f in LICENSE.xwayland-satellite xwayland-satellite-crates.txt; do
   [ -f "$XWLS/$f" ] || { echo "build-debs: no $XWLS/$f (scripts/build-xwayland-satellite.sh)" >&2; exit 1; }
 done
@@ -88,11 +83,6 @@ License: MIT or Apache-2.0
  see LICENSE-MIT and LICENSE-APACHE in the source repository. On Debian
  systems the Apache License 2.0 is in /usr/share/common-licenses/Apache-2.0.
 
-Files: share/lindroids/lindroids.apk
-Comment: The APK also contains proot (GPL-2.0-or-later), talloc
- (LGPL-3.0-or-later) and libandroid-shmem (BSD-3-Clause), prebuilt by Termux.
- See THIRD-PARTY.md in this directory for versions, sources and changes.
-
 Files: libexec/lindroids/xwayland-satellite libexec/lindroids/glibc/xwayland-satellite
 Copyright: Shawn Wallace and the xwayland-satellite contributors
 License: MPL-2.0
@@ -119,9 +109,8 @@ build() {
   [ -f "$bin" ] || { echo "build-debs: missing $bin" >&2; exit 1; }
   local d=$WORK/$flavour-$arch
   local doc=$d/$prefix/share/doc/lindroids
-  mkdir -p "$d/DEBIAN" "$d/$prefix/bin" "$d/$prefix/share/lindroids" "$doc"
+  mkdir -p "$d/DEBIAN" "$d/$prefix/bin" "$doc"
   install -m 755 "$bin" "$d/$prefix/bin/lindroids"
-  install -m 644 "$APK" "$d/$prefix/share/lindroids/lindroids.apk"
   local f
   for f in README.md LICENSE LICENSE-MIT LICENSE-APACHE LICENSE.md; do
     [ -f "$f" ] && install -m 644 "$f" "$doc/$f"
@@ -174,13 +163,12 @@ Suggests: $suggests
 Section: x11
 Priority: optional
 Homepage: $HOMEPAGE
-Description: Run Linux apps in Android windows
- Lindroids is a Wayland compositor and sound server whose output is the
- Lindroids Android app: every Linux window becomes an Android window, with
- touch, keyboard, IME, clipboard and audio. \`lindroids export\` puts a Linux
- app on the Android home screen. This package contains the lindroids CLI
- (which is also the server), the Lindroids APK, and xwayland-satellite, which
- runs X11 programs under Xwayland (\`lindroids run --x11\`).
+Description: Run Linux apps on Android, shown in the web browser
+ Lindroids is a Wayland compositor and sound server whose display is a web
+ page in the phone's own browser: Linux windows show there, with touch,
+ keyboard, clipboard and audio, and no Android app to install. This package
+ contains the lindroids CLI (which is also the server) and xwayland-satellite,
+ which runs X11 programs under Xwayland (\`lindroids run --x11\`).
 EOF
   find "$d" -type d -exec chmod 755 {} +
   local deb=$OUT/lindroids_${VERSION}_${arch}.deb

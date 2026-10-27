@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# Deploy Lindroids to a provisioned lab VM and test it end to end:
-#   install the APK + push the CLI, grant permissions, pair (fresh: the app's data is cleared),
-#   open foot, type into it, then stop+start the server and check the app reconnects unaided.
+# Deploy Lindroids to a provisioned lab VM and test it end to end, the way a user has it: the CLI
+# in Termux and nothing else — no app, no Termux setting (allow-external-apps is removed), the
+# browser that is on the device as the display:
+#   push the CLI, `lindroids run foot` (which opens the page in the browser), check the page linked
+#   and shows the window, type into it, then stop+start the server and check the page relinks.
 #
 #   lab/test-lindroids.sh <name>
 #
 # Results: lab/results/<name>/<selinux mode>/ (screenshots, logcat, avc denials, result.txt), and a
-# row in lab/results/SUMMARY.md. Uses whatever dist/lindroids.apk and the x86_64 CLI are there now.
+# row in lab/results/SUMMARY.md. Uses the x86_64 CLI that is there now.
 set -uo pipefail
 
 LAB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$LAB_DIR/.." && pwd)
 VM=$LAB_DIR/vm.sh
-APK=${APK:-$REPO/dist/lindroids.apk}
 CLI=${CLI:-$REPO/target/x86_64-linux-android/release/lindroids}
-PKG=io.github.dixonsolutions.lindroids
+OLD_APP=io.github.dixonsolutions.lindroids
 TERMUX_PREFIX=/data/data/com.termux/files/usr
 
 NAME=${1:?usage: test-lindroids.sh <name>}
@@ -43,7 +44,6 @@ R[cmdline_selinux]=$(cat "${LAB_HOME:-$HOME/VMs/lindroids-lab}/run/$NAME/selinux
 R[image]=$(sh_ getprop ro.build.display.id)
 R[kernel]=$(sh_ uname -r)
 R[gpu]=$(cat "${LAB_HOME:-$HOME/VMs/lindroids-lab}/run/$NAME/gpu" 2>/dev/null)
-R[apk]="$(basename "$APK") $(stat -c %y "$APK" | cut -d. -f1)"
 R[cli]="$(basename "$CLI") $(stat -c %y "$CLI" | cut -d. -f1)"
 log "Android $REL (sdk $SDK), SELinux $SEL -> $OUT"
 
@@ -71,21 +71,19 @@ finish() {
   # logcat-1 = deploy + pairing (saved before the reconnect test clears the buffer), then the rest.
   { cat "$OUT/logcat-1.txt" 2>/dev/null; adb_ logcat -d -v threadtime 2>/dev/null; } >"$OUT/logcat.txt"
   rm -f "$OUT/logcat-1.txt"
-  # Denials that involve our app or Termux (scontext of either, or tagged app=...).
-  # Denials whose subject is an app domain (Termux and Lindroids are both untrusted_app*; Android 9
-  # logs no app= tag and the socket path is hex), or that name our packages.
-  grep -E 'avc: +denied' "$OUT/logcat.txt" | grep -E "scontext=u:r:untrusted_app|app=($PKG|com\.termux)" >"$OUT/avc-denied.txt" || true
+  # Denials whose subject is an app domain (Termux and the browser are both untrusted_app*;
+  # Android 9 logs no app= tag), or that name Termux or the browser.
+  grep -E 'avc: +denied' "$OUT/logcat.txt" | grep -E "scontext=u:r:untrusted_app|app=(${BROWSER:-none}|com\.termux)" >"$OUT/avc-denied.txt" || true
   # One line per distinct denial, for the report.
   grep -oE 'avc: +denied \{[^}]*\} for .*tclass=[a-z_]+ permissive=[01]' "$OUT/avc-denied.txt" |
     sed -E 's/ (ino|pid)=[0-9]+//g; s/pipe:\[[0-9]+\]/pipe:[N]/' | sort | uniq -c >"$OUT/avc-denied-unique.txt" || true
-  grep -E 'avc: +granted' "$OUT/logcat.txt" | grep -E "app=($PKG|com\.termux)" >"$OUT/avc-granted.txt" || true
-  grep -E "linked over|link [0-9]+ to|failed to authenticate|$PKG|lindroids" "$OUT/logcat.txt" | grep -v 'avc:' >"$OUT/lindroids-logcat.txt" || true
+  grep -E 'avc: +granted' "$OUT/logcat.txt" | grep -E "app=(${BROWSER:-none}|com\.termux)" >"$OUT/avc-granted.txt" || true
   tsh 'cat $TMPDIR/lindroids-$(id -u)/server.log' >"$OUT/server.log" 2>/dev/null
   tsh 'cat ~/run.log' >"$OUT/run.log" 2>/dev/null
   R[avc_denied]=$(wc -l <"$OUT/avc-denied.txt")
   {
-    for k in vm android image kernel selinux cmdline_selinux gpu apk cli install cli_push pairing_code paired transport \
-      window window_size typing reconnect reconnect_transport window_after_reconnect avc_denied result notes; do
+    for k in vm android image kernel selinux cmdline_selinux gpu cli browser cli_push opened_by linked \
+      window window_size typing reconnect window_after_reconnect avc_denied result notes; do
       printf '%-24s %s\n' "$k" "${R[$k]:-}"
     done
   } | tee "$OUT/result.txt"
@@ -100,13 +98,13 @@ summary_row() {
 
 Written by lab/test-lindroids.sh (one row per VM and SELinux mode; re-running replaces the row).
 
-| VM | SELinux | Android | Image | Paired | Transport | Window | Typing | Reconnect | AVC denials (app/Termux) | Result | Date |
-|----|---------|---------|-------|--------|-----------|--------|--------|-----------|--------------------------|--------|------|
+| VM | SELinux | Android | Image | Browser | Linked | Window | Typing | Reconnect | AVC denials (browser/Termux) | Result | Date |
+|----|---------|---------|-------|---------|--------|--------|--------|-----------|------------------------------|--------|------|
 EOF
   fi
   grep -vF "$key" "$f" >"$f.tmp" || true
   printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' "$NAME" "${R[selinux]}" "${R[android]}" \
-    "${R[image]}" "${R[paired]:-}" "${R[transport]:-}" "${R[window]:-}" "${R[typing]:-}" "${R[reconnect]:-}" \
+    "${R[image]}" "${R[browser]:-}" "${R[linked]:-}" "${R[window]:-}" "${R[typing]:-}" "${R[reconnect]:-}" \
     "${R[avc_denied]:-}" "${R[result]:-}" "$(date +%F)" >>"$f.tmp"
   mv "$f.tmp" "$f"
 }
@@ -126,65 +124,39 @@ TUID=$(tsh 'id -u' | tr -d '\r')
 log "Termux uid $TUID"
 
 adb_ logcat -c
-# A clean slate: forget earlier pairings so every run pairs from scratch.
-tsh 'lindroids stop >/dev/null 2>&1; pkill -x foot; true'
-sh_ "am force-stop $PKG; pm clear $PKG" >/dev/null 2>&1 || true
-if out=$(adb_ install -r -g "$APK" 2>&1 | tail -1) && [[ $out == *Success* ]]; then R[install]=ok; else
-  # Older pm has no -g with -r on some images
-  out=$(adb_ install -r "$APK" 2>&1 | tail -1)
-  [[ $out == *Success* ]] && R[install]=ok || fail "adb install: $out"
+# A clean slate: no Lindroids app (there is none any more), no Termux setting that lets apps run
+# commands in Termux, no secret stored in the browser.
+tsh 'lindroids stop >/dev/null 2>&1; pkill -x foot; sed -i "/allow-external-apps/d" ~/.termux/termux.properties 2>/dev/null; termux-reload-settings 2>/dev/null; true'
+sh_ "pm uninstall $OLD_APP" >/dev/null 2>&1 || true
+BROWSER=$(sh_ 'cmd package resolve-activity --brief -a android.intent.action.VIEW -d http://127.0.0.1/ -c android.intent.category.BROWSABLE' | tail -1 | cut -d/ -f1)
+[[ $BROWSER == *.* ]] || fail "no browser on the device"
+R[browser]=$BROWSER
+sh_ "am force-stop $BROWSER; pm clear $BROWSER" >/dev/null 2>&1 || true
+log "browser $BROWSER"
+# Termux's `am` (app_process) is killed by seccomp where an ARM translation layer is loaded, as on
+# these x86 images; phones have none, and Termux's am socket server is not up in every Termux. Turn
+# the bridge off for the test, as a phone would have it (needs root and Magisk's resetprop).
+if [[ $(sh_ getprop ro.dalvik.vm.native.bridge) != 0 && -f ${LAB_HOME:-$HOME/VMs/lindroids-lab}/tools/magisk ]]; then
+  adb_ push "${LAB_HOME:-$HOME/VMs/lindroids-lab}/tools/magisk" /data/local/tmp/magisk >/dev/null 2>&1
+  sh_ 'cd /data/local/tmp && chmod 755 magisk && ln -sf magisk resetprop && ./resetprop ro.dalvik.vm.native.bridge 0'
+  R[notes]="${R[notes]:-} native-bridge-off"
 fi
-log "APK installed"
 "$VM" "$NAME" scp "$CLI" "$TERMUX_PREFIX/bin/lindroids.new" &&
   tsh 'mv $PREFIX/bin/lindroids.new $PREFIX/bin/lindroids && chmod 755 $PREFIX/bin/lindroids && lindroids version 2>&1 | grep -v "^WARNING: linker"' >"$OUT/cli-version.txt" 2>&1 &&
   R[cli_push]="ok ($(cat "$OUT/cli-version.txt"))" || fail "CLI push: $(cat "$OUT/cli-version.txt")"
 log "CLI: $(cat "$OUT/cli-version.txt")"
 
-sh_ "appops set $PKG SYSTEM_ALERT_WINDOW allow"
-((SDK >= 33)) && sh_ "pm grant $PKG android.permission.POST_NOTIFICATIONS"
-sh_ "dumpsys deviceidle whitelist +$PKG" >/dev/null 2>&1 || true
-sh_ "am start -n $PKG/.HomeActivity" >/dev/null
-sleep 3
-shot home
-
-# --------------------------------------------------------------- server + program
-tsh 'cd ~; rm -f .lab-typed run.log; lindroids start && (nohup lindroids run foot >run.log 2>&1 </dev/null &) ; sleep 4; cat run.log' >"$OUT/start.txt" 2>&1
+# --------------------------------------------------------------- server + program + page
+# Termux in front, as when the user types the command.
+sh_ "am start -n com.termux/.app.TermuxActivity" >/dev/null 2>&1
+sleep 2
+tsh 'cd ~; rm -f .lab-typed run.log; (nohup lindroids run foot >run.log 2>&1 </dev/null &) ; sleep 12; cat run.log' >"$OUT/start.txt" 2>&1
 tsh 'lindroids doctor' >"$OUT/doctor.txt" 2>&1
-CODE=$(tsh 'cat $TMPDIR/lindroids-$(id -u)/pairing-code' 2>/dev/null | tr -dc 0-9)
-R[pairing_code]=${CODE:-none}
-[[ -n $CODE ]] || fail "no pairing code file (server not running?) $(tr '\n' ' ' <"$OUT/start.txt")"
-log "pairing code $CODE"
-
-# --------------------------------------------------------------- pairing
-connected() { tsh 'lindroids status' 2>/dev/null | grep -qE '^app +connected'; }
-pair_dialog() {
-  local i
-  for i in $(seq 1 10); do ui_find '(?i)^pair$' >/dev/null && return 0; sleep 1; done
-  return 1
-}
-sleep 3
-if ! connected; then
-  # Start the (non-exported) pairing activity as root, as the notification would.
-  sh_ "am start -n $PKG/.ApproveActivity --ei uid $TUID --es sandbox Termux --ez needCode true" >"$OUT/approve-start.txt" 2>&1
-  if ! pair_dialog; then
-    # No root: open it from the notification instead.
-    sh_ 'cmd statusbar expand-notifications 2>/dev/null || service call statusbar 1' >/dev/null 2>&1
-    sleep 2
-    xy=$(ui_find 'wants to show Linux apps') && sh_ "input tap $xy"
-    pair_dialog || fail "pairing dialog did not open ($(tr '\n' ' ' <"$OUT/approve-start.txt"))"
-    R[notes]="${R[notes]:-} dialog-from-notification"
-  fi
-  shot pair-dialog
-  xy=$(ui_find 'EditText') && sh_ "input tap $xy"
-  sh_ "input text $CODE"
-  shot pair-code
-  xy=$(ui_find '(?i)^pair$') || fail "no Pair button"
-  sh_ "input tap $xy"
-  for i in $(seq 1 30); do connected && break; sleep 0.5; done
-fi
-connected && R[paired]=yes || { R[paired]=no; shot pair-failed; fail "app not connected after pairing"; }
-log "paired"
-R[transport]=$(adb_ logcat -d | grep -oE 'linked over [a-z]+' | head -1 | awk '{print $3}')
+linked() { tsh 'lindroids status' 2>/dev/null | grep -qE '^display +linked'; }
+for i in $(seq 1 20); do linked && break; sleep 0.5; done
+linked && R[linked]=yes || { R[linked]=no; shot not-linked; fail "the page did not link ($(tr '\n' ' ' <"$OUT/start.txt"))"; }
+R[opened_by]=$(tsh 'grep -oE "browser at [^ ]+ [^ ]+" $TMPDIR/lindroids-$(id -u)/server.log | tail -1' | tr -d '\r')
+log "linked"
 
 # --------------------------------------------------------------- window
 win=""
@@ -195,15 +167,10 @@ for i in $(seq 1 30); do
 done
 tsh 'lindroids status' >"$OUT/status.txt" 2>&1
 R[window_size]=$(grep -oE '[0-9]+x[0-9]+$' <<<"$win")
-top=""
-for i in $(seq 1 20); do
-  top=$(sh_ 'dumpsys activity activities' | grep -E 'mResumedActivity|topResumedActivity|ResumedActivity:' | head -1)
-  [[ $top == *WindowActivity* ]] && break
-  sleep 0.5
-done
+top=$(sh_ 'dumpsys activity activities' | grep -E 'mResumedActivity|topResumedActivity|ResumedActivity:' | head -1)
 sleep 1
 shot window
-if [[ $top == *WindowActivity* && -n ${R[window_size]} && ${R[window_size]} != 0x0 ]]; then R[window]=yes; else
+if [[ $top == *"$BROWSER"* && -n ${R[window_size]} && ${R[window_size]} != 0x0 ]]; then R[window]=yes; else
   R[window]=no
   R[notes]="${R[notes]:-} top=[$(xargs <<<"$top")] status-window=[$win]"
 fi
@@ -211,6 +178,10 @@ log "window: ${R[window]} (${R[window_size]:-?})"
 
 # --------------------------------------------------------------- typing
 if [[ ${R[window]} == yes ]]; then
+  # Focus the page (the middle of the screen is the window), then type.
+  read -r W H < <(sh_ wm size | grep -oE '[0-9]+x[0-9]+' | tail -1 | tr x ' ')
+  sh_ "input tap $((W / 2)) $((H / 2))"
+  sleep 0.5
   # Double quotes for the host, single quotes for the device shell: | reaches `input text` intact.
   "$VM" "$NAME" adb shell "input text 'echo%slab-ok%s|%stee%s.lab-typed'"
   "$VM" "$NAME" adb shell input keyevent 66
@@ -225,21 +196,21 @@ log "typing: ${R[typing]}"
 # --------------------------------------------------------------- reconnect without pairing
 adb_ logcat -d -v threadtime >"$OUT/logcat-1.txt" 2>/dev/null
 adb_ logcat -c
-t=$(tsh 'lindroids stop >/dev/null; sleep 1; lindroids start >/dev/null; s=$(date +%s%N); for i in $(seq 1 100); do lindroids status | grep -qE "^app +connected" && { echo $(( ($(date +%s%N) - s) / 1000000 )); exit 0; }; sleep 0.1; done; echo none' | tr -d '\r')
+# The page retries every 2 s by itself; nothing reopens it.
+t=$(tsh 'lindroids stop >/dev/null; sleep 1; lindroids start >/dev/null; s=$(date +%s%N); for i in $(seq 1 100); do lindroids status | grep -qE "^display +linked" && { echo $(( ($(date +%s%N) - s) / 1000000 )); exit 0; }; sleep 0.1; done; echo none' | tr -d '\r')
 if [[ $t =~ ^[0-9]+$ ]]; then
   R[reconnect]="yes ${t}ms"
 else
   R[reconnect]="no (not within ~10 s)"
 fi
-R[reconnect_transport]=$(adb_ logcat -d | grep -oE 'linked over [a-z]+' | head -1 | awk '{print $3}')
-log "reconnect: ${R[reconnect]} over ${R[reconnect_transport]:-?}"
+log "reconnect: ${R[reconnect]}"
 tsh 'cd ~; (nohup lindroids run foot >run2.log 2>&1 </dev/null &); sleep 4; lindroids status' >"$OUT/status-after-reconnect.txt" 2>&1
 sleep 1
 shot window-after-reconnect
 grep -qE '^window .* [1-9][0-9]*x[1-9]' "$OUT/status-after-reconnect.txt" && R[window_after_reconnect]=yes || R[window_after_reconnect]=no
 tsh 'pkill -x foot; true'
 
-if [[ ${R[paired]} == yes && ${R[window]} == yes && ${R[typing]} == yes && ${R[reconnect]} == yes* ]]; then
+if [[ ${R[linked]} == yes && ${R[window]} == yes && ${R[typing]} == yes && ${R[reconnect]} == yes* ]]; then
   R[result]=PASS
 else
   R[result]=FAIL

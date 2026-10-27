@@ -18,8 +18,6 @@ mod keyfile;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use lindroids_proto::BundleKind;
-
 use crate::run::Opts;
 pub use install::{Deploy, Extension, Installation};
 
@@ -579,152 +577,6 @@ pub fn identify(app: &App, o: &Opts) -> (String, Vec<u8>) {
     (name, icon)
 }
 
-/// Everything needed to copy a Flatpak app into an exported bundle and start it there, inside
-/// the Lindroids app with no flatpak, Termux or distro on the phone: the view [`command`] builds,
-/// with the installation's trees copied into the bundle instead of bound from it.
-///
-/// Bundle layout (relative to the bundle dir):
-///
-/// - `root/`: the skeleton rootfs (`-r`): mount-point dirs, `lib` → `usr/lib` and the other
-///   merged-usr links, and `etc/` (the runtime's `/etc` with generated passwd, group, hosts,
-///   resolv.conf and machine-id in place of the host's).
-/// - `runtime/` → `/usr`, `app/` → `/app`, `ext/<extension id>/` → its mount point.
-/// - `metadata`: the app's Flatpak metadata, for reference.
-///
-/// The bundle runner (`lindroids-android` `bundle::proot_command`) adds `/dev`, `/proc`, `/sys`,
-/// storage and its server's runtime dir at `/run/lindroids` and sets `XDG_RUNTIME_DIR`,
-/// `WAYLAND_DISPLAY`, `PULSE_SERVER`, `HOME=/root`; the plan leaves those to it.
-///
-/// A copied runtime is big (org.gnome.Platform is about 1 GB, mostly things one app never
-/// loads); nothing here trims it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct BundlePlan {
-    /// Always `BundleKind::Rootfs { binds }`; binds are (path relative to the bundle dir, path
-    /// inside), parents before what is mounted inside them.
-    pub kind: BundleKind,
-    /// Extra environment for every launch (`BundleManifest::env`). Never `LD_LIBRARY_PATH`: in
-    /// the runner that is proot's own; `argv` sets the sandbox's.
-    pub env: Vec<(String, String)>,
-    pub workdir: Option<String>,
-    /// Every entry to copy, parents first: (path on this system, path inside the bundle).
-    /// Files, symlinks (keep them as symlinks; deploys are full of them) and directories (each
-    /// created on its own, not copied recursively).
-    pub files: Vec<(PathBuf, String)>,
-    /// Empty directories to create inside the bundle (mount points).
-    pub dirs: Vec<String>,
-    /// Command line inside the bundle: `/usr/bin/env LD_LIBRARY_PATH=... <command> <args>`.
-    pub argv: Vec<String>,
-}
-
-/// Every entry under `dir` (not `dir` itself), parents before children, as (host path, path
-/// relative to `dir`).
-fn walk(dir: &Path, rel: &str, out: &mut Vec<(PathBuf, String)>, skip: &dyn Fn(&str) -> bool) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    let mut entries: Vec<_> = rd.filter_map(|e| e.ok()).collect();
-    entries.sort_by_key(|e| e.file_name());
-    for e in entries {
-        let name = e.file_name().to_string_lossy().into_owned();
-        let r = if rel.is_empty() { name } else { format!("{rel}/{name}") };
-        if skip(&r) {
-            continue;
-        }
-        out.push((e.path(), r.clone()));
-        if e.file_type().map_or(false, |t| t.is_dir()) {
-            walk(&e.path(), &r, out, skip);
-        }
-    }
-}
-
-fn add_tree(src: &Path, dst: &str, out: &mut Vec<(PathBuf, String)>, skip: &dyn Fn(&str) -> bool) {
-    out.push((src.to_path_buf(), dst.to_string()));
-    let mut v = Vec::new();
-    walk(src, "", &mut v, skip);
-    out.extend(v.into_iter().map(|(h, r)| (h, format!("{dst}/{r}"))));
-}
-
-/// Bundle-relative directory for an extension's files.
-fn ext_dir(id: &str) -> String {
-    format!("ext/{id}")
-}
-
-/// The bundle that runs `app` like [`command`] does. See [`BundlePlan`].
-pub fn bundle_plan(app: &App, args: &[String], o: &Opts) -> Result<BundlePlan, String> {
-    bundle_plan_in(app, args, o, &state_dir())
-}
-
-fn bundle_plan_in(app: &App, args: &[String], o: &Opts, state: &Path) -> Result<BundlePlan, String> {
-    if o.x11 {
-        return Err("--x11 is not supported for Flatpak apps (Xwayland is not in their runtime)".into());
-    }
-    let rtd = app.runtime()?;
-    let home = "/root";
-
-    // Generated pieces of the skeleton have to exist on this system to be copied.
-    let gen = state.join(&app.id).join("bundle");
-    mkdirs(&gen)?;
-    let links: Vec<(&str, String)> = usr_links(&rtd.files()).into_iter().map(|n| (n, format!("usr/{n}"))).collect();
-    for (n, target) in &links {
-        ensure_symlink(target, &gen.join(n))?;
-    }
-    let generated = [
-        ("passwd", passwd(0, "root", home)),
-        ("group", group(0, "root")),
-        ("hosts", HOSTS.to_string()),
-        ("resolv.conf", RESOLV_CONF.to_string()),
-        ("machine-id", random_hex(32) + "\n"),
-    ];
-    for (name, body) in &generated {
-        std::fs::write(gen.join(name), body).map_err(|e| io_err(&gen.join(name), e))?;
-    }
-
-    let mut files: Vec<(PathBuf, String)> = Vec::new();
-    let mut binds: Vec<(String, String)> = Vec::new();
-    let none = |_: &str| false;
-    for p in pieces(app)? {
-        match p {
-            Piece::Tree { src, dst } => {
-                let rel = match dst.as_str() {
-                    "/usr" => "runtime".to_string(),
-                    "/app" => "app".to_string(),
-                    _ => ext_dir(&app.extensions.iter().find(|e| e.mount == dst).map(|e| e.id.clone()).unwrap_or_default()),
-                };
-                add_tree(&src, &rel, &mut files, &none);
-                binds.push((rel, dst));
-            }
-            Piece::Merge { ext, sub, dst, .. } => binds.push((format!("{}/{sub}", ext_dir(&ext)), dst)),
-        }
-    }
-    // root/etc: the runtime's, minus what is generated.
-    let overridden = |r: &str| generated.iter().any(|(n, _)| *n == r);
-    add_tree(&rtd.files().join("etc"), "root/etc", &mut files, &overridden);
-    for (name, _) in &generated {
-        files.push((gen.join(name), format!("root/etc/{name}")));
-    }
-    for (n, _) in &links {
-        files.push((gen.join(n), format!("root/{n}")));
-    }
-    let font_dirs = gen.join("font-dirs.xml");
-    std::fs::write(&font_dirs, font_dirs_xml("")).map_err(|e| io_err(&font_dirs, e))?;
-    files.push((font_dirs, "root/run/host/font-dirs.xml".into()));
-    files.push((app.app.dir.join("metadata"), "metadata".into()));
-
-    let var = format!("root/root/.var/app/{}", app.id);
-    let mut dirs: Vec<String> = SKELETON_DIRS.iter().filter(|d| **d != "etc").map(|d| format!("root/{d}")).collect();
-    // The runner's own mount points.
-    dirs.extend(["root/run/lindroids", "root/storage", "root/sdcard"].map(String::from));
-    dirs.extend(VAR_DIRS.iter().map(|d| format!("{var}/{d}")));
-    for (sub, dst) in [("data", "/var/data"), ("config", "/var/config"), ("cache", "/var/cache"), ("cache/tmp", "/var/tmp")] {
-        binds.push((format!("{var}/{sub}"), dst.into()));
-    }
-
-    let mut env = base_env(app, home, "root");
-    env.extend(o.env.iter().cloned());
-    let env = dedup_env(env).into_iter().filter(|(k, _)| k != "LD_LIBRARY_PATH").collect();
-    let mut argv = vec!["/usr/bin/env".to_string(), format!("LD_LIBRARY_PATH={}", ld_library_path(app)), app.program()?];
-    argv.extend(args.iter().cloned());
-    Ok(BundlePlan { kind: BundleKind::Rootfs { binds }, env, workdir: Some(home.into()), files, dirs, argv })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -881,41 +733,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    #[test]
-    fn bundle_plan_mirrors_the_view() {
-        let root = fake_root("plan");
-        let app = find(&root, "org.example.App").unwrap();
-        let plan = bundle_plan_in(&app, &["x.txt".into()], &Opts::default(), &root.join("state")).unwrap();
-        let m = install::multiarch(install::arch());
-        let BundleKind::Rootfs { binds } = &plan.kind else { panic!("not a rootfs bundle") };
-        let gl_id = "org.example.Platform.GL.default";
-        assert_eq!(binds[0], ("runtime".into(), "/usr".into()));
-        assert_eq!(binds[1], ("app".into(), "/app".into()));
-        assert!(binds.contains(&(format!("ext/{gl_id}"), format!("/usr/lib/{m}/GL/default"))));
-        let gl_at = binds.iter().position(|b| b.0 == format!("ext/{gl_id}")).unwrap();
-        let merged_at = binds.iter().position(|b| b.0 == format!("ext/{gl_id}/glvnd/egl_vendor.d")).unwrap();
-        assert!(gl_at < merged_at && binds[merged_at].1 == format!("/usr/lib/{m}/GL/glvnd/egl_vendor.d"));
-        let dst = |d: &str| plan.files.iter().find(|(_, b)| b == d).map(|(h, _)| h.clone());
-        assert!(dst("runtime").is_some() && dst("runtime/bin/env").is_some() && dst("app/bin/example").is_some());
-        assert!(dst(&format!("ext/{gl_id}/glvnd/egl_vendor.d")).is_some());
-        assert!(dst("root/etc/os-release").is_some());
-        // Generated /etc files replace the runtime's (and its dangling resolv.conf link).
-        let passwd = dst("root/etc/passwd").unwrap();
-        assert!(std::fs::read_to_string(&passwd).unwrap().starts_with("root:x:0:0:"));
-        assert_eq!(plan.files.iter().filter(|(_, b)| b == "root/etc/resolv.conf").count(), 1);
-        assert_eq!(std::fs::read_link(dst("root/lib").unwrap()).unwrap(), Path::new("usr/lib"));
-        // Parents come before children.
-        let pos = |d: &str| plan.files.iter().position(|(_, b)| b == d).unwrap();
-        assert!(pos("app") < pos("app/bin") && pos("app/bin") < pos("app/bin/example"));
-        assert!(plan.dirs.contains(&"root/tmp".to_string()) && !plan.dirs.contains(&"root/etc".to_string()));
-        assert_eq!(&plan.argv[0], "/usr/bin/env");
-        assert!(plan.argv[1].starts_with("LD_LIBRARY_PATH=/app/lib:"));
-        assert_eq!(&plan.argv[2..], ["/app/bin/example", "x.txt"]);
-        assert!(plan.env.contains(&("XDG_CONFIG_HOME".into(), "/root/.var/app/org.example.App/config".into())));
-        assert!(!plan.env.iter().any(|(k, _)| k == "XDG_RUNTIME_DIR" || k == "LD_LIBRARY_PATH"));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
     /// Against the Flatpaks installed on this machine:
     /// `LINDROIDS_FLATPAK_IDS=org.gnome.Calculator,... LINDROIDS_FLATPAK_ICONS=<dir> cargo test
     /// -p lindroids -- --ignored real_apps --nocapture`.
@@ -924,26 +741,16 @@ mod tests {
     fn real_apps() {
         let ids = std::env::var("LINDROIDS_FLATPAK_IDS").unwrap_or_else(|_| "org.gnome.Calculator".into());
         let icons = std::env::var_os("LINDROIDS_FLATPAK_ICONS").map(PathBuf::from);
-        // Generated files the plans point at stay next to the icons when those are kept.
-        let state = icons.as_ref().map(|d| d.join("state")).unwrap_or_else(|| std::env::temp_dir().join(format!("lindroids-flatpak-real-{}", std::process::id())));
         for id in ids.split(',') {
             let app = find(Path::new("/"), id).unwrap_or_else(|| panic!("{id} is not installed"));
             let (name, icon) = identify(&app, &Opts::default());
             assert!(icon.starts_with(b"\x89PNG"));
-            let plan = bundle_plan_in(&app, &[], &Opts::default(), &state).unwrap();
             let exts: Vec<&str> = app.extensions.iter().map(|e| e.id.as_str()).collect();
-            eprintln!("{id}: {name:?}, runtime {}, extensions {exts:?}, {} bundle entries, argv {:?}", app.runtime_ref, plan.files.len(), plan.argv);
+            eprintln!("{id}: {name:?}, runtime {}, extensions {exts:?}", app.runtime_ref);
             if let Some(d) = &icons {
                 std::fs::create_dir_all(d).unwrap();
                 std::fs::write(d.join(format!("{id}.png")), &icon).unwrap();
-                // The plan too, for building a bundle by hand.
-                let BundleKind::Rootfs { binds } = &plan.kind else { unreachable!() };
-                let json = serde_json::json!({ "binds": binds, "env": plan.env, "workdir": plan.workdir, "files": plan.files, "dirs": plan.dirs, "argv": plan.argv });
-                std::fs::write(d.join(format!("{id}.plan.json")), json.to_string()).unwrap();
             }
-        }
-        if icons.is_none() {
-            let _ = std::fs::remove_dir_all(&state);
         }
     }
 

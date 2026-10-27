@@ -209,7 +209,7 @@ impl Stream {
                 self.check_starved(now, out, version);
             }
             if self.deaf_now(now) {
-                info!("sound stream {}: the app is not taking data, dropping it at real time", self.id);
+                info!("sound stream {}: the display is not taking data, dropping it at real time", self.id);
                 self.deaf = true;
                 self.in_app = 0;
             }
@@ -301,7 +301,7 @@ impl Stream {
         self.in_app = self.in_app.saturating_sub(bytes as u64);
         self.progress = Instant::now();
         if self.deaf {
-            info!("sound stream {}: the app is taking data again", self.id);
+            info!("sound stream {}: the display is taking data again", self.id);
             self.deaf = false;
         }
     }

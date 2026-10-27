@@ -1,14 +1,14 @@
-//! `lindroids update`: bring the CLI, its xwayland-satellite and the Android app to the newest
-//! release, the way the CLI was installed.
+//! `lindroids update`: bring the CLI and its xwayland-satellite to the newest release, the way the
+//! CLI was installed.
 //!
 //! - From the APT repository (Termux, Debian/Ubuntu): `apt-get update` and an upgrade of the
-//!   `lindroids` package, which carries the matching APK.
-//! - From the pacman repository (Termux with pacman, Arch): `pacman -Sy` of the package, likewise.
+//!   `lindroids` package.
+//! - From the pacman repository (Termux with pacman, Arch): `pacman -Sy` of the package.
 //! - A static install: the published install script, which checks the release's SHA256SUMS, into
 //!   the same directory.
 //!
-//! Then an idle server is restarted on the new binary, and `lindroids setup` brings the app to the
-//! same build (or says it already is).
+//! Then an idle server is restarted on the new binary. The display is the web browser, which loads
+//! its page from the server, so there is nothing else to update.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -133,7 +133,6 @@ fn update_cli(m: &Method) -> Result<(), String> {
                 .arg("-s")
                 .env("LINDROIDS_METHOD", "static")
                 .env("LINDROIDS_INSTALL_DIR", dir)
-                .env("LINDROIDS_SETUP", "no")
                 .stdin(Stdio::piped())
                 .spawn()
                 .map_err(|e| format!("sh: {e}"))?;
@@ -186,10 +185,7 @@ pub fn cmd_update(args: &[String]) -> i32 {
     println!("lindroids {current} ({how}); latest release {latest}");
     if !newer(&latest, current) && !force {
         println!("Up to date.");
-        if check {
-            return 0;
-        }
-        return app_step();
+        return 0;
     }
     if check {
         println!("An update is available: `lindroids update`.");
@@ -204,28 +200,14 @@ pub fn cmd_update(args: &[String]) -> i32 {
         None => return fail("the updated lindroids does not run"),
     }
     restart_idle_server();
-    // The new binary finishes the job: it knows its own build and carries the matching APK.
-    match Command::new(&exe).arg("update").arg("--app-only").status() {
-        Ok(s) => s.code().unwrap_or(1),
-        Err(e) => fail(&e.to_string()),
-    }
+    0
 }
 
-/// `update --app-only`, run by the new binary: the app to this build.
+/// `update --app-only`, which older releases run after upgrading. There is no app to update any
+/// more.
 pub fn cmd_update_app_only() -> i32 {
-    app_step()
-}
-
-fn app_step() -> i32 {
-    let rt = sandbox::runtime_dir();
-    if let Ok(CliReply::Status { app_connected: true, app_build: Some(b), .. }) = client::status(&rt) {
-        if b == lindroids_server::BUILD {
-            println!("The Lindroids app is at the same build ({b}).");
-            return 0;
-        }
-    }
-    println!("Bringing the Lindroids app to {}:", lindroids_server::BUILD);
-    crate::cmd_setup()
+    println!("There is no app any more: the windows show in the browser.");
+    0
 }
 
 /// A server with no windows is restarted so it runs the new binary; with windows, it is left be.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Host integration test: the real server, a stand-in for the Android app, and a real Wayland
+# Host integration test: the real server, a stand-in for the browser page, and a real Wayland
 # client, all on an ordinary Linux machine (CI: ubuntu-latest with `apt install foot`).
 #
 #   tests/host-integration.sh            build the CLI (debug) and run the test

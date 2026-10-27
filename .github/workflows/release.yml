@@ -1,8 +1,7 @@
 # Every push to main is a release: v<major>.<minor>.<commit count> (scripts/version.sh).
-# Builds the CLI for 8 targets, xwayland-satellite (8 builds, cached by its pin), the APK, the
-# .debs, pacman packages and tarballs (scripts/build-release.sh), publishes the signed APT and
-# pacman repositories to gh-pages
-# and a GitHub Release with the artifacts.
+# Builds the CLI for 8 targets, xwayland-satellite (8 builds, cached by its pin), the .debs,
+# pacman packages and tarballs (scripts/build-release.sh), publishes the signed APT and pacman
+# repositories to gh-pages and a GitHub Release with the artifacts.
 # Commits whose message contains "[skip ci]" do not release. See docs/PACKAGING.md.
 name: release
 
@@ -41,10 +40,9 @@ jobs:
           eval "$(scripts/version.sh)"
           {
             echo "version=$LINDROIDS_VERSION"
-            echo "code=$LINDROIDS_VERSION_CODE"
             echo "build_id=$LINDROIDS_BUILD_ID"
           } >> "$GITHUB_OUTPUT"
-          echo "Releasing v$LINDROIDS_VERSION (versionCode $LINDROIDS_VERSION_CODE)"
+          echo "Releasing v$LINDROIDS_VERSION"
           # A re-run of the same commit may reuse its tag; another commit must not.
           tagged=$(git ls-remote --tags origin "refs/tags/v$LINDROIDS_VERSION" | cut -f1)
           if [ -n "$tagged" ] && [ "$tagged" != "$GITHUB_SHA" ]; then
@@ -70,18 +68,18 @@ jobs:
         with:
           tool: cargo-ndk
 
-      - name: JDK
+      - name: JDK (for sdkmanager)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # The runner image ships the SDK (and usually this NDK); setup-android installs what is
-      # missing and is a no-op otherwise.
-      - name: Android SDK and NDK
+      # The NDK for the Termux builds (cargo-ndk). The runner image usually ships it;
+      # setup-android installs it if it is missing and is a no-op otherwise.
+      - name: Android NDK
         uses: android-actions/setup-android@v3
         with:
-          packages: "build-tools;35.0.0 platforms;android-35 ndk;${{ env.NDK_VERSION }}"
+          packages: "ndk;${{ env.NDK_VERSION }}"
 
       - name: Select the NDK
         run: |
@@ -92,15 +90,7 @@ jobs:
       - name: Packaging tools
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q patchelf dpkg-dev foot fonts-dejavu-core libclang-dev pkg-config patch libarchive-tools
-
-      - name: Cache proot debs
-        uses: actions/cache@v4
-        with:
-          path: |
-            third_party/proot
-            target/proot-debs
-          key: proot-${{ hashFiles('scripts/fetch-proot.sh') }}
+          sudo apt-get install -y -q dpkg-dev foot fonts-dejavu-core libclang-dev pkg-config patch libarchive-tools
 
       # Built from source only when the pin or the patches change (same key as ci.yml).
       - name: Cache xwayland-satellite
@@ -110,7 +100,7 @@ jobs:
           key: xwls-${{ hashFiles('scripts/build-xwayland-satellite.sh', 'third_party/xwayland-satellite/*.patch') }}
 
       - name: Tests
-        run: cargo test --workspace --exclude lindroids-android
+        run: cargo test --workspace
 
       - name: Host integration test
         run: tests/host-integration.sh
@@ -118,27 +108,19 @@ jobs:
       - name: Build release
         id: build
         env:
-          LINDROIDS_KEYSTORE_B64: ${{ secrets.LINDROIDS_KEYSTORE_B64 }}
-          LINDROIDS_KEYSTORE_PASS: ${{ secrets.LINDROIDS_KEYSTORE_PASS }}
-          LINDROIDS_KEY_ALIAS: ${{ secrets.LINDROIDS_KEY_ALIAS }}
           HAVE_GPG_KEY: ${{ secrets.LINDROIDS_GPG_PRIVATE_KEY != '' && 'yes' || '' }}
           LINDROIDS_GITHUB_REPO: ${{ github.repository }}
         run: |
-          # Without the signing keys (a fork, or before scripts/set-github-secrets.sh) everything
+          # Without the signing key (a fork, or before scripts/set-github-secrets.sh) everything
           # is still built and tested, and nothing is published: releases are then made with
-          # scripts/publish-local.sh where the keys are.
-          if [ -z "$LINDROIDS_KEYSTORE_B64" ] || [ -z "$LINDROIDS_KEYSTORE_PASS" ] || [ -z "$HAVE_GPG_KEY" ]; then
-            echo "::warning::signing secrets are not set (scripts/set-github-secrets.sh): built, not published"
+          # scripts/publish-local.sh where the key is.
+          if [ -z "$HAVE_GPG_KEY" ]; then
+            echo "::warning::the signing secret is not set (scripts/set-github-secrets.sh): built, not published"
             echo "publish=false" >> "$GITHUB_OUTPUT"
-            scripts/build-release.sh
-            exit 0
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
-          echo "publish=true" >> "$GITHUB_OUTPUT"
-          export LINDROIDS_KEYSTORE="$RUNNER_TEMP/release.keystore"
-          printf '%s' "$LINDROIDS_KEYSTORE_B64" | base64 -d > "$LINDROIDS_KEYSTORE"
-          export LINDROIDS_KEY_ALIAS="${LINDROIDS_KEY_ALIAS:-lindroids}"
           scripts/build-release.sh
-          rm -f "$LINDROIDS_KEYSTORE"
 
       - name: Fetch the published site
         if: steps.build.outputs.publish == 'true'
@@ -175,7 +157,6 @@ jobs:
           make_latest: true
           fail_on_unmatched_files: true
           files: |
-            dist/lindroids-*.apk
             dist/lindroids-*.tar.gz
             dist/debs/*.deb
             dist/SHA256SUMS

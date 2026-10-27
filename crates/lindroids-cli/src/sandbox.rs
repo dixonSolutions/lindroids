@@ -186,39 +186,55 @@ fn run_quiet(cmd: &str, args: &[&str], timeout: Duration) -> bool {
     }
 }
 
-/// Wake the app and tell it where the server is. Tries every way Android offers a terminal app to
-/// send an intent; returns which one worked, if any.
-pub fn wake_app(sb: &Sandbox, secret: &str) -> Option<&'static str> {
-    let socket = proto::server_socket_name(sb.uid);
-    let uid = sb.uid.to_string();
-    let component = format!("{}/.HelloReceiver", proto::APP_PACKAGE);
-    // -f 32 (FLAG_INCLUDE_STOPPED_PACKAGES): an app that was installed and never opened is
-    // "stopped", and Android drops broadcasts to it without this.
-    let args: Vec<&str> = vec![
-        "broadcast", "-f", "32", "-n", &component, "-a", proto::ACTION_SERVER_HELLO,
-        "--es", "socket", &socket, "--es", "uid", &uid, "--es", "sandbox", &sb.name, "--es", "secret", secret,
+/// Whether this runs on Android (Termux, or a proot distro inside it), as opposed to a desktop.
+pub fn on_android() -> bool {
+    Path::new("/system/build.prop").exists() || Path::new("/system/bin/app_process").exists()
+}
+
+/// Open `url` in the web browser. Returns how, if a way worked.
+///
+/// On Android this is an ordinary VIEW intent from the terminal app, which needs no permission
+/// and no setting. Chrome reuses the tab an app opened before when the intent names that app, so
+/// every `lindroids run` brings the same Lindroids tab to the front instead of opening another.
+pub fn open_browser(url: &str) -> Option<&'static str> {
+    let termux_am = format!("{}/bin/termux-am", proto::TERMUX_PREFIX);
+    let intent: Vec<&str> = vec![
+        "start", "-a", "android.intent.action.VIEW", "-d", url, "--es", "com.android.browser.application_id", "lindroids",
     ];
-    // Termux's am socket server (fast), Termux's app_process am, Android's own am, then cmd.
-    let tries: [(&str, &str, &[&str]); 4] = [
-        ("termux-am", "termux-am", &[]),
-        ("am", "am", &[]),
-        ("/system/bin/am", "/system/bin/am", &[]),
-        ("cmd", "/system/bin/cmd", &["activity"]),
+    // Termux's am socket server (fast, and the one that works from a proot distro too), Termux's
+    // app_process am, Android's own am; then the desktop ways.
+    let mut tries: Vec<(&'static str, String, Vec<&str>)> = vec![
+        ("termux-am", "termux-am".into(), intent.clone()),
+        ("termux-am", termux_am, intent.clone()),
+        ("am", "am".into(), intent.clone()),
+        ("/system/bin/am", "/system/bin/am".into(), intent.clone()),
     ];
+    if !on_android() {
+        tries.clear();
+    }
+    tries.push(("xdg-open", "xdg-open".into(), vec![url]));
     // Termux's `am` runs app_process, which on x86 images with an ARM translation layer loads the
     // native bridge and is killed by seccomp (a tombstone each time): skip it there.
     let bridged = native_bridge();
-    for (label, cmd, pre) in tries {
-        if bridged && label == "am" {
+    for (label, cmd, args) in tries {
+        if bridged && cmd == "am" {
             continue;
         }
-        let mut a: Vec<&str> = pre.to_vec();
-        a.extend(args.iter().copied());
-        if run_quiet(cmd, &a, Duration::from_secs(8)) {
+        if run_quiet(&cmd, &args, Duration::from_secs(8)) {
             return Some(label);
         }
     }
     None
+}
+
+/// The page that shows this server's windows. With the secret, the browser links without asking
+/// for a pairing code; the part after `#` never leaves the browser.
+pub fn display_url(uid: u32, secret: Option<&str>) -> String {
+    let port = proto::server_tcp_port(uid);
+    match secret {
+        Some(k) => format!("http://127.0.0.1:{port}/#k={k}"),
+        None => format!("http://127.0.0.1:{port}/"),
+    }
 }
 
 /// liblindroids-compat.so for this CPU, empty where none is needed (see build.rs).

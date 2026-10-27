@@ -318,7 +318,7 @@ cat > "$OUTDIR/index.html" <<EOF
 <title>Lindroids package repository</title>
 <style>body{font:16px/1.5 system-ui,sans-serif;max-width:46rem;margin:3rem auto;padding:0 1rem}code,pre{background:#f3f3f3;padding:.1rem .3rem}pre{padding:.8rem;overflow:auto}</style>
 <h1>Lindroids</h1>
-<p>Linux apps in Android windows. Latest version: <b>${latest:-none}</b>.</p>
+<p>Linux apps on Android, shown in the web browser. Latest version: <b>${latest:-none}</b>.</p>
 <p>Install or update (Termux, Debian/Ubuntu incl. proot-distro, or any Linux):</p>
 <pre>curl -fsSL $site_url/install.sh | sh</pre>
 <p>Manual APT setup: key <a href="lindroids.gpg">lindroids.gpg</a> (<a href="lindroids.asc">armored</a>), fingerprint <code>$WANT_FPR</code>.</p>

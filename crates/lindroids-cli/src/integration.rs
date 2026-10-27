@@ -78,7 +78,7 @@ pub fn cmd_info(args: &[String]) -> i32 {
     let json = args.iter().any(|a| a == "--json");
     let s = match client::request(&sandbox::runtime_dir(), &CliRequest::Info, Duration::from_secs(10)) {
         Ok(CliReply::Info { system: Some(s) }) => s,
-        Ok(CliReply::Info { system: None }) => return fail("the Lindroids app has not reported yet (is it connected, and as new as this CLI?)"),
+        Ok(CliReply::Info { system: None }) => return fail("the browser page has not reported yet (is it open? `lindroids pair`)"),
         Ok(CliReply::Error { message }) => return fail(&message),
         Ok(other) => return fail(&format!("unexpected reply {other:?}")),
         Err(e) => return fail(&e),

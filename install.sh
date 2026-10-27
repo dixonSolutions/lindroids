@@ -22,7 +22,6 @@
 #   LINDROIDS_INSTALL_DIR   static install target (default ~/.local/bin)
 #   LINDROIDS_METHOD        force apt-termux | pacman-termux | apt-debian | pacman-arch | static
 #   LINDROIDS_FLATPAK       yes | no: install Flatpak (with Flathub) without asking, or skip it
-#   LINDROIDS_SETUP         no: on Android, do not install the Lindroids app and pair it afterwards
 #   LINDROIDS_DISTRO        proot-distro distro for Flatpak in Termux (default: the first one installed;
 #                           the installer never installs a distro)
 set -eu
@@ -125,42 +124,20 @@ pacman_arch() {
   esac
 }
 
+# next_steps <how to update>
 next_steps() {
-  apk=$1 update=$2
   echo
   say "Lindroids is installed: $(lindroids version 2>/dev/null || echo "run 'lindroids version'")"
   echo
-  echo "Next steps:"
-  if [ -n "$apk" ]; then
-    echo "  1. lindroids setup           # installs the Lindroids app ($apk) and pairs it"
-  else
-    echo "  1. Install the Lindroids app on the phone: download lindroids-<version>.apk from"
-    echo "       https://github.com/$GITHUB_REPO/releases/latest"
-    echo "     then: lindroids setup     # pairs it with this terminal"
-  fi
-  echo "  2. lindroids run <command>   # e.g. lindroids run foot; X11 programs work too"
-  echo "     lindroids export <command> puts an app on the Android home screen."
-  echo "     lindroids update brings the CLI and the app to the newest release."
+  echo "Next: lindroids run <program>   # e.g. lindroids run foot; X11 programs work too"
+  echo "  The windows show in the web browser: lindroids run opens it."
   if [ -n "${FLATPAK_DISTRO:-}" ]; then
     flatpak_hint " (inside: proot-distro login $FLATPAK_DISTRO)"
   elif have flatpak; then
     flatpak_hint ""
   fi
   echo
-  echo "Update: $update"
-  setup_app
-}
-
-# On Android (Termux, or a distro under proot): install the Lindroids app from the package and pair
-# it, which `lindroids setup` does (it opens Android's installer, then waits for the pairing code).
-# Needs the terminal for that; `lindroids update` does its own.
-setup_app() {
-  [ "${LINDROIDS_SETUP:-}" != no ] || return 0
-  [ -n "$TERMUX" ] || [ -e /system/bin/app_process ] || [ -e /system/build.prop ] || return 0
-  (: < /dev/tty) 2>/dev/null || { echo "Run 'lindroids setup' to install the Lindroids app and pair it."; return 0; }
-  echo
-  say "lindroids setup: installing the Lindroids app and pairing it"
-  lindroids setup < /dev/tty || warn "the app is not set up yet; run 'lindroids setup' again"
+  echo "Update: $1"
 }
 
 FLATHUB=https://dl.flathub.org/repo/flathub.flatpakrepo
@@ -354,7 +331,7 @@ install_termux_apt() {
   apt install -y lindroids || die "apt install lindroids failed"
   FLATPAK_DISTRO=
   flatpak_termux
-  next_steps "$PREFIX/share/lindroids/lindroids.apk" "pkg upgrade (or: apt update && apt install lindroids)"
+  next_steps "pkg upgrade (or: apt update && apt install lindroids)"
 }
 
 install_termux_pacman() {
@@ -366,7 +343,7 @@ install_termux_pacman() {
   add_pacman_repo "$PREFIX/etc/pacman.conf" termux
   FLATPAK_DISTRO=
   flatpak_termux
-  next_steps "$PREFIX/share/lindroids/lindroids.apk" "pkg upgrade (or: pacman -Syu)"
+  next_steps "pkg upgrade (or: pacman -Syu)"
 }
 
 install_arch() {
@@ -376,7 +353,7 @@ install_arch() {
   say "Arch Linux ($(pacman_arch))"
   add_pacman_repo /etc/pacman.conf arch
   flatpak_system
-  next_steps /usr/share/lindroids/lindroids.apk "pacman -Syu (or run this installer again)"
+  next_steps "pacman -Syu (or run this installer again)"
 }
 
 install_debian() {
@@ -407,7 +384,7 @@ install_debian() {
   say "apt-get install lindroids"
   $SUDO apt-get install -y -q lindroids || die "apt-get install lindroids failed"
   flatpak_system
-  next_steps /usr/share/lindroids/lindroids.apk "apt update && apt upgrade (or run this installer again)"
+  next_steps "apt update && apt upgrade (or run this installer again)"
 }
 
 install_static() {
@@ -469,13 +446,9 @@ install_static() {
     *":$dir:"*) ;;
     *) warn "$dir is not in PATH; add: export PATH=\"$dir:\$PATH\""; PATH=$dir:$PATH ;;
   esac
-  # Not when `lindroids update` runs this: that is about the CLI only (and it sets up the app).
-  if [ -n "${LINDROIDS_INSTALL_DIR:-}" ]; then
-    LINDROIDS_SETUP=no
-  else
-    flatpak_system
-  fi
-  next_steps "" "run this installer again"
+  # Not when `lindroids update` runs this: that is about the CLI only.
+  [ -n "${LINDROIDS_INSTALL_DIR:-}" ] || flatpak_system
+  next_steps "run this installer again"
 }
 
 PM=$(detect_pm)

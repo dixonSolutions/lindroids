@@ -1,4 +1,4 @@
-//! `lindroids run`: start a Linux program with its windows going to Android.
+//! `lindroids run`: start a Linux program with its windows going to the browser.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,8 +16,6 @@ pub struct Opts {
     pub name: Option<String>,
     pub icon: Option<PathBuf>,
     pub env: Vec<(String, String)>,
-    pub link: bool,
-    pub bundle: bool,
     pub id: Option<String>,
     pub command: Vec<String>,
 }
@@ -41,8 +39,6 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
             "--name" => o.name = Some(value()?),
             "--icon" => o.icon = Some(PathBuf::from(value()?)),
             "--id" => o.id = Some(value()?),
-            "--link" => o.link = true,
-            "--bundle" => o.bundle = true,
             "-e" | "--env" => {
                 let kv = value()?;
                 let (k, v) = kv.split_once('=').ok_or_else(|| format!("--env wants KEY=VALUE, not {kv:?}"))?;
@@ -60,6 +56,11 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
         return Err("what should I run? (lindroids run <command>)".into());
     }
     Ok(o)
+}
+
+/// Options of `run` (and `export`) followed by a value.
+pub fn takes_value(opt: &str) -> bool {
+    matches!(opt, "--distro" | "--name" | "--icon" | "--id" | "-e" | "--env")
 }
 
 /// `lindroids run "foo --bar"` (one argument with spaces) is a shell command line.
@@ -317,7 +318,7 @@ pub fn cmd_run(args: &[String]) -> i32 {
         Ok(rt) => rt,
         Err(e) => return crate::fail(&e),
     };
-    crate::ensure_app(&sb, &rt, false);
+    crate::ensure_display(&sb, &rt, false);
     if let Target::Program(argv) = &target {
         if !o.x11 && sandbox::x11_display(&rt).is_none() && x11_only_program(&o, argv) {
             eprintln!(

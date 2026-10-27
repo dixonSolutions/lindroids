@@ -1,14 +1,15 @@
 //! Wire types shared by the `lindroids` CLI, the server that runs inside a Linux sandbox, and the
-//! Lindroids Android app.
+//! display: the web page the server serves to the phone's browser (`data/web/lindroids.js` in the
+//! server crate), or `lindroids debug-app` in tests. "App" in the names below is that display.
 //!
-//! # The link (server ⇄ app)
+//! # The link (server ⇄ display)
 //!
-//! A byte stream: an abstract Unix socket when the app may reach the sandbox's sockets, otherwise
-//! TCP on 127.0.0.1 (Android lets any two apps talk over loopback, but SELinux keeps apps out of
-//! each other's Unix sockets). Nothing on the link depends on passing file descriptors.
+//! A WebSocket on 127.0.0.1 from the browser, each server message one WebSocket message; or, for
+//! tests, the same bytes over loopback TCP or an abstract Unix socket. Nothing on the link depends
+//! on passing file descriptors.
 //!
 //! Each message is one line of JSON. A message with a `len` field is followed by exactly `len`
-//! bytes of binary payload (frame tiles, PCM, bundle data).
+//! bytes of binary payload (frame tiles, PCM, file data).
 //!
 //! # The control socket (CLI ⇄ server)
 //!
@@ -21,13 +22,7 @@ pub mod fdpass;
 
 /// Bumped whenever a message changes shape. The app and the server refuse to talk across
 /// versions, and the CLI says which side needs updating.
-pub const PROTOCOL_VERSION: u32 = 3;
-
-/// Android package of the app.
-pub const APP_PACKAGE: &str = "io.github.dixonsolutions.lindroids";
-
-/// Broadcast the CLI sends to wake the app and tell it where the server is.
-pub const ACTION_SERVER_HELLO: &str = "io.github.dixonsolutions.lindroids.SERVER_HELLO";
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The real uid of this process. Under proot's fake root (proot-distro, UserLAnd) getuid() says
 /// 0, but the app looks for the sandbox app's own uid; the kernel's view in /proc is not faked.
@@ -43,7 +38,8 @@ pub fn server_socket_name(uid: u32) -> String {
     format!("lindroids.server.{uid}")
 }
 
-/// Loopback TCP port a server listens on: fixed per uid, so the app can find it.
+/// Loopback TCP port a server listens on (and serves its web page on): fixed per uid, so a page
+/// added to the home screen finds it again.
 pub fn server_tcp_port(uid: u32) -> u16 {
     let app_id = uid % 100_000;
     47_000 + (app_id.saturating_sub(10_000) % 10_000) as u16
@@ -113,7 +109,7 @@ pub enum ToApp {
     Paired { secret: String },
     /// Authentication failed. The server closes the link after this.
     AuthFailed { reason: String, pairing_open: bool },
-    /// A Linux toplevel appeared and needs an Android window.
+    /// A Linux toplevel appeared and needs a window (a tab of the page).
     WindowNew {
         win: u32,
         title: String,
@@ -133,22 +129,16 @@ pub enum ToApp {
     Keyboard { win: u32, show: bool },
     /// The Linux side set the clipboard.
     Clipboard { text: String },
-    /// Ask the app to pin a home screen shortcut for an exported app.
-    Export(ExportRequest),
-    /// Ask the app to open its folder picker and report the chosen path.
+    /// Ask the display for a folder and report the chosen path (a browser has none to give).
     PickFolder { request: u32 },
-    /// Remove an exported program (its shortcut and bundle); answered with ExportResult.
-    Unexport { id: String },
     /// Sound: a stream opens, gets PCM payloads, is paused/resumed, and closes.
     AudioOpen { stream: u32, rate: u32, channels: u32, format: AudioFormat },
     AudioData { stream: u32, len: u32 },
     AudioCork { stream: u32, corked: bool },
     AudioClose { stream: u32 },
-    /// A bundle (an uncompressed tar stream) for the app to unpack, in chunks.
-    BundleBegin { id: String },
-    BundleChunk { id: String, len: u32 },
-    BundleEnd { id: String, ok: bool },
     Log { level: String, msg: String },
+    /// The server is closing this link: another display linked, or the server stops.
+    Bye { reason: String },
 
     // --- Android integration (the portal; see lindroids-server/src/portal.rs) ---
     /// Open a URI with Android (ACTION_VIEW: browser, mail, maps, dialer...). Answered with
@@ -333,12 +323,12 @@ pub enum ToServer {
     /// Committed text from the soft keyboard / IME.
     Text { win: u32, text: String },
     Focus { win: u32, focused: bool },
-    /// The user closed the Android window (back gesture / recents swipe).
+    /// The user closed the window (its tab).
     Close { win: u32 },
     Clipboard { text: String },
     FolderPicked { request: u32, path: Option<String> },
-    ExportResult { id: String, ok: bool, message: String },
-    ImportResult { id: String, ok: bool, message: String },
+    /// Start an exported program (its launcher page was opened, e.g. from the home screen).
+    Launch { id: String },
     /// Sound flow control: the app has room for this many more bytes of a stream.
     AudioCredit { stream: u32, bytes: u32 },
 
@@ -396,59 +386,22 @@ pub enum PointerAction {
     Release,
 }
 
-/// What `lindroids export` hands to the app.
+/// A program `lindroids export` made a launcher for: the page `/app/<id>` (which the browser
+/// can add to the home screen) starts it. Kept as `<data dir>/apps/<id>.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ExportRequest {
-    /// Stable id, e.g. "org.gnome.Calculator" or "termux.xeyes".
+pub struct Exported {
+    /// Stable id, e.g. "org.gnome.Calculator" or "termux.xeyes": letters, digits, `.`, `-`, `_`.
     pub id: String,
     pub name: String,
     /// PNG bytes, base64.
     pub icon_png_b64: String,
-    pub launch: LaunchSpec,
+    /// Arguments to `lindroids run`.
+    pub run: Vec<String>,
 }
 
-/// How the app starts an exported program when its shortcut is tapped.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "mode", rename_all = "snake_case")]
-pub enum LaunchSpec {
-    /// Ask Termux to run `lindroids run ...` (Termux's RUN_COMMAND service).
-    /// Light, but needs Termux installed; Termux is started if it is closed.
-    Termux { argv: Vec<String> },
-    /// The program was copied into the app as a bundle and runs inside the app under its
-    /// bundled proot, with no sandbox app involved.
-    Bundle { bundle: String, argv: Vec<String>, env: Vec<(String, String)> },
-}
-
-/// `manifest.json` at the top of an exported bundle.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BundleManifest {
-    pub id: String,
-    pub name: String,
-    #[serde(flatten)]
-    pub kind: BundleKind,
-    /// Extra environment for every launch.
-    #[serde(default)]
-    pub env: Vec<(String, String)>,
-    /// Working directory inside the bundle's view of the filesystem.
-    #[serde(default)]
-    pub workdir: Option<String>,
-    /// An X11 program: the bundle carries Xwayland and xwayland-satellite (this path, in the
-    /// bundle's view), and every launch gets an X display of its own.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub x11_satellite: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum BundleKind {
-    /// Termux packages: `usr/` is mounted at Termux's prefix, `home/` at its home.
-    Termux,
-    /// A glibc root filesystem (`root/`), from a proot distro or a flatpak.
-    Rootfs {
-        /// Bind mounts inside the rootfs: (path relative to the bundle, path inside).
-        #[serde(default)]
-        binds: Vec<(String, String)>,
-    },
+/// Whether `id` is safe as an exported program's id (a file name and a URL path segment).
+pub fn valid_export_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && !id.starts_with('.') && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
 // ------------------------------------------------------------------ CLI <-> server
@@ -459,13 +412,7 @@ pub enum BundleKind {
 pub enum CliRequest {
     Status,
     Stop,
-    Export(ExportRequest),
-    /// Hand the app a bundle: the read end of a pipe carrying an uncompressed tar stream travels
-    /// with this line as SCM_RIGHTS.
-    ImportBundle { id: String },
     PickFolder,
-    /// Remove an exported program from the app.
-    Unexport { id: String },
     /// `lindroids open`: a URI, or an absolute path whose file Android should open.
     Open { target: String },
     /// `lindroids notify`.
@@ -526,7 +473,6 @@ impl Payload for ToApp {
         match self {
             ToApp::Tiles { len, .. }
             | ToApp::AudioData { len, .. }
-            | ToApp::BundleChunk { len, .. }
             | ToApp::OpenFile { len, .. }
             | ToApp::WriteFile { len, .. } => *len as usize,
             _ => 0,

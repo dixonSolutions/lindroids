@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Build a complete Lindroids release into dist/: the one entry point used by CI and by hand.
 #
-#   scripts/build-release.sh [--skip-proot] [--skip-apk] [--clean]
+#   scripts/build-release.sh [--clean]
 #
 # Produces (VERSION from scripts/version.sh, e.g. 0.1.42):
 #   dist/bin/<triple>/lindroids                         the CLI for all 8 targets
 #   dist/xwayland-satellite/{termux,debian}-<arch>/     xwayland-satellite, 4 bionic + 4 glibc
-#   dist/lindroids-VERSION.apk                          the app, all 4 ABIs, with proot
 #   dist/debs/lindroids_VERSION_<arch>.deb              Termux and Debian packages
 #   dist/pacman/{termux,arch}/<arch>/*.pkg.tar.xz       the same as pacman packages
 #   dist/lindroids-VERSION-<arch>-linux-musl.tar.gz     static CLI (bin/lindroids) + the glibc
@@ -23,21 +22,15 @@
 #   * as a static musl binary (linked with rust-lld, .cargo/config.toml) for glibc distros under
 #     proot and for plain Linux.
 #
-# Environment: ANDROID_HOME, ANDROID_NDK_HOME (defaults as in build-apk.sh);
-# LINDROIDS_KEYSTORE, LINDROIDS_KEYSTORE_PASS, LINDROIDS_KEY_ALIAS for a release-signed APK
-# (without them the APK is debug-signed and cannot update a release install);
-# LINDROIDS_VERSION / LINDROIDS_VERSION_CODE / LINDROIDS_BUILD_ID to override scripts/version.sh.
+# Environment: ANDROID_HOME (default ~/Android/Sdk), ANDROID_NDK_HOME (default: the newest NDK
+# in it) for cargo-ndk; LINDROIDS_VERSION / LINDROIDS_BUILD_ID to override scripts/version.sh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 
-SKIP_PROOT=0
-SKIP_APK=0
 CLEAN=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --skip-proot) SKIP_PROOT=1; shift ;;
-    --skip-apk) SKIP_APK=1; shift ;;
     --clean) CLEAN=1; shift ;;
     -h|--help) awk 'NR > 1 && !/^#/ {exit} NR > 1 {sub(/^# ?/, ""); print}' "$0"; exit 0 ;;
     *) echo "build-release: unknown argument $1" >&2; exit 2 ;;
@@ -45,9 +38,9 @@ while [ $# -gt 0 ]; do
 done
 
 eval "$(scripts/version.sh)"
-export LINDROIDS_VERSION LINDROIDS_VERSION_CODE LINDROIDS_BUILD_ID
+export LINDROIDS_VERSION LINDROIDS_BUILD_ID
 VER=$LINDROIDS_VERSION
-echo "==> Lindroids $VER (versionCode $LINDROIDS_VERSION_CODE, build $LINDROIDS_BUILD_ID)"
+echo "==> Lindroids $VER (build $LINDROIDS_BUILD_ID)"
 
 : "${ANDROID_HOME:=$HOME/Android/Sdk}"
 : "${ANDROID_NDK_HOME:=$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1)}"
@@ -59,7 +52,7 @@ MUSL_TRIPLES="aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf x86_64-u
 DIST=$ROOT/dist
 if [ $CLEAN = 1 ]; then rm -rf "$DIST"; fi
 rm -rf "${DIST:?}/bin" "${DIST:?}/debs" "${DIST:?}/xwayland-satellite" "$DIST"/lindroids-*.tar.gz \
-  "$DIST"/lindroids-*.apk "$DIST/SHA256SUMS"
+  "$DIST/SHA256SUMS"
 mkdir -p "$DIST/bin"
 
 echo "==> CLI for Termux (bionic, API 24)"
@@ -100,24 +93,7 @@ rm -f "$XWLS"/*/.stamp
 install -m 644 "$ROOT"/target/xwls/out/LICENSE.xwayland-satellite \
   "$ROOT"/target/xwls/out/xwayland-satellite-crates.txt "$XWLS/"
 
-if [ $SKIP_PROOT = 0 ]; then
-  scripts/fetch-proot.sh
-fi
-
-APK=$DIST/lindroids-$VER.apk
-if [ $SKIP_APK = 0 ]; then
-  scripts/build-apk.sh --abis "arm64-v8a armeabi-v7a x86_64 x86" --out "$APK"
-  if [ -z "${LINDROIDS_KEYSTORE:-}" ]; then
-    echo "    WARNING: debug-signed APK; set LINDROIDS_KEYSTORE for a release" >&2
-  fi
-elif [ -f "$DIST/lindroids.apk" ]; then
-  cp "$DIST/lindroids.apk" "$APK"
-else
-  echo "build-release: --skip-apk needs an existing dist/lindroids.apk" >&2
-  exit 1
-fi
-
-packaging/build-debs.sh --version "$VER" --dist "$DIST" --apk "$APK" --out "$DIST/debs" --xwls "$XWLS"
+packaging/build-debs.sh --version "$VER" --dist "$DIST" --out "$DIST/debs" --xwls "$XWLS"
 echo "==> pacman packages"
 rm -rf "${DIST:?}/pacman"
 packaging/build-pacman.sh --debs "$DIST/debs" --out "$DIST/pacman"
@@ -152,6 +128,6 @@ for t in $MUSL_TRIPLES; do
 done
 
 echo "$VER" > "$DIST/VERSION"
-( cd "$DIST" && sha256sum lindroids-*.apk lindroids-*.tar.gz debs/*.deb > SHA256SUMS )
+( cd "$DIST" && sha256sum lindroids-*.tar.gz debs/*.deb > SHA256SUMS )
 echo "==> dist/ ready"
-( cd "$DIST" && ls -1sh lindroids-*.apk lindroids-*.tar.gz debs/*.deb )
+( cd "$DIST" && ls -1sh lindroids-*.tar.gz debs/*.deb )

@@ -1,11 +1,11 @@
 #!/bin/sh
 # Print the release version variables for the current checkout, as shell assignments:
 #
-#   eval "$(scripts/version.sh)"    # sets LINDROIDS_VERSION, LINDROIDS_VERSION_CODE, LINDROIDS_BUILD_ID
+#   eval "$(scripts/version.sh)"    # sets LINDROIDS_VERSION, LINDROIDS_BUILD_ID
 #
 # Scheme: <major>.<minor>.<N>, where major.minor come from the workspace Cargo.toml and N is the
-# number of commits reachable from HEAD (`git rev-list --count HEAD`). N is also the APK
-# versionCode, so every commit on main is a strictly newer release for apt and for Android.
+# number of commits reachable from HEAD (`git rev-list --count HEAD`), so every commit on main is
+# a strictly newer release for apt and pacman.
 # Tag: v<version>. Anything already set in the environment wins (CI can pin a version).
 set -eu
 cd "$(dirname "$0")/.."
@@ -29,7 +29,5 @@ else
   sha=dev
 fi
 
-code=${LINDROIDS_VERSION_CODE:-$count}
-echo "LINDROIDS_VERSION=${LINDROIDS_VERSION:-$cargo_version.$code}"
-echo "LINDROIDS_VERSION_CODE=$code"
+echo "LINDROIDS_VERSION=${LINDROIDS_VERSION:-$cargo_version.$count}"
 echo "LINDROIDS_BUILD_ID=${LINDROIDS_BUILD_ID:-$sha}"

@@ -419,7 +419,7 @@ pub fn open_file(mut f: std::fs::File, name: String) -> Result<(), String> {
     match ask_once(|r| (ToApp::OpenFile { request: r, name, mime: None, len }, data), Duration::from_secs(120)) {
         Some(Answer::Open(true)) => Ok(()),
         Some(_) => Err("Android has no app to open it".into()),
-        None => Err("the Lindroids app is not connected".into()),
+        None => Err("no browser page is linked (`lindroids pair`)".into()),
     }
 }
 
@@ -428,7 +428,7 @@ pub fn open_uri(uri: String) -> Result<(), String> {
     match ask_once(|r| (ToApp::OpenUri { request: r, uri }, Vec::new()), Duration::from_secs(120)) {
         Some(Answer::Open(true)) => Ok(()),
         Some(_) => Err("Android has no app for it".into()),
-        None => Err("the Lindroids app is not connected".into()),
+        None => Err("no browser page is linked (`lindroids pair`)".into()),
     }
 }
 
@@ -590,7 +590,7 @@ fn readable_path(request: u32, index: u32, f: &PickedFile) -> Result<PathBuf, St
     let dest = dir.join(safe_name(&f.name));
     let mut out = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
     if shared().app_version.load(Ordering::SeqCst) < 3 {
-        return Err("the Lindroids app is not connected".into());
+        return Err("no browser page is linked (`lindroids pair`)".into());
     }
     let rx = listen(request);
     to_app(ToApp::FetchFile { request, index }, Vec::new());
@@ -605,7 +605,7 @@ fn readable_path(request: u32, index: u32, f: &PickedFile) -> Result<PathBuf, St
                     break Ok(dest);
                 }
             }
-            _ => break Err(format!("{}: the app stopped sending it", f.name)),
+            _ => break Err(format!("{}: the page stopped sending it", f.name)),
         }
     };
     forget(request);

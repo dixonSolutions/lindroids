@@ -1,10 +1,12 @@
 # Installing Lindroids
 
-Lindroids has two halves: the **Lindroids app** (an Android APK) and the **`lindroids` CLI**,
-which is also the server and runs wherever your Linux programs run: Termux, a Debian/Ubuntu
-rootfs under proot (proot-distro, UserLAnd, Andronix), or an ordinary Linux machine.
+Lindroids is one Linux package, the **`lindroids` CLI**, which is also the server and runs
+wherever your Linux programs run: Termux, a Debian/Ubuntu rootfs under proot (proot-distro,
+UserLAnd, Andronix), or an ordinary Linux machine. There is no Android app to install: the
+windows show in the phone's own web browser, on a page the server serves at
+`http://127.0.0.1:<port>/`, which `lindroids run` opens.
 
-One command installs or updates the CLI anywhere:
+One command installs or updates it anywhere:
 
 ```sh
 curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh | sh
@@ -19,8 +21,6 @@ It finds the package manager in use and installs the way that fits it:
 | Debian, Ubuntu and derivatives, incl. proot  | adds the Lindroids APT repository, suite `stable`          | static musl               |
 | Arch Linux and derivatives, incl. proot      | adds the Lindroids pacman repository `pacman/arch`         | static musl               |
 | anything else (Fedora, Alpine, openSUSE, Void, …) | downloads the static binary into `~/.local/bin`       | static musl               |
-
-Every package also carries the APK, so the app is updated together with the CLI.
 
 The installer can be read first: `curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh | less`.
 It honours these variables: `LINDROIDS_METHOD` (`apt-termux`, `pacman-termux`, `apt-debian`,
@@ -44,30 +44,23 @@ curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh | sh
 lindroids run <command>
 ```
 
-On Android the installer ends with `lindroids setup`: it opens Android's installer for the app
-that came in the package (or, with the Google Play build of Termux, which cannot, the browser on
-this release's APK), and waits for the pairing code. If no installer appears, open
-`Downloads/lindroids.apk` in the Files app (after `termux-setup-storage`, `lindroids setup` puts it
-there) or the APK link it prints; allow installing apps when Android asks, and on Samsung turn off
-Auto Blocker. `LINDROIDS_SETUP=no` skips this step.
+`lindroids run` opens the windows page in the browser (with `termux-open-url`) and the program's
+windows show there.
 
 Optional packages: `pkg install proot-distro` to run programs from a Debian/Ubuntu/Arch rootfs
 (`lindroids run --distro debian …`). For X11 programs, `lindroids setup x11` installs Xwayland
-(from Termux's x11-repo); xwayland-satellite, which gives every X11 window its own Android window,
+(from Termux's x11-repo); xwayland-satellite, which gives every X11 window its own window on the page,
 comes with Lindroids. Anywhere else, `lindroids setup x11` uses that system's package manager.
 
-**Pairing** happens once. If Termux lets other apps run commands in it
-(`allow-external-apps = true` in `~/.termux/termux.properties`, Termux's own setting), the app pairs
-itself: Android asks once to let Lindroids run commands in Termux, and no code is needed. Otherwise
-the app asks for the 6-digit code that `lindroids` prints.
+**Pairing:** the page `lindroids run` opens carries the server's secret, so it needs no code. A
+page opened by hand (`http://127.0.0.1:<port>/`) asks for the 6-digit code that `lindroids pair`
+prints.
 
 Programs installed inside a proot-distro distro (`proot-distro login debian`, then `apt install
 xournalpp`) run from Termux as they are: `lindroids run xournalpp` finds that `xournalpp` is not in
 Termux but in `debian`, and runs it there, as `lindroids run --distro debian xournalpp` would.
 
-**Update:** `pkg upgrade` (or `apt update && apt install lindroids`). The package always carries
-the matching APK; to update the app, open `$PREFIX/share/lindroids/lindroids.apk` again with
-`termux-open`.
+**Update:** `pkg upgrade` (or `apt update && apt install lindroids`), or `lindroids update`.
 
 **Manual setup** (what the installer does):
 
@@ -87,14 +80,11 @@ rm $PREFIX/etc/apt/sources.list.d/lindroids.list $PREFIX/etc/apt/keyrings/lindro
 rm -rf ~/.local/share/lindroids        # pairing secret and exported-app records
 ```
 
-and uninstall the Lindroids app from Android.
-
 ### Termux with pacman
 
 With Termux's pacman bootstrap the installer trusts the repository key with `pacman-key` and adds a
 `[lindroids]` repository to `$PREFIX/etc/pacman.conf`, whose settings it keeps in
-`$PREFIX/etc/pacman.d/lindroids.conf`. The package is the same as the `.deb` (same files, same
-APK). **Update:** `pkg upgrade` (or `pacman -Syu`). By hand:
+`$PREFIX/etc/pacman.d/lindroids.conf`. The package is the same as the `.deb` (same files). **Update:** `pkg upgrade` (or `pacman -Syu`). By hand:
 
 ```sh
 curl -fsSL https://dixonsolutions.github.io/lindroids/lindroids.asc -o lindroids.asc
@@ -119,8 +109,6 @@ lindroids run <command>
 ```
 
 The package is a static binary with no dependencies, for `arm64`, `armhf`, `amd64` and `i386`.
-The APK is at `/usr/share/lindroids/lindroids.apk`; install it on the phone once (from Termux:
-`termux-open` on the same file inside the rootfs, or copy it to shared storage and open it).
 
 If both Termux and a proot distro have Lindroids, run the server in one place only.
 
@@ -148,7 +136,7 @@ rm -rf ~/.local/share/lindroids
 
 The same as Termux with pacman, in `/etc`: the key goes into pacman's keyring, `[lindroids]` into
 `/etc/pacman.conf` (settings in `/etc/pacman.d/lindroids.conf`), and the package is the static CLI
-with xwayland-satellite and the APK, for `x86_64`, `aarch64` (Arch Linux ARM), `armv7h` and
+with xwayland-satellite, for `x86_64`, `aarch64` (Arch Linux ARM), `armv7h` and
 `i686`. Run as root or with `sudo`. **Update:** `pacman -Syu`, or run the installer again. By hand,
 as above with `/etc/pacman.conf` and `.../pacman/arch/$arch`.
 
@@ -166,8 +154,6 @@ The same tarballs can be installed by hand:
 tar -xzf lindroids-<version>-x86_64-linux-musl.tar.gz
 install -m 755 lindroids-<version>-x86_64-linux-musl/lindroids ~/.local/bin/
 ```
-
-The app comes from the release too (`lindroids-<version>.apk`).
 
 **Update:** run the installer again. **Uninstall:** `rm ~/.local/bin/lindroids ~/.local/share/lindroids -r`.
 
@@ -190,4 +176,4 @@ Check a downloaded key with `gpg --show-keys lindroids.gpg`. The same key is in 
   trusted in pacman's keyring; run the installer again (it runs `pacman-key --add` and
   `--lsign-key`).
 - `apt update` cannot reach the repository from a proot distro: install `ca-certificates`.
-- `lindroids doctor` shows what the CLI found (sandbox, proot, Xwayland, xwayland-satellite, server, app, the X display).
+- `lindroids doctor` shows what the CLI found (sandbox, proot, Xwayland, xwayland-satellite, server, display, the X display).

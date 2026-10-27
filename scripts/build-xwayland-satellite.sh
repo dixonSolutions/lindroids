@@ -23,7 +23,7 @@
 # embedded). It links libxcb and libxcb-cursor; xcb-util-cursor-sys runs bindgen, so the build
 # needs libclang and the xcb headers of the target:
 #
-#   termux  a per-arch sysroot from Termux's own .debs (pinned + sha256, as in fetch-proot.sh)
+#   termux  a per-arch sysroot from Termux's own .debs (pinned + sha256)
 #           that pkg-config, bindgen and the linker are pointed at; RUNPATH is Termux's lib dir,
 #           as for Termux's own binaries, and segments are 16 KB aligned (Android 15+).
 #           Needs: cargo, cargo-ndk, the 4 *-linux-android Rust targets, ANDROID_NDK_HOME (or

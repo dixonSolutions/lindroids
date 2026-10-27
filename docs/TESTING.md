@@ -5,16 +5,17 @@ Three layers, from fastest to closest to a phone.
 ## 1. Unit tests
 
 ```sh
-cargo test --workspace --exclude lindroids-android
+cargo test --workspace
 ```
 
 Protocol framing and authentication, tile diffing and packing, compositing and blending, popup
-placement, keymaps, the dpkg closure reader, Flatpak metadata and installation lookup, bundle
-import, the PulseAudio protocol subset, pacing and format conversion.
+placement, keymaps, the dpkg closure reader, Flatpak metadata and installation lookup, the
+PulseAudio protocol subset, pacing and format conversion.
 
 ## 2. The server against real clients, on any Linux machine
 
-`lindroids debug-app` stands in for the Android app: it pairs with a local server, gives every
+The display is the browser page the server serves: on a desktop, `lindroids run foot` opens it
+with `xdg-open`. For scripted tests, `lindroids debug-app` stands in for the page: it pairs with a local server, gives every
 window a size, writes each window's newest frame to `<dir>/window-<n>.png`, counts sound bytes in
 `<dir>/audio-<stream>.bytes`, and takes input commands on stdin:
 
@@ -40,7 +41,7 @@ Useful switches: `LINDROIDS_LOG=debug` (commits, configures, frames), `LINDROIDS
 ## 3. Android
 
 `lab/` holds a QEMU lab of Android-x86 and BlissOS images (Android 7 to 13): fetch, start,
-provision (Termux, sshd), and a test that installs the APK and CLI, pairs, opens a window, types,
+provision (Termux, sshd), and a test that installs the CLI, opens a window, types,
 and checks reconnection, with SELinux permissive or enforcing. Results: [lab/README.md](../lab/README.md).
 
 A permissive device is still useful for SELinux work: it logs every access an enforcing one would

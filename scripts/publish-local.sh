@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Publish a release from a maintainer's machine, where the signing keys are: the same release the
+# Publish a release from a maintainer's machine, where the signing key is: the same release the
 # release workflow makes when its secrets are set (scripts/set-github-secrets.sh), for when they are
-# not. The keys never leave this machine; only signed artifacts are uploaded.
+# not. The key never leaves this machine; only signed artifacts are uploaded.
 #
 #   scripts/publish-local.sh [--dry-run]
 #
 # 1. Checks that HEAD is clean and pushed (the release tag points at it).
-# 2. scripts/build-release.sh, signing the APK with ~/.local/share/lindroids/release.keystore.
+# 2. scripts/build-release.sh.
 # 3. Fetches the published site (gh-pages), adds the new packages with packaging/repo/build-repo.sh,
 #    signed with the APT key in ~/.local/share/lindroids/gnupg.
-# 4. Creates the GitHub release v<version> with the APK, tarballs, debs and SHA256SUMS.
+# 4. Creates the GitHub release v<version> with the tarballs, debs and SHA256SUMS.
 # 5. Pushes the site to gh-pages as a single commit, and turns GitHub Pages on for it if needed.
 #    The release comes first, so the site's VERSION never names a release that does not exist.
 #
@@ -27,7 +27,6 @@ NAME=${REPO#*/}
 BASE_URL="https://${OWNER,,}.github.io/$NAME"
 
 die() { echo "publish-local: $*" >&2; exit 1; }
-[ -f "$KEYS/release.keystore" ] && [ -f "$KEYS/release.pass" ] || die "no signing keystore in $KEYS"
 [ -d "$KEYS/gnupg" ] || die "no APT signing key in $KEYS/gnupg"
 # Inside a distrobox (where the toolchains are), the host's gh will do (LINDROIDS_HOST_GH, else
 # the usual places; Homebrew's is not on the PATH distrobox-host-exec uses).
@@ -53,11 +52,7 @@ if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
 fi
 echo "==> publishing Lindroids $VER ($SHA) to $REPO and $BASE_URL"
 
-LINDROIDS_KEYSTORE="$KEYS/release.keystore" \
-LINDROIDS_KEYSTORE_PASS="$(cat "$KEYS/release.pass")" \
-LINDROIDS_KEY_ALIAS="${LINDROIDS_KEY_ALIAS:-lindroids}" \
-LINDROIDS_GITHUB_REPO="$REPO" \
-  scripts/build-release.sh
+LINDROIDS_GITHUB_REPO="$REPO" scripts/build-release.sh
 
 SITE="$ROOT/target/publish-site"
 rm -rf "$SITE"
@@ -77,7 +72,7 @@ fi
 
 echo "==> GitHub release $TAG"
 gh release create "$TAG" -R "$REPO" --target "$SHA" --title "Lindroids $VER" --generate-notes --latest \
-  dist/lindroids-*.apk dist/lindroids-*.tar.gz dist/debs/*.deb dist/SHA256SUMS
+  dist/lindroids-*.tar.gz dist/debs/*.deb dist/SHA256SUMS
 
 echo "==> gh-pages"
 PUB="$ROOT/target/publish-git"
