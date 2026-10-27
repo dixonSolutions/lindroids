@@ -53,6 +53,8 @@ pub struct Link {
     pub build: String,
     /// The app's protocol version (from its Hello).
     pub version: u32,
+    /// The page's path, for a browser.
+    pub page: Option<String>,
     pub broken: bool,
 }
 
@@ -72,6 +74,7 @@ impl Link {
             density: 1.0,
             build: String::new(),
             version: 0,
+            page: None,
             broken: false,
         }
     }

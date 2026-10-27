@@ -419,7 +419,8 @@ impl State {
     /// Handshake on a new link. Returns the link back while it is still pending.
     fn handshake(&mut self, mut link: Link, msg: ToServer) -> Option<Link> {
         match (&link.phase, msg) {
-            (Phase::Hello, ToServer::Hello { version, build, density, nonce: app_nonce, screen }) => {
+            (Phase::Hello, ToServer::Hello { version, build, density, nonce: app_nonce, screen, page }) => {
+                link.page = page.filter(|p| p.starts_with('/') && p.len() < 256);
                 let nonce = shm::random_string(32, b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
                 let proof = auth::server_proof(&self.secret, &app_nonce);
                 link.send(&ToApp::Challenge { nonce: nonce.clone(), proof });
@@ -576,6 +577,7 @@ impl State {
                 build: BUILD.into(),
                 app_connected: self.link.is_some(),
                 app_build: self.link.as_ref().map(|l| l.build.clone()),
+                display_page: self.link.as_ref().and_then(|l| l.page.clone()),
                 pairing_code: (self.pairing_failures < MAX_PAIRING_FAILURES).then(|| self.pairing_code.clone()),
                 windows: self
                     .windows

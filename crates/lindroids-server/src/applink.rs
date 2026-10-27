@@ -149,6 +149,7 @@ pub fn connect(uid: u32, socket_name: Option<&str>, secret: Option<&str>, code: 
         density: display.density,
         nonce: nonce.clone(),
         screen: display.screen,
+        page: None,
     };
     if let Err(e) = conn.write_all(&proto::encode(&hello)) {
         return Outcome::Absent(e.to_string());

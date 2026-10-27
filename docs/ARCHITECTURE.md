@@ -74,8 +74,10 @@ waits rather than taking the link back; a tab with one history entry (one the br
 (`termux-am`), else Termux's `am` (app_process; skipped on x86 images with an ARM translation
 layer, where seccomp kills it), else Android's `am`; `xdg-open` on a desktop. No permission is
 involved. The intent names the browser application id `lindroids`, which Chrome uses to bring back
-the same tab; when the page is already linked, only its fragment changes, so it does not reload.
-On a desktop a linked page is left where it is.
+the same tab. When a page is already linked, the CLI raises it with exactly its URL (the page
+reports its path): Firefox then switches to that tab instead of opening another, and Chrome
+reuses its tab (and reloads it; the page relinks at once). On a desktop a linked page is left
+where it is.
 
 ## Frames
 

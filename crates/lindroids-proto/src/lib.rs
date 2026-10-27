@@ -302,6 +302,10 @@ pub enum ToServer {
         /// The screen's size in physical pixels, so windows can be sized before they open.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         screen: Option<(u32, u32)>,
+        /// The page's path ("/", "/app/<id>"): the CLI brings the browser back to exactly that
+        /// URL, which Firefox answers by switching to the tab instead of opening another.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        page: Option<String>,
     },
     /// Second message: `proof` from an earlier pairing's secret, or `code`, the pairing code the
     /// user read off the terminal.
@@ -439,6 +443,9 @@ pub enum CliReply {
         /// Build of the connected app, to tell when it needs updating.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         app_build: Option<String>,
+        /// Path of the linked page, if it is one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_page: Option<String>,
         /// Shown in the terminal so the user can pair the app.
         pairing_code: Option<String>,
         windows: Vec<WindowInfo>,

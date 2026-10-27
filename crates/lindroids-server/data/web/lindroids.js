@@ -89,6 +89,7 @@ function connect() {
     send({
       t: 'hello', version: PROTOCOL_VERSION, build: BUILD, density: dpr, nonce: myNonce,
       screen: [Math.round(screen.width * dpr), Math.round(screen.height * dpr)],
+      page: location.pathname,
     });
   };
   ws.onmessage = (ev) => {
@@ -179,7 +180,12 @@ async function handle(m, payload) {
     }
     case 'window_close': return removeWindow(m.win);
     case 'tiles': return tiles(m, payload);
-    case 'keyboard': return m.win === active && (m.show ? showKeyboard() : hideKeyboard());
+    case 'keyboard':
+      if (m.win !== active) return;
+      // Typing on a hardware keyboard: no soft keyboard, and moving the focus now would lose
+      // the keys in flight.
+      if (m.show && performance.now() - lastHardwareKey < 3000) return;
+      return m.show ? showKeyboard() : hideKeyboard();
     case 'clipboard': return clipboardFromLinux(m.text);
     case 'audio_open': return audioOpen(m);
     case 'audio_data': return audioData(m, payload);
@@ -298,6 +304,9 @@ function stageSize() {
 }
 
 function resizeWindow(w) {
+  // Not laid out yet (a page loading behind the browser's own screens): wait for a real size.
+  const r = stage.getBoundingClientRect();
+  if (r.width < 2 || r.height < 2) return;
   const [width, height, density] = stageSize();
   if (w.size[0] === width && w.size[1] === height) return;
   w.size = [width, height];
@@ -482,11 +491,13 @@ function keyCode(e) {
 
 const held = new Set();
 let pasteWait = null;
+let lastHardwareKey = -1e9;
 
 function onKey(e, down) {
   if (active === null || !ready || e.target.tagName === 'INPUT') return;
   const code = keyCode(e);
   if (!code) return;
+  if (e.code) lastHardwareKey = performance.now();
   // Ctrl+V (and Ctrl+Shift+V): let the browser's paste through first, so the Linux side has the
   // text when the keys arrive.
   if (down && code === 50 && (e.ctrlKey || e.metaKey) && !pasteWait) {
@@ -536,6 +547,8 @@ function imeReset() {
 }
 
 function showKeyboard() {
+  // Already up: resetting what is being typed would lose it.
+  if (document.activeElement === ime) return;
   imeReset();
   ime.focus({ preventScroll: true });
 }

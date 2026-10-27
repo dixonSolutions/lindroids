@@ -185,17 +185,21 @@ pub static LAUNCHED_BY_PAGE: std::sync::atomic::AtomicBool = std::sync::atomic::
 /// whenever the page links. Returns whether it is linked.
 pub fn ensure_display(sb: &sandbox::Sandbox, rt: &Path, quiet: bool) -> bool {
     let linked = || matches!(client::status(rt), Ok(CliReply::Status { app_connected: true, .. }));
-    let was = linked();
-    // On a desktop a linked page stays where it is; a new tab each time would only pile up. A
-    // program a page started (`lindroids launch`) is already in front of the user.
-    if was && (!sandbox::on_android() || LAUNCHED_BY_PAGE.load(std::sync::atomic::Ordering::Relaxed)) {
+    let page = match client::status(rt) {
+        Ok(CliReply::Status { app_connected: true, display_page, .. }) => Some(display_page.unwrap_or_else(|| "/".into())),
+        _ => None,
+    };
+    if let Some(page) = page {
+        // On a desktop a linked page stays where it is; a new tab each time would only pile up. A
+        // program a page started (`lindroids launch`) is already in front of the user.
+        if sandbox::on_android() && !LAUNCHED_BY_PAGE.load(std::sync::atomic::Ordering::Relaxed) {
+            // Exactly the page's URL: Firefox switches to that tab, Chrome reuses its tab.
+            sandbox::open_browser(&format!("http://127.0.0.1:{}{page}", lindroids_proto::server_tcp_port(sb.uid)));
+        }
         return true;
     }
     let secret = lindroids_server::load_or_create_secret();
     let how = sandbox::open_browser(&sandbox::display_url(sb.uid, Some(&secret)));
-    if was {
-        return true;
-    }
     let t0 = Instant::now();
     while t0.elapsed() < Duration::from_secs(if how.is_some() { 10 } else { 1 }) {
         if linked() {
