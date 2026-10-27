@@ -203,13 +203,6 @@ arguments, with the distro found pinned) and pins a shortcut — with no app of 
   and hands every other URL to the opener the user had (kept in
   `~/.local/share/lindroids/termux-url-opener.before`). `lindroids launch` is `lindroids run` with
   the recorded arguments: it starts the server if needed and brings the browser to the front.
-- **Its own app window.** `lindroids launch` opens the program's own page, `/app/<id>` (with
-  `run=0`: it is starting the program itself). That page has a web app manifest named and iconed
-  after the program (scope `/app/<id>`), so the browser offers to install it; installed, it opens
-  standalone (Chromium's WebappActivity: no address bar, no tabs) and sends `Launch { id }`, and
-  the server starts `lindroids launch <id>` (repeats within seconds are ignored). An installed app
-  needs the server running — only Termux can start it, which is what the Termux shortcut does: a
-  page cannot hand Termux a command (Chromium drops `intent:` links to non-browsable activities).
 - **Where it does not work.** On x86 images with an ARM translation layer, `app_process` is
   killed by seccomp (see above), so no shortcut is made; `lindroids launch <id>` still works. On
   a desktop, an exported program gets a `.desktop` file instead.

@@ -185,12 +185,6 @@ pub fn ensure_server(sb: &sandbox::Sandbox) -> Result<std::path::PathBuf, String
     Err(format!("the server did not start:\n{tail}"))
 }
 
-/// The page `ensure_display` opens: an exported program's own (`/app/<id>`, maybe installed as an
-/// app) for `lindroids launch`, else the plain one.
-pub static DISPLAY_PAGE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-/// `lindroids launch` started because a page asked: that page is in front already.
-pub static LAUNCHED_BY_PAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 /// Make sure a display (the browser page) is linked: open the page if not, and on Android bring it
 /// to the front, where the windows are about to appear. Never blocks for long: windows show
 /// whenever the page links. Returns whether it is linked.
@@ -200,23 +194,16 @@ pub fn ensure_display(sb: &sandbox::Sandbox, rt: &Path, quiet: bool) -> bool {
         Ok(CliReply::Status { app_connected: true, display_page, .. }) => Some(display_page.unwrap_or_else(|| "/".into())),
         _ => None,
     };
-    let port = lindroids_proto::server_tcp_port(sb.uid);
-    let wanted = DISPLAY_PAGE.get().cloned();
     if let Some(page) = page {
         // On a desktop a linked page stays where it is; a new tab each time would only pile up.
-        if sandbox::on_android() && !LAUNCHED_BY_PAGE.load(std::sync::atomic::Ordering::Relaxed) {
-            // Exactly a page's URL: Firefox switches to that tab, Chrome reuses its tab, and an
-            // installed app takes the URLs of its own page.
-            sandbox::open_browser(&format!("http://127.0.0.1:{port}{}", wanted.unwrap_or(page)));
+        if sandbox::on_android() {
+            // Exactly the page's URL: Firefox switches to that tab, Chrome reuses its tab.
+            sandbox::open_browser(&format!("http://127.0.0.1:{}{page}", lindroids_proto::server_tcp_port(sb.uid)));
         }
         return true;
     }
     let secret = lindroids_server::load_or_create_secret();
-    let how = match &wanted {
-        // `run=0`: the program is being started here; the page must not start it again.
-        Some(p) => sandbox::open_browser(&format!("http://127.0.0.1:{port}{p}#k={secret}&run=0")),
-        None => sandbox::open_browser(&sandbox::display_url(sb.uid, Some(&secret))),
-    };
+    let how = sandbox::open_browser(&sandbox::display_url(sb.uid, Some(&secret)));
     let t0 = Instant::now();
     while t0.elapsed() < Duration::from_secs(if how.is_some() { 10 } else { 1 }) {
         if linked() {

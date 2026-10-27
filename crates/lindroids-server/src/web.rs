@@ -16,7 +16,6 @@ use sha1::{Digest, Sha1};
 const INDEX_HTML: &str = include_str!("../data/web/index.html");
 const CLIENT_JS: &str = include_str!("../data/web/lindroids.js");
 const ICON_SVG: &str = include_str!("../data/web/icon.svg");
-const ICON_PNG: &[u8] = include_bytes!("../data/web/icon-512.png");
 
 /// Path of the WebSocket.
 pub const LINK_PATH: &str = "/link";
@@ -118,72 +117,9 @@ pub fn answer(req: &Request, port: u16) -> Answer {
         "/" | "/index.html" => ("text/html; charset=utf-8", INDEX_HTML.as_bytes().into()),
         "/lindroids.js" => ("text/javascript; charset=utf-8", CLIENT_JS.replace("@BUILD@", crate::BUILD).into_bytes().into()),
         "/icon.svg" => ("image/svg+xml", ICON_SVG.as_bytes().into()),
-        "/icon-512.png" => ("image/png", ICON_PNG.into()),
-        "/manifest.webmanifest" => ("application/manifest+json", manifest("Lindroids", "/", "/", "/icon-512.png", "512x512").into_bytes().into()),
-        path => match exported_page(path) {
-            Some(page) => page,
-            None => return Answer::Close(response(404, "text/plain", b"not found\n")),
-        },
+        _ => return Answer::Close(response(404, "text/plain", b"not found\n")),
     };
     Answer::Close(response(200, ctype, &body))
-}
-
-/// A web app manifest: the browser offers to install the page as an app of its own, which then
-/// opens standalone (no address bar, no tabs) from its home screen icon.
-fn manifest(name: &str, id: &str, scope: &str, icon: &str, icon_size: &str) -> String {
-    serde_json::json!({
-        "name": name,
-        "short_name": name,
-        "description": "Linux programs from Termux, through Lindroids",
-        "id": id,
-        "start_url": id,
-        "scope": scope,
-        "display": "standalone",
-        "background_color": "#000000",
-        "theme_color": "#0F1720",
-        "icons": [{ "src": icon, "sizes": icon_size, "type": "image/png", "purpose": "any" }],
-    })
-    .to_string()
-}
-
-/// `/app/<id>`: an exported program as an app of its own. The same page, named and iconed after
-/// the program, which starts it once linked; installed, it is that program's standalone window.
-fn exported_page(path: &str) -> Option<(&'static str, std::borrow::Cow<'static, [u8]>)> {
-    let rest = path.strip_prefix("/app/")?;
-    let (id, file) = rest.split_once('/').unwrap_or((rest, ""));
-    let app = crate::load_exported(id)?;
-    let base = format!("/app/{id}");
-    match file {
-        "" => {
-            let html = INDEX_HTML
-                .replace("href=\"/manifest.webmanifest\"", &format!("href=\"{base}/manifest.webmanifest\""))
-                .replace("<title>Lindroids</title>", &format!("<title>{}</title>", html_escape(&app.name)))
-                .replace("rel=\"icon\" href=\"/icon.svg\"", &format!("rel=\"icon\" href=\"{base}/icon.png\""));
-            Some(("text/html; charset=utf-8", html.into_bytes().into()))
-        }
-        "manifest.webmanifest" => {
-            let png = base64::engine::general_purpose::STANDARD.decode(&app.icon_png_b64).ok()?;
-            let size = png_size(&png).map(|(w, h)| format!("{w}x{h}")).unwrap_or_else(|| "192x192".into());
-            Some(("application/manifest+json", manifest(&app.name, &base, &base, &format!("{base}/icon.png"), &size).into_bytes().into()))
-        }
-        "icon.png" => {
-            let png = base64::engine::general_purpose::STANDARD.decode(&app.icon_png_b64).ok()?;
-            Some(("image/png", png.into()))
-        }
-        _ => None,
-    }
-}
-
-/// Width and height from a PNG's IHDR.
-fn png_size(png: &[u8]) -> Option<(u32, u32)> {
-    if png.len() < 24 || &png[..8] != b"\x89PNG\r\n\x1a\n" {
-        return None;
-    }
-    Some((u32::from_be_bytes(png[16..20].try_into().ok()?), u32::from_be_bytes(png[20..24].try_into().ok()?)))
-}
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
 fn response(status: u16, ctype: &str, body: &[u8]) -> Vec<u8> {

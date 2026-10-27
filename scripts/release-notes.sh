@@ -17,15 +17,10 @@ package manager that is already there: no app to install, no permission to grant
 
 ## Install or upgrade
 
-In Termux (or any distro under proot, or desktop Linux):
-
 \`\`\`sh
-curl -fsSL $SITE/install.sh -o install.sh && sh install.sh
+curl -fsSL $SITE/install.sh | sh     # Termux, or any distro under proot, or desktop Linux
 lindroids run mousepad               # its window opens in the browser
 \`\`\`
-
-Each program's page has an **Install** button (Chrome, Edge, Samsung Internet; Firefox: menu →
-Install): installed, it opens as an app of its own, standalone, with no address bar or tabs.
 
 | System | Repository | Upgrade |
 |---|---|---|
