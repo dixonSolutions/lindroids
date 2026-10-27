@@ -33,8 +33,10 @@ lindroids export xournalpp        # a home screen icon that starts it, Termux op
   itself). Menus, popups and dialogs work; small dialogs are centred, and windows that insist on
   being larger than the screen are scaled down to fit. The ⛶ button makes it full screen.
 - **Anything with a window.** Native Termux packages (GTK, Qt, SDL, foot, mpv…), programs in a
-  proot distro (found there without `--distro`), installed **Flatpaks** (run without
-  bubblewrap), and **X11 programs** with no option needed (rootless Xwayland through
+  proot distro (found there without `--distro`), **Flatpaks** from Flathub — in Termux itself,
+  with no root and no distro: `install.sh` builds Flatpak natively for Termux (Android patches in
+  `packaging/termux-flatpak`); apps install with `flatpak --user install` and run under proot —
+  and **X11 programs** with no option needed (rootless Xwayland through
   [xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite); `lindroids setup x11`
   installs what is missing).
 - **Input.** Touch (as touch, or as a mouse for programs that don't do touch), the **pen** (as a

@@ -503,6 +503,10 @@ sed_args=(-e "s|^DEFAULT_KEY_FPR=.*|DEFAULT_KEY_FPR=\"$WANT_FPR\"|")
 [ -n "$GITHUB_REPO" ] && sed_args+=(-e "s|^DEFAULT_GITHUB_REPO=.*|DEFAULT_GITHUB_REPO=\"$GITHUB_REPO\"|")
 sed "${sed_args[@]}" "$ROOT/install.sh" > "$OUTDIR/install.sh"
 chmod 644 "$OUTDIR/install.sh"
+# Native Flatpak for Termux: the build kit install.sh fetches (packaging/termux-flatpak).
+rm -rf "$OUTDIR/termux-flatpak"
+mkdir -p "$OUTDIR/termux-flatpak"
+install -m 644 "$ROOT"/packaging/termux-flatpak/* "$OUTDIR/termux-flatpak/"
 # VERSION: the newest version in the pool (the static installer downloads that release).
 latest=$(find "$OUTDIR/pool" -name '*.deb' -printf '%f\n' | awk -F_ '{print $2}' | sort -uV | tail -1)
 [ -n "$latest" ] && echo "$latest" > "$OUTDIR/VERSION"

@@ -1,0 +1,40 @@
+--- a/common/flatpak-run.c	2026-10-27 04:39:07.437185000 +0000
++++ b/common/flatpak-run.c	2026-10-27 04:46:07.089185000 +0000
+@@ -1878,6 +1878,17 @@
+         flatpak_bwrap_add_args (bwrap,
+                                 "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf",
+                                 NULL);
++#ifdef __ANDROID__
++      /* Android has no /etc/resolv.conf; Termux keeps one in its own prefix. */
++      else
++        {
++          g_autofree char *etc = g_path_get_dirname (FLATPAK_CONFIGDIR);
++          g_autofree char *resolv = g_build_filename (etc, "resolv.conf", NULL);
++
++          if (g_file_test (resolv, G_FILE_TEST_EXISTS))
++            flatpak_bwrap_add_args (bwrap, "--ro-bind", resolv, "/etc/resolv.conf", NULL);
++        }
++#endif
+       if (g_file_test ("/etc/host.conf", G_FILE_TEST_EXISTS))
+         flatpak_bwrap_add_args (bwrap,
+                                 "--ro-bind", "/etc/host.conf", "/etc/host.conf",
+@@ -2277,7 +2288,7 @@
+   /* Blocklist the rest */
+   seccomp_rule_add_exact (seccomp, SCMP_ACT_ERRNO (EAFNOSUPPORT), SCMP_SYS (socket), 1, SCMP_A0 (SCMP_CMP_GE, last_allowed_family + 1));
+ 
+-  if (!glnx_open_anonymous_tmpfile_full (O_RDWR | O_CLOEXEC, "/tmp", &seccomp_tmpf, error))
++  if (!glnx_open_anonymous_tmpfile_full (O_RDWR | O_CLOEXEC, g_get_tmp_dir (), &seccomp_tmpf, error))
+     return FALSE;
+ 
+   r = seccomp_export_bpf (seccomp, seccomp_tmpf.fd);
+--- a/common/flatpak-run-x11.c	2026-10-27 04:39:07.441185000 +0000
++++ b/common/flatpak-run-x11.c	2026-10-27 04:39:07.449185000 +0000
+@@ -301,7 +301,7 @@
+ #ifdef ENABLE_XAUTH
+       g_auto(GLnxTmpfile) xauth_tmpf  = { 0, };
+ 
+-      if (glnx_open_anonymous_tmpfile_full (O_RDWR | O_CLOEXEC, "/tmp", &xauth_tmpf, NULL))
++      if (glnx_open_anonymous_tmpfile_full (O_RDWR | O_CLOEXEC, g_get_tmp_dir (), &xauth_tmpf, NULL))
+         {
+           FILE *output = fdopen (xauth_tmpf.fd, "wb");
+           if (output != NULL)

@@ -1,5 +1,6 @@
 //! `lindroids`: run Linux apps on Android, their windows shown in the phone's web browser.
 
+mod bwrap;
 mod client;
 mod debug;
 mod desktop;
@@ -99,6 +100,8 @@ fn main() {
         Some("run") => run::cmd_run(&args[1..]),
         Some("export") => export::cmd_export(&args[1..]),
         Some("launch") => export::cmd_launch(&args[1..]),
+        // Flatpak's bubblewrap on rooted Android (see bwrap.rs).
+        Some("bwrap") => bwrap::cmd_bwrap(&args[1..]),
         Some("list") => export::cmd_list(),
         Some("remove") => export::cmd_remove(&args[1..]),
         Some("pick-folder") => cmd_pick_folder(),

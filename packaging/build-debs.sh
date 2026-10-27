@@ -124,6 +124,12 @@ build() {
   [ -f "$xwls" ] || { echo "build-debs: missing $xwls" >&2; exit 1; }
   mkdir -p "$d/$prefix/libexec/lindroids"
   install -m 755 "$xwls" "$d/$prefix/libexec/lindroids/xwayland-satellite"
+  # Flatpak's bubblewrap in Termux (packaging/termux-flatpak): `lindroids bwrap`, which leaves out
+  # the namespaces Android kernels lack.
+  if [ "$flavour" = termux ]; then
+    printf '#!/%s/bin/sh\nexec /%s/bin/lindroids bwrap "$@"\n' "$prefix" "$prefix" > "$d/$prefix/libexec/lindroids/bwrap"
+    chmod 755 "$d/$prefix/libexec/lindroids/bwrap"
+  fi
 
   # The CLI itself needs none of these (it is static on Debian); xwayland-satellite does, for
   # `lindroids run --x11`. Recommends, so the package still installs without them, e.g. in a

@@ -1,0 +1,28 @@
+--- a/subprojects/libglnx/glnx-chase.c	2026-10-27 04:49:06.289185000 +0000
++++ b/subprojects/libglnx/glnx-chase.c	2026-10-27 04:49:43.253185000 +0000
+@@ -156,7 +156,12 @@
+                  GError         **error)
+ {
+   glnx_autofd int fd = -1;
++#ifdef __ANDROID__
++  /* Android's app seccomp filter kills open_tree (SIGSYS) instead of failing. */
++  static gboolean can_open_tree = FALSE;
++#else
+   static gboolean can_open_tree = TRUE;
++#endif
+   unsigned int openat_flags = 0;
+ 
+   g_assert ((flags & ~(GLNX_CHASE_NO_AUTOMOUNT |
+@@ -638,7 +643,12 @@
+                    gpointer            user_data,
+                    GError            **error)
+ {
++#ifdef __ANDROID__
++  /* Android's app seccomp filter kills openat2 (SIGSYS) instead of failing with ENOSYS. */
++  static gboolean can_openat2 = FALSE;
++#else
+   static gboolean can_openat2 = TRUE;
++#endif
+   glnx_autofd int fd = -1;
+ 
+   g_return_val_if_fail (dirfd >= 0 || dirfd == AT_FDCWD, -1);

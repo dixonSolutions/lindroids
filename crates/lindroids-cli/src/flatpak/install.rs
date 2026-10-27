@@ -67,6 +67,11 @@ pub fn installations(root: &Path) -> Vec<Installation> {
         }
     }
     add("/var/lib/flatpak".into());
+    // Flatpak built for Termux (rooted devices) keeps its system installation in Termux's prefix;
+    // apps installed there as root run here without root.
+    if root == Path::new("/") {
+        add(format!("{}/var/lib/flatpak", lindroids_proto::TERMUX_PREFIX));
+    }
     v
 }
 

@@ -18,8 +18,8 @@
 # The same works under proot (proot-distro, UserLAnd, Andronix), where the shell is root. Outside
 # Termux, system changes need root: it runs them directly as root, else with sudo or doas.
 # It also checks for Flatpak and, when it is missing, asks to install it (with Flathub): with the
-# system's package manager, or in Termux (which has no Flatpak package) in a proot-distro distro —
-# one you have, or, if you say yes, a Debian it sets up for that.
+# system's package manager, or in Termux (which has no Flatpak package) natively — built once from
+# source with Lindroids' Android patches, no root and no Linux distro needed.
 #
 # Safe to run again: it rewrites the same source and key files and upgrades the package.
 #
@@ -32,8 +32,6 @@
 #   LINDROIDS_METHOD        force apt-termux | pacman-termux | apt-debian | pacman-arch | dnf | yum |
 #                           zypper | apk | xbps | static
 #   LINDROIDS_FLATPAK       yes | no: install Flatpak (with Flathub) without asking, or skip it
-#   LINDROIDS_DISTRO        proot-distro distro for Flatpak in Termux (default: the first one installed;
-#                           with none, Debian is set up only when you answer yes)
 set -eu
 
 # build-repo.sh rewrites these lines for the repository it publishes.
@@ -202,6 +200,8 @@ next_steps() {
   echo "  The windows show in the web browser: lindroids run opens it."
   if [ -n "${FLATPAK_DISTRO:-}" ]; then
     flatpak_hint " (inside: proot-distro login $FLATPAK_DISTRO)"
+  elif [ -n "$TERMUX" ] && have flatpak; then
+    flatpak_hint "" --user
   elif have flatpak; then
     flatpak_hint ""
   fi
@@ -232,18 +232,19 @@ ask() {
 
 flatpak_hint() {
   echo "  Flatpak apps: lindroids run <app-id>, e.g. lindroids run org.gnome.Calculator"
-  echo "     after: flatpak install flathub org.gnome.Calculator$1"
+  echo "     after: flatpak ${2:+$2 }install flathub org.gnome.Calculator$1"
 }
 
-# proot-distro's root filesystem of a distro (newer proot-distro: containers/<name>/rootfs).
-distro_rootfs() {
-  base=$PREFIX/var/lib/proot-distro
-  if [ -d "$base/containers/$1/rootfs" ]; then echo "$base/containers/$1/rootfs"; else echo "$base/installed-rootfs/$1"; fi
-}
-
-# Termux has no flatpak package: Flatpak goes into a proot-distro distro the user already has, where
-# `lindroids run` finds its apps on its own. Sets FLATPAK_DISTRO to the distro that has it.
+# Termux has no flatpak package. Lindroids builds it natively for Termux (packaging/termux-flatpak:
+# ostree and Flatpak with a few Android patches), no root and no Linux distro needed: apps install
+# per user (`flatpak --user install`) and run with `lindroids run <app-id>`. A Flatpak already in a
+# proot-distro distro is used as it is. Sets FLATPAK_DISTRO to that distro, if any.
 flatpak_termux() {
+  if have flatpak; then
+    say "Flatpak: found ($(flatpak --version 2>/dev/null || echo flatpak))"
+    flatpak --user remote-add --if-not-exists flathub "$FLATHUB" 2>/dev/null || true
+    return 0
+  fi
   for d in "$PREFIX"/var/lib/proot-distro/installed-rootfs/* "$PREFIX"/var/lib/proot-distro/containers/*/rootfs; do
     if [ -x "$d/usr/bin/flatpak" ]; then
       case "$d" in
@@ -254,78 +255,23 @@ flatpak_termux() {
       return 0
     fi
   done
-  # Flatpak has no Termux build: it goes into a proot-distro distro, with that distro's own
-  # package manager — one the user has, or a Debian set up for it, only when the user says so.
-  distro=''
-  rootfs=''
-  created=''
-  if [ -n "${LINDROIDS_DISTRO:-}" ] && [ -d "$(distro_rootfs "$LINDROIDS_DISTRO")/usr" ]; then
-    distro=$LINDROIDS_DISTRO
-    rootfs=$(distro_rootfs "$distro")
-  else
-    for d in "$PREFIX"/var/lib/proot-distro/containers/*/rootfs "$PREFIX"/var/lib/proot-distro/installed-rootfs/*; do
-      [ -d "$d/usr" ] || continue
-      rootfs=$d
-      case "$d" in
-        */rootfs) d=${d%/rootfs} ;;
-      esac
-      distro=${d##*/}
-      break
-    done
-  fi
-  if [ -z "$distro" ]; then
-    echo
-    echo "Flatpak: not installed. Termux has no Flatpak package: Flatpak needs a Linux distro, which"
-    echo "  proot-distro runs inside Termux, without root (Debian: about 300 MB, more with apps)."
-    echo "  lindroids runs Termux programs without it; it is only for Flatpak apps."
-    if ! ask "Set up proot-distro with Debian and install Flatpak (with Flathub) in it?" no; then
-      echo "Skipping Flatpak (to add it later: LINDROIDS_FLATPAK=yes, then run this installer again)."
-      return 0
-    fi
-    if ! have proot-distro; then
-      say "installing proot-distro"
-      pm_install proot-distro < /dev/null || { warn "installing proot-distro failed"; return 0; }
-    fi
-    say "proot-distro: installing Debian"
-    proot-distro install debian < /dev/null || { warn "proot-distro could not install Debian"; return 0; }
-    distro=debian
-    rootfs=$(distro_rootfs debian)
-    created=1
-  fi
-  # The distro's package manager, from its root filesystem.
-  dpm=
-  for m in apt-get pacman dnf zypper apk xbps-install; do
-    if [ -e "$rootfs/usr/bin/$m" ] || [ -e "$rootfs/bin/$m" ] || [ -e "$rootfs/sbin/$m" ] || [ -e "$rootfs/usr/sbin/$m" ]; then
-      dpm=$m
-      break
-    fi
-  done
-  case "$dpm" in
-    apt-get) inst="export DEBIAN_FRONTEND=noninteractive; apt-get update -q && apt-get install -y -q flatpak" ;;
-    pacman) inst="pacman -Sy --needed --noconfirm flatpak" ;;
-    dnf) inst="dnf install -y flatpak" ;;
-    zypper) inst="zypper --non-interactive install flatpak" ;;
-    apk) inst="apk add flatpak" ;;
-    xbps-install) inst="xbps-install -Sy flatpak" ;;
-    *) echo "Flatpak: not installed (no known package manager in the distro $distro)."; return 0 ;;
-  esac
-  if ! have proot-distro; then
-    echo "Flatpak: not installed (proot-distro is missing, so the distro $distro cannot be entered)."
+  echo
+  echo "Flatpak: not installed. Termux has no Flatpak package, so Lindroids builds it natively for"
+  echo "  Termux, once: no root and no Linux distro, about 20 minutes and 600 MB of build tools."
+  echo "  lindroids runs Termux programs without it; it is only for Flatpak apps."
+  if ! ask "Build and install Flatpak (with Flathub) in Termux now?"; then
+    echo "Skipping Flatpak (to add it later: LINDROIDS_FLATPAK=yes, then run this installer again)."
     return 0
   fi
-  if [ -z "$created" ]; then
-    echo
-    echo "Flatpak: not installed. Termux has no Flatpak package; it can go into your proot-distro"
-    echo "  distro $distro, where lindroids finds its apps by itself."
-    if ! ask "Install Flatpak (with Flathub) in $distro, with ${dpm%-install}?"; then
-      echo "Skipping Flatpak (to add it later: LINDROIDS_FLATPAK=yes, then run this installer again)."
-      return 0
-    fi
-  fi
-  say "installing Flatpak in $distro (${dpm%-install}) and adding Flathub"
-  proot-distro login "$distro" -- sh -c "$inst && flatpak remote-add --if-not-exists flathub $FLATHUB" \
-    || { warn "installing Flatpak in $distro failed"; return 0; }
-  FLATPAK_DISTRO=$distro
+  kit=${TMPDIR:-$PREFIX/tmp}/lindroids-termux-flatpak
+  rm -rf "$kit"
+  mkdir -p "$kit"
+  for f in build-in-termux.sh bionic-compat.h flatpak-android.patch libglnx-android-seccomp.patch; do
+    curl -fsSL -o "$kit/$f" "$REPO_URL/termux-flatpak/$f" || { warn "cannot download the Flatpak build kit ($f)"; return 0; }
+  done
+  say "building Flatpak for Termux (this takes a while)"
+  sh "$kit/build-in-termux.sh" < /dev/null || { warn "building Flatpak failed (see the messages above)"; return 0; }
+  rm -rf "$kit"
 }
 
 # Flatpak with the system's package manager, whichever it is.
