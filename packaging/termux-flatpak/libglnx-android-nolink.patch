@@ -1,0 +1,27 @@
+--- a/glnx-fdio.c	2026-10-27 19:22:48.626211647 +1100
++++ b/glnx-fdio.c	2026-10-27 19:22:48.642240516 +1100
+@@ -91,7 +91,23 @@
+ #endif
+ 
+   if (linkat (olddirfd, oldpath, newdirfd, newpath, 0) < 0)
+-    return -1;
++    {
++#ifdef __ANDROID__
++      /* Apps that target Android 10 or later may not make hard links (SELinux
++       * says EACCES): rename, refusing an existing target (not atomically). */
++      if (G_IN_SET (errno, EACCES, EPERM))
++        {
++          struct stat stbuf;
++          if (fstatat (newdirfd, newpath, &stbuf, AT_SYMLINK_NOFOLLOW) == 0)
++            {
++              errno = EEXIST;
++              return -1;
++            }
++          return renameat (olddirfd, oldpath, newdirfd, newpath);
++        }
++#endif
++      return -1;
++    }
+ 
+   if (unlinkat (olddirfd, oldpath, 0) < 0)
+     return -1;

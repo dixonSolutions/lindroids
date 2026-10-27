@@ -1,5 +1,11 @@
 /* Bionic lacks a few glibc conveniences that ostree and flatpak use. */
 #pragma once
+/* No O_TMPFILE in libglnx: a file made with it is put in place with linkat(), a hard link, and
+ * apps that target Android 10 or later may not make hard links (SELinux: EACCES). libglnx then
+ * writes a named temporary file and renames it instead. */
+#ifndef DISABLE_OTMPFILE
+#define DISABLE_OTMPFILE 1
+#endif
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1
 #endif

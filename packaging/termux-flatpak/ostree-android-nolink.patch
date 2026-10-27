@@ -1,0 +1,36 @@
+diff -ru a/src/libostree/ostree-repo-checkout.c b/src/libostree/ostree-repo-checkout.c
+--- a/src/libostree/ostree-repo-checkout.c	2026-10-27 19:22:48.596464836 +1100
++++ b/src/libostree/ostree-repo-checkout.c	2026-10-27 19:22:48.615927069 +1100
+@@ -452,10 +452,12 @@
+     }
+   else if (linkat (srcfd, loose_path, destination_dfd, destination_name, 0) == 0)
+     ret_result = HARDLINK_RESULT_LINKED;
+-  else if (!options->no_copy_fallback && (errno == EMLINK || errno == EXDEV || errno == EPERM))
++  else if (!options->no_copy_fallback
++           && (errno == EMLINK || errno == EXDEV || errno == EPERM || errno == EACCES))
+     {
+       /* EMLINK, EXDEV and EPERM shouldn't be fatal; we just can't do the
+-       * optimization of hardlinking instead of copying.
++       * optimization of hardlinking instead of copying. Nor EACCES: apps that
++       * target Android 10 or later may not make hard links at all (SELinux).
+        */
+     }
+   else if (allow_noent && errno == ENOENT)
+diff -ru a/src/libostree/ostree-repo-commit.c b/src/libostree/ostree-repo-commit.c
+--- a/src/libostree/ostree-repo-commit.c	2026-10-27 19:22:48.596531534 +1100
++++ b/src/libostree/ostree-repo-commit.c	2026-10-27 19:22:48.617298154 +1100
+@@ -4534,11 +4534,12 @@
+         {
+           if (errno == EEXIST)
+             did_hardlink = TRUE;
+-          else if (errno == EMLINK || errno == EXDEV || errno == EPERM)
++          else if (errno == EMLINK || errno == EXDEV || errno == EPERM || errno == EACCES)
+             {
+               /* EMLINK, EXDEV and EPERM shouldn't be fatal; we just can't do
+                * the optimization of hardlinking instead of copying. Fall
+-               * through below.
++               * through below. Nor EACCES: apps that target Android 10 or
++               * later may not make hard links at all (SELinux).
+                */
+             }
+           else

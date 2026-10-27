@@ -277,7 +277,8 @@ flatpak_native() {
   kit=${TMPDIR:-$PREFIX/tmp}/lindroids-termux-flatpak
   rm -rf "$kit"
   mkdir -p "$kit"
-  for f in build-in-termux.sh bionic-compat.h flatpak-android.patch libglnx-android-seccomp.patch; do
+  for f in build-in-termux.sh bionic-compat.h flatpak-android.patch libglnx-android-seccomp.patch \
+    ostree-android-nolink.patch libglnx-android-nolink.patch; do
     curl -fsSL -o "$kit/$f" "$REPO_URL/termux-flatpak/$f" || { warn "cannot download the Flatpak build kit ($f)"; return 0; }
   done
   say "building Flatpak for Termux (this takes a while)"

@@ -11,6 +11,10 @@
 #                                   when Android has no /etc/resolv.conf
 #   libglnx-android-seccomp.patch   no openat2/open_tree: Android's app seccomp filter kills them
 #                                   (SIGSYS) instead of failing, so libglnx's own fallback is used
+#   ostree-android-nolink.patch     a hard link refused with EACCES falls back to a copy, like
+#   libglnx-android-nolink.patch    EPERM; and libglnx renames instead of linking. Apps that target
+#                                   Android 10 or later may not make hard links (SELinux), and
+#                                   Termux from Google Play does (F-Droid's targets Android 9)
 # Flatpak's bubblewrap is $PREFIX/libexec/lindroids/bwrap (`lindroids bwrap`), which leaves out
 # the namespaces the kernel lacks; it only matters for root (`tsu`), since an app user cannot
 # create namespaces at all.
@@ -87,26 +91,34 @@ fetch "https://github.com/flatpak/flatpak/releases/download/$FLATPAK_VERSION/fla
 COMPAT="-include $HERE/bionic-compat.h"
 
 # Each part is built once: a run that stopped after ostree starts again at Flatpak
-# (LINDROIDS_REBUILD=1 builds everything again).
-built() { [ -z "${LINDROIDS_REBUILD:-}" ] && [ "$1" = "$2" ]; }
+# (LINDROIDS_REBUILD=1 builds everything again). A part counts as built only when this kit built
+# it, at this revision: KIT_REV goes up whenever the patches change, so what an older kit built
+# is built again.
+KIT_REV=2
+STAMPS=$PREFIX/share/lindroids/termux-flatpak
+built() { [ -z "${LINDROIDS_REBUILD:-}" ] && [ "$(cat "$STAMPS/$1" 2>/dev/null)" = "$2 $KIT_REV" ]; }
+stamp() { mkdir -p "$STAMPS" && echo "$2 $KIT_REV" > "$STAMPS/$1"; }
 
-if built "$(pkg-config --modversion ostree-1 2>/dev/null)" "$OSTREE_VERSION"; then
+if built ostree "$OSTREE_VERSION"; then
   say "ostree $OSTREE_VERSION: built already"
 else
   say "ostree $OSTREE_VERSION (logs: $WORK/ostree-*.log)"
   rm -rf "libostree-$OSTREE_VERSION"
   tar xf "libostree-$OSTREE_VERSION.tar.xz"
   cd "libostree-$OSTREE_VERSION"
+  patch -p1 < "$HERE/ostree-android-nolink.patch"
+  patch -p1 -d libglnx < "$HERE/libglnx-android-nolink.patch"
   # The compat header only at build time: in configure's checks it hides what bionic really has.
   step "$WORK/ostree-configure.log" ./configure --prefix="$PREFIX" --with-curl --without-soup --without-libsystemd \
     --without-selinux --without-avahi --disable-man --disable-gtk-doc --disable-rofiles-fuse
   build "$WORK/ostree-make.log" make CFLAGS="-g -O2 $COMPAT"
   # (libtool's "ldconfig: not found" while installing is harmless: Android has no ldconfig.)
   step "$WORK/ostree-install.log" make install
+  stamp ostree "$OSTREE_VERSION"
   cd "$WORK"
 fi
 
-if built "$(flatpak --version 2>/dev/null)" "Flatpak $FLATPAK_VERSION"; then
+if built flatpak "$FLATPAK_VERSION"; then
   say "flatpak $FLATPAK_VERSION: built already"
 else
   say "flatpak $FLATPAK_VERSION (logs: $WORK/flatpak-*.log)"
@@ -115,6 +127,7 @@ else
   cd "flatpak-$FLATPAK_VERSION"
   patch -p1 < "$HERE/flatpak-android.patch"
   patch -p1 < "$HERE/libglnx-android-seccomp.patch"
+  patch -p1 -d subprojects/libglnx < "$HERE/libglnx-android-nolink.patch"
   # Termux's gettext makes translated format strings non-literal for clang: not errors here.
   step "$WORK/flatpak-setup.log" meson setup build --prefix="$PREFIX" \
     -Dsystem_bubblewrap="$PREFIX/libexec/lindroids/bwrap" -Dsystem_install_dir="$PREFIX/var/lib/flatpak" \
@@ -124,6 +137,7 @@ else
     -Dc_args="$COMPAT -Wno-error=format-nonliteral -Wno-error=format-security -Wno-format-nonliteral -Wno-format-security"
   build "$WORK/flatpak-build.log" ninja -C build
   step "$WORK/flatpak-install.log" ninja -C build install
+  stamp flatpak "$FLATPAK_VERSION"
   cd "$WORK"
 fi
 
