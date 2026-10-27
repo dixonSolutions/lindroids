@@ -181,11 +181,17 @@ with what a browser knows:
 
 | Interface | The page |
 |---|---|
-| Settings (`org.freedesktop.appearance`, GNOME's `gtk-theme`/`color-scheme`) | `prefers-color-scheme`, `prefers-contrast`, `prefers-reduced-motion`; changes signalled live |
+| Settings (`org.freedesktop.appearance`, GNOME's `gtk-theme`/`color-scheme`/`icon-theme`) | `prefers-color-scheme`, the CSS `AccentColor` (Android's accent), `prefers-contrast`, `prefers-reduced-motion`; changes signalled live. Answered from the start (the last state is kept on disk) with GNOME's defaults for the rest: libadwaita gives up on a portal that fails at startup, and GTK 4 fills keys a namespace lacks with stand-ins (icon theme "gnome") |
 | OpenURI | links open in a new tab (after a tap, if the browser wants one); files are offered to open or save |
-| FileChooser | the browser's file chooser (a tap starts it), contents fetched into the runtime dir; saves become downloads |
-| Notification, fdo Notifications | notices in the page with their buttons; taps come back as actions |
+| FileChooser | Android's picker through the browser (Files, Camera…), at once after the tap that asked; contents fetched into the runtime dir; saves become downloads |
+| Notification, fdo Notifications | Android notifications, posted by the `app_process` helper as Termux (program name and icon, a tap brings back its window), and notices in the page with their buttons |
 | NetworkMonitor | `navigator.onLine` |
+
+Requests go to the page of the program that asked (the caller's pid → its run), sound included.
+Files come the other way too: Android's *Open with → Termux* (or Share) saves the file in
+`~/downloads` and runs `~/bin/termux-file-editor`, which Lindroids installs; it runs
+`lindroids open --linux`, which picks the program by MIME type from exported programs and the
+.desktop files of Termux, Flatpaks and distros (`~/.config/mimeapps.list` remembers a choice).
 
 Programs get `DBUS_SESSION_BUS_ADDRESS`, `GTK_USE_PORTAL=1` (GLib and GTK 3 use the portal outside
 a Flatpak only when asked), `GDK_DEBUG=portals` (GTK 4), `QT_QPA_PLATFORMTHEME=xdgdesktopportal`,

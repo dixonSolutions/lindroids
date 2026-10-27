@@ -61,5 +61,8 @@ A permissive device is still useful for SELinux work: it logs every access an en
 refuse (`logcat | grep "avc: denied"`) — that is how the cross-app `connectto` denial behind the
 TCP link was found.
 
-Screens can be recorded without a hardware encoder by pulling raw `screencap` frames over adb and
-encoding them on the host.
+Screens are recorded without a hardware encoder (the VMs have none) by `lab/record.sh`, which
+pulls raw `screencap` frames over adb and encodes an MP4 and an animated WebP for the README.
+`LINDROIDS_STATS=1` puts the frame rate and drawing time in a corner of each window.
+[lab/CHECKLIST.md](../lab/CHECKLIST.md) lists what "fully working" means and where each item
+stands.

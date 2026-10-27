@@ -90,7 +90,8 @@ shows in a tab of the default browser.
 
 | Where | Icon |
 |---|---|
-| Home screen | The exported program's own icon and name, on a shortcut pinned for Termux. The launcher adds a small Termux badge. |
+| Home screen | The exported program's own icon and name, as an adaptive icon (the program's drawing on a backdrop of its colour), on a shortcut pinned for Termux. The launcher adds a small Termux badge. Exporting again updates it in place *(tested)*. |
+| Status bar and shade | While the program runs: its one-colour (`-symbolic`) icon in the status bar, its name and icon in a notification the helper posts as Termux; a tap brings back its window *(tested)*. Its own notifications show the same way. |
 | The window | The page's favicon and title are the program's. While it starts, and after it ends, the page shows the program's icon and name full size *(tested: "Calculator closed." under the Calculator icon)*. |
 | Recents | **The browser's icon** (Firefox *(tested)*), with a live thumbnail of the program. Only an app's own activity can set its icon there, and the browser sets it only for web apps installed through it, which are rejected above. This is the one requirement no design without an APK can meet. |
 
@@ -350,7 +351,13 @@ a dead one and end its program.
    until the first window comes, then the program's windows, and goes full screen on the first
    tap.
 6. Either end ends the run, as above. Ctrl+C in the terminal, or closing the Termux session, ends
-   the program; its window then shows the end screen.
+   the program; its window then shows the end screen, out of full screen so that the browser's ✕
+   shows (Back only sends a Firefox Custom Tab behind; ✕ removes it *(tested)*). A run started
+   from a home screen icon ends with Termux's session, server and all: the page takes the lost
+   link as the end of the program.
+7. While it runs, a notification stands for it (its icon in the status bar), posted by the helper
+   as Termux; requests from the program (sound, file pickers, links, notifications) go to its own
+   window, by pid → run.
 
 ### Export: `lindroids export X` *(tested)*
 
@@ -413,19 +420,17 @@ has a developer option to turn it off. Lindroids keeps its own process count low
 | No root, no APK, no special permission or setting | Yes. Lindroids uses intents to the browser and to Termux's share receiver, and pinned shortcuts: nothing else. |
 | Any Android version and vendor | Yes, with a browser that has Custom Tabs, which every major one does. Without one, the windows fall back to a plain browser tab. |
 | A window of its own, not a tab, not installed through the browser | Yes. A Custom Tab in its own task per program, opened and raised by Lindroids. Full screen from the first tap; before that, a thin bar with close, title and menu. |
-| The program's icon | Yes on the home screen, in the window, as the favicon, and on the start and end screens. **No in recents**, where the browser's icon shows with a live thumbnail of the program; that needs an APK. |
-| Single run tied to its process | Window gone: the program ends 5 s later, or 60 s later if the browser died. Program gone: `run` exits, and the window shows its end screen until Back (Firefox does not let a page close a Custom Tab). |
+| The program's icon | Yes on the home screen, in the status bar and notifications, in the window, as the favicon, and on the start and end screens. **No in recents**, where the browser's icon shows with a live thumbnail of the program; that needs an APK. |
+| Single run tied to its process | Window gone: the program ends 5 s later, or 60 s later if the browser died. Program gone: `run` exits, and the window shows its end screen until ✕ (Firefox does not let a page close a Custom Tab). |
 | Export works with Termux closed | Yes. A Termux-owned shortcut with the program's icon, through the share receiver; 2 s to the window in the lab. |
 
 ## Ideas to make it better
 
 These have not been tried yet.
 
-- **A notification per running program.** The `app_process` helper posts it for Termux: the
-  program's icon and name, *Show* (raises the window) and *Stop*. This puts the icon in the
-  status bar, gives a running program a place outside the browser, and helps when the browser
-  ignores `window.close()`. Test on Android 13 that a notification posted from `app_process`
-  doesn't crash anything the way overlays did.
+- **Stop from the running program's notification.** It has the program's icon and a tap that
+  brings back the window (done). A *Stop* button needs a way back from Android to the relay
+  without Termux coming to the front (a PendingIntent can only start Termux's activities).
 - **Chrome.** Test Chrome's Custom Tabs on a phone: whether `window.close()` works there, and
   whether recents shows the page's title and icon. Installing a stock Chromium build on the lab
   VM was not permitted in this session. On phones with Google Play, Chrome's minted WebAPKs answer
@@ -433,7 +438,5 @@ These have not been tried yet.
 - **Closing Firefox's window from outside.** Re-send the window's intent with
   `FLAG_ACTIVITY_CLEAR_TASK` towards a URL Firefox refuses, to see whether its task ends. This
   depends on Firefox's internals, so it is only worth it if it holds across versions.
-- **Sound per window.** Sound goes to the page used last, not to the window of the program
-  playing it.
 - **`app_process` exits 137** after the helper starts an activity (the activity does start; the
   helper prints its result first). Find out why.
