@@ -81,13 +81,24 @@ it from its `app_process` helper, as Termux, the way export pins shortcuts
 Lindroids tries, in order:
 
 1. the browsers named in `LINDROIDS_BROWSER` (comma-separated packages);
-2. the default browser, if it is one of these or Cromite;
-3. Chrome, Edge, Brave, Vivaldi, Samsung Internet, Chrome Beta, Chromium, then Firefox and its
-   beta and nightly builds: Chromium's windows show the program in Recents and close themselves.
+2. the default browser, if it is one of these and not Firefox;
+3. Chrome, Edge, Brave, Vivaldi, Samsung Internet, Chrome Beta, Chromium, Cromite, then Firefox
+   and its beta and nightly builds. Chromium's windows show the program in Recents and close
+   themselves; Firefox's cannot (below), so it comes last even as the default.
 
-It uses the first one installed
-(`WINDOW_BROWSERS` in `crates/lindroids-cli/src/shortcut.rs`). If none is installed, the program
-shows in a tab of the default browser.
+It uses the first one that opens a window of its own (`WINDOW_BROWSERS` in
+`crates/lindroids-cli/src/shortcut.rs`). Custom Tabs are not taken for granted: the helper starts
+the window with `startActivityAndWait` and reads which activity the browser opened. A browser
+that opens an ordinary tab instead (Cromite without *Allow custom tab intents*, WebView-based
+browsers) is passed over; the page in that tab closes itself when the window in the next browser
+links, because each attempt's URL names its browser (`&via=<package>`) and the server keeps the
+newer browser's page *(tested: Cromite with the setting off → a Firefox window, the Cromite tab
+gone)*. If no browser opens a window, the first ordinary tab is kept.
+
+That answer used to be lost: Android 11+ makes every process sample the app ops its calls note,
+puts them before the reply, and reading them throws outside an app (`SyncNotedAppOp`). The
+helper turns the sampling off (`AppOpsManager.sConfig`, a config that never expires) and gets
+whole replies.
 
 ### The program's icon
 
@@ -439,6 +450,9 @@ These have not been tried yet.
 - **Closing Firefox's window from outside.** Its source offers no way: Gecko does ask to close
   a one-entry window, but only normal tabs act on it; `ExternalAppBrowserActivity` ends itself
   only when its tab is gone, and only its ✕, "Open in Firefox" or its own end remove that tab
-  (the activity is not exported).
+  (the activity is not exported). Every Custom Tab intent it receives gets a new tab, and it
+  strips `FLAG_ACTIVITY_CLEAR_TASK` from them: re-sending the window's intent with it left the
+  window as it was *(tested, Firefox 158)*. Its Recents icon is Firefox's for the same reason:
+  only Firefox's installed web apps (https only) set a task's icon.
 - **`app_process` exits 137** after the helper starts an activity (the activity does start; the
   helper prints its result first). Find out why.

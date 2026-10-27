@@ -798,9 +798,24 @@ impl State {
                 link.phase = Phase::Ready;
                 // One page per run (and one for the rest). A run's window that is already linked
                 // stays: bringing it back sends its intent again, and Firefox then raises the
-                // window *and* loads a second copy nobody sees, which is told to stand down.
+                // window *and* loads a second copy nobody sees, which is told to stand down. Each
+                // page names the browser it was sent to (`via`): when the helper passed over a
+                // browser that opened an ordinary tab, the page in that tab stands down, or is
+                // replaced by the window's page, whichever links first (`lindroids run` notes
+                // where the window went in `windows`).
                 let run = link.run;
-                if run.is_some() && self.links.iter().any(|l| l.run == run) {
+                let via = link.page.as_deref().and_then(via_of_page);
+                let chosen = run.and_then(|r| window_browser(&self.cfg.runtime_dir, r));
+                if let (Some(v), Some(c)) = (via, chosen.as_deref()) {
+                    if v != c {
+                        info!("run {}: its window is in {c}, the page in {v} stands down", run.unwrap_or(0));
+                        link.send(&ToApp::Bye { reason: "this program's window is open already".into() });
+                        let mut l = link;
+                        l.flush();
+                        return None;
+                    }
+                }
+                if run.is_some() && self.links.iter().any(|l| l.run == run && l.page.as_deref().and_then(via_of_page) == via) {
                     info!("{} already has its window: the new page stands down", run.map_or(String::new(), |r| format!("run {r}")));
                     link.send(&ToApp::Bye { reason: "this program's window is open already".into() });
                     let mut l = link;
@@ -1548,6 +1563,22 @@ fn run_of_page(page: &str) -> Option<u32> {
     query.split('&').find_map(|kv| kv.strip_prefix("run=")).and_then(|v| v.parse().ok())
 }
 
+/// The browser `lindroids run` opened run `run`'s window in, from its `windows` notes
+/// (`<url> <browser>` lines).
+fn window_browser(runtime: &Path, run: u32) -> Option<String> {
+    let notes = std::fs::read_to_string(runtime.join("windows")).ok()?;
+    notes.lines().rev().find_map(|l| {
+        let (url, browser) = l.split_once(' ')?;
+        let page = url.split('#').next()?;
+        (run_of_page(page) == Some(run)).then(|| browser.trim().to_string())
+    })
+}
+
+/// The browser a run's window was sent to (`?window&run=<pid>&via=<package>`).
+fn via_of_page(page: &str) -> Option<&str> {
+    page.split_once('?')?.1.split('&').find_map(|kv| kv.strip_prefix("via="))
+}
+
 /// How long programs outlive a page that vanished without saying so (`LINDROIDS_LINGER`, seconds).
 fn linger() -> Duration {
     Duration::from_secs(std::env::var("LINDROIDS_LINGER").ok().and_then(|v| v.parse().ok()).unwrap_or(60))
@@ -1641,7 +1672,7 @@ fn render_dirty(state: &mut State) {
 
 #[cfg(test)]
 mod tests {
-    use super::{pick_page, run_of_page};
+    use super::{pick_page, run_of_page, via_of_page};
 
     #[test]
     fn pages_name_their_run() {
@@ -1650,6 +1681,15 @@ mod tests {
         assert_eq!(run_of_page("/?window"), None);
         assert_eq!(run_of_page("/"), None);
         assert_eq!(run_of_page("/?run=x"), None);
+        assert_eq!(run_of_page("/?window&run=4242&via=org.mozilla.firefox"), Some(4242));
+        assert_eq!(via_of_page("/?window&run=4242&via=org.mozilla.firefox"), Some("org.mozilla.firefox"));
+        assert_eq!(via_of_page("/?window&run=4242"), None);
+        let dir = std::env::temp_dir().join(format!("lindroids-windows-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("windows"), "http://x.localhost:1/?window&run=7#t=a org.cromite.cromite\nhttp://x.localhost:1/?window&run=8#t=b org.mozilla.firefox\n").unwrap();
+        assert_eq!(super::window_browser(&dir, 8).as_deref(), Some("org.mozilla.firefox"));
+        assert_eq!(super::window_browser(&dir, 9), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

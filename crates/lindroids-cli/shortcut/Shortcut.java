@@ -70,6 +70,7 @@ public final class Shortcut {
         try {
             // AndroidFuture (Android 12+) posts to the main looper, which app_process has not made.
             if (android.os.Looper.getMainLooper() == null) android.os.Looper.prepareMainLooper();
+            quietAppOps();
             if (a.length >= 9 && a[0].equals("pin")) {
                 pin(a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]);
             } else if (a.length >= 3 && a[0].equals("remove")) {
@@ -159,6 +160,24 @@ public final class Shortcut {
         return r;
     }
 
+    /**
+     * Stops this process asking for the app ops a call notes. Android 11+ starts every process
+     * sampling them; the system then puts them in front of the reply, and reading them throws in a
+     * process that is not an app (SyncNotedAppOp's checks), losing the reply (see call): what
+     * startActivityAndWait opened, for one. A sampling config that never expires turns it off.
+     */
+    static void quietAppOps() {
+        try {
+            Object never = Class.forName("com.android.internal.app.MessageSamplingConfig")
+                    .getConstructor(int.class, int.class, long.class).newInstance(-1, 0, Long.MAX_VALUE);
+            java.lang.reflect.Field f = android.app.AppOpsManager.class.getDeclaredField("sConfig");
+            f.setAccessible(true);
+            f.set(null, never);
+        } catch (Throwable e) {
+            // Before Android 11 nothing is sampled.
+        }
+    }
+
     static boolean hasMethod(Object o, String name) {
         for (Method m : o.getClass().getMethods()) {
             if (m.getName().equals(name)) return true;
@@ -239,8 +258,10 @@ public final class Shortcut {
     /**
      * Opens {@code url} as a window of its own: a Custom Tab of the first browser in
      * {@code browsers} that is installed, in a task of its own (one window in recents per URL).
-     * {@code new} always makes a new window; {@code raise} brings back the window that has this URL,
-     * if there is one. A Custom Tab needs a session extra holding a Binder, which `am` cannot send;
+     * {@code new} always makes a new window; {@code raise} brings back the window that has this URL;
+     * {@code first} opens this URL's window for the first time. With {@code new} and {@code first},
+     * a browser that opens an ordinary tab instead is passed over (the first such one is kept if
+     * none opens a window). A Custom Tab needs a session extra holding a Binder, which `am` cannot send;
      * a null one asks for a tab without a session. Returns the browser used.
      */
     static String open(String pkg, String mode, String url, String[] browsers) throws Exception {
@@ -254,16 +275,61 @@ public final class Shortcut {
         Object atm = Class.forName(stub).getMethod("asInterface", IBinder.class).invoke(null, b);
         int flags = Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT;
         if (mode.equals("new")) flags |= Intent.FLAG_ACTIVITY_MULTIPLE_TASK;
-        String last = "no browser given";
+        String last = "no browser given", tab = null;
+        boolean strict = !mode.equals("raise");
+        boolean wait = hasMethod(atm, "startActivityAndWait") && userId() == 0;
         for (String browser : withDefault(browsers)) {
-            Object r = call(atm, "startActivity", pkg, windowIntent(url, browser, flags));
+            Intent i = windowIntent(url, browser, flags);
+            Object r = wait ? call(atm, "startActivityAndWait", pkg, i) : call(atm, "startActivity", pkg, i);
+            String opened = null;
+            if (r != null && r.getClass().getName().equals("android.app.WaitResult")) {
+                opened = window(r, strict);
+                r = r.getClass().getField("result").get(r);
+            }
             // ActivityManager.START_SUCCESS and the other non-negative codes (delivered to the top,
-            // task brought to the front) all mean the window is there; no answer (see call) means
+            // task brought to the front) all mean the browser took it; no answer (see call) means
             // the start went through too.
-            if (r == null || (r instanceof Integer && (Integer) r >= 0)) return browser;
-            last = browser + ": start result " + r;
+            if (r != null && !(r instanceof Integer && (Integer) r >= 0)) {
+                last = browser + ": start result " + r;
+                continue;
+            }
+            if (opened == null) return browser;
+            // An ordinary tab: the browser has no Custom Tabs, or has them turned off (Cromite
+            // without "Allow custom tab intents"). On to the next; the page in that tab closes
+            // itself when the window in the next one links (the server tells it to stand down).
+            System.err.println(browser + ": " + opened + " is not a window of its own");
+            last = browser + ": an ordinary tab (" + opened + ")";
+            if (tab == null) tab = browser;
+            // The answer can come before the tab is up (it names the browser's trampoline): let
+            // it come up now, under the window the next browser opens, not over it later. (Sending
+            // the window's intent again afterwards is no way out: Firefox loads the page again.)
+            Thread.sleep(1500);
         }
+        if (tab != null) return tab;
         throw new IllegalStateException(last);
+    }
+
+    /**
+     * What a start that waited ({@code startActivityAndWait}) opened, if it is not a window of its
+     * own: null for a Custom Tab, else the activity. When a window was there already
+     * ({@code strict} false), also null when nothing new was launched: the window brought to the
+     * front through the browser's trampoline activity, which is all the answer names then. A
+     * browser that adds an ordinary tab to its running activity answers the same way (Cromite:
+     * its ChromeLauncherActivity), so a first window must name a Custom Tab.
+     */
+    static String window(Object waitResult, boolean strict) throws Exception {
+        android.content.ComponentName who = (android.content.ComponentName) waitResult.getClass().getField("who").get(waitResult);
+        if (who == null || who.getClassName().toLowerCase().contains("customtab")) return null;
+        if (strict) return who.flattenToShortString();
+        try {
+            // WaitResult.LAUNCH_STATE_UNKNOWN (Android 10+): delivered to what was there.
+            if (waitResult.getClass().getField("launchState").getInt(waitResult) == 0) return null;
+        } catch (NoSuchFieldException e) {
+            // Before Android 10: START_TASK_TO_FRONT, START_DELIVERED_TO_TOP.
+            int result = waitResult.getClass().getField("result").getInt(waitResult);
+            if (result == 2 || result == 3) return null;
+        }
+        return who.flattenToShortString();
     }
 
     /**
@@ -438,22 +504,34 @@ public final class Shortcut {
         return pkgs != null && pkgs.length > 0 ? pkgs[0] : "com.termux";
     }
 
-    /** Cromite opens Custom Tabs only as the default browser, with its "Allow custom tab intents". */
-    static final String CROMITE = "org.cromite.cromite";
-
     /**
-     * {@code browsers} with {@code default} replaced by the phone's default browser, when it is one
-     * of the others or Cromite, and left out otherwise.
+     * {@code browsers} with {@code default} replaced by the phone's default browser when it is one
+     * of the others and not Firefox (its windows cannot show the program in Recents or close
+     * themselves, so a Chromium browser further down the list goes before it), and left out
+     * otherwise.
      */
     static String[] withDefault(String[] browsers) {
         List<String> all = Arrays.asList(browsers);
         String d = all.contains("default") ? defaultBrowser() : null;
-        java.util.ArrayList<String> out = new java.util.ArrayList<>();
+        java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
         for (String b : browsers) {
             if (!b.equals("default")) out.add(b);
-            else if (d != null && (all.contains(d) || d.equals(CROMITE))) out.add(d);
+            else if (d != null && all.contains(d) && !d.startsWith("org.mozilla.")) out.add(d);
         }
         return out.toArray(new String[0]);
+    }
+
+    /**
+     * {@code url} naming the browser it is sent to ({@code &via=<package>}, before the fragment):
+     * the server keeps the page in the window over a copy in the same browser, and over an
+     * ordinary tab another browser opened before. The same browser always gets the same URL, so
+     * sending it again brings that window back.
+     */
+    static String withVia(String url, String browser) {
+        int hash = url.indexOf('#');
+        String base = hash < 0 ? url : url.substring(0, hash), fragment = hash < 0 ? "" : url.substring(hash);
+        if (!base.contains("?")) return url;
+        return base + "&via=" + browser + fragment;
     }
 
     /** The package that opens web links, if one is chosen. */
@@ -483,7 +561,7 @@ public final class Shortcut {
      * than the URL, in the page's colour, without a share button.
      */
     static Intent windowIntent(String url, String browser, int flags) {
-        Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+        Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(withVia(url, browser)));
         i.setPackage(browser);
         i.addFlags(flags);
         android.os.Bundle extras = new android.os.Bundle();

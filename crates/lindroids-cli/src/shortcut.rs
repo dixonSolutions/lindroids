@@ -37,11 +37,12 @@ fn package() -> String {
 }
 
 /// Browsers whose Custom Tabs open as windows of their own, in the order tried after the phone's
-/// default browser (when it is one of them, or Cromite). Chromium's first: they put the program's
-/// name and icon on its window in Recents, close the window when the program ends, and let the
-/// program write into files and folders picked on Android; Firefox does none of that. Cromite opens
-/// Custom Tabs only as the default browser with "Allow custom tab intents" on, and WebView-based
-/// browsers not at all: they open an ordinary tab.
+/// default browser (when it is one of them, and not Firefox). Chromium's first: they put the
+/// program's name and icon on its window in Recents, close the window when the program ends, and
+/// let the program write into files and folders picked on Android; Firefox does none of that, so
+/// it comes last, even as the default. A browser that opens an ordinary tab instead (Cromite
+/// without "Allow custom tab intents", WebView-based browsers) is passed over: the helper sees
+/// which activity it opened.
 const WINDOW_BROWSERS: &[&str] = &[
     "com.android.chrome",
     "com.microsoft.emmx",
@@ -50,29 +51,55 @@ const WINDOW_BROWSERS: &[&str] = &[
     "com.sec.android.app.sbrowser",
     "com.chrome.beta",
     "org.chromium.chrome",
+    "org.cromite.cromite",
     "org.mozilla.firefox",
     "org.mozilla.firefox_beta",
     "org.mozilla.fenix",
 ];
 
 /// Shows `url` in a window of its own: a Custom Tab, in its own task, of the first browser that
-/// has them (`LINDROIDS_BROWSER`, comma-separated packages, goes first). Sending the same URL again
-/// brings that window back instead of opening another. Returns the browser used.
+/// opens one (see `browsers`). Sending the same URL again brings that window back instead of
+/// opening another. Returns the browser used, which notifications then open windows in.
 pub fn open_window(url: &str) -> Result<String, String> {
-    let mut args = vec!["open".to_string(), package(), "raise".into(), url.to_string()];
+    let rt = sandbox::runtime_dir();
+    let opened = std::fs::read_to_string(rt.join("windows")).unwrap_or_default();
+    // (url, browser) lines: whether this URL has had a window, and where.
+    let before = opened.lines().rev().find_map(|l| l.split_once(' ').filter(|(u, _)| *u == url).map(|(_, b)| b.to_string()));
+    let mode = if before.is_some() { "raise" } else { "first" };
+    let mut args = vec!["open".to_string(), package(), mode.into(), url.to_string()];
+    args.extend(before);
     args.extend(browsers());
     let out = helper(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
-    Ok(out.lines().find_map(|l| l.strip_prefix("browser ")).unwrap_or("?").to_string())
+    let browser = out.lines().find_map(|l| l.strip_prefix("browser ")).unwrap_or("?").to_string();
+    if browser != "?" {
+        let _ = std::fs::write(rt.join("window-browser"), &browser);
+        let mut lines: Vec<&str> = opened.lines().collect();
+        let line = format!("{url} {browser}");
+        lines.push(&line);
+        let keep = lines.len().saturating_sub(64);
+        let _ = std::fs::write(rt.join("windows"), lines[keep..].join("\n") + "\n");
+    }
+    Ok(browser)
 }
 
-/// The browsers to show windows in, in order: `LINDROIDS_BROWSER` (comma-separated packages)
-/// first, then the default browser (`default`, which the helper resolves), then the list.
+/// The browsers to show windows in, in order: `LINDROIDS_BROWSER` (comma-separated packages),
+/// the default browser (`default`, which the helper resolves), then the list.
 fn browsers() -> Vec<String> {
     let mut v: Vec<String> = std::env::var("LINDROIDS_BROWSER")
         .map(|v| v.split(',').map(|b| b.trim().to_string()).filter(|b| !b.is_empty()).collect())
         .unwrap_or_default();
     v.push("default".into());
     v.extend(WINDOW_BROWSERS.iter().map(|b| b.to_string()));
+    v
+}
+
+/// For a notification's tap, which cannot see what the browser opens: the browser the last window
+/// opened in first (one that opened an ordinary tab was passed over then).
+fn notice_browsers() -> Vec<String> {
+    let mut v = browsers();
+    if let Ok(b) = std::fs::read_to_string(sandbox::runtime_dir().join("window-browser")) {
+        v.insert(0, b.trim().to_string());
+    }
     v
 }
 
@@ -327,7 +354,7 @@ impl lindroids_server::android::Android for AndroidServices {
         let icon = n.icon.map(|p| p.display().to_string()).unwrap_or_default();
         let small = n.small_icon.map(|p| p.display().to_string()).unwrap_or_default();
         let mut args = vec!["notify".to_string(), package(), n.id.to_string(), n.app, n.title, n.body, icon, small, n.url.unwrap_or_default()];
-        args.extend(browsers());
+        args.extend(notice_browsers());
         let _ = self.queue.lock().unwrap().send(args);
     }
 
@@ -335,7 +362,7 @@ impl lindroids_server::android::Android for AndroidServices {
         let icon = n.icon.map(|p| p.display().to_string()).unwrap_or_default();
         let small = n.small_icon.map(|p| p.display().to_string()).unwrap_or_default();
         let mut args = vec!["running".to_string(), package(), n.id.to_string(), n.app, n.title, n.body, icon, small, n.url.unwrap_or_default()];
-        args.extend(browsers());
+        args.extend(notice_browsers());
         let _ = self.queue.lock().unwrap().send(args);
     }
 

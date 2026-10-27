@@ -78,10 +78,12 @@ Details and the experiments behind them: [docs/DISPLAY.md](docs/DISPLAY.md),
 
 ## Limits (no app of our own)
 
-- In Firefox, Recents shows Firefox's icon on the window (the program's name is the title), and
-  an ended program's window asks for one tap on ✕. Chromium-based browsers (Chrome, Edge, Brave,
-  Cromite…) show the program's icon there and close the window themselves, so Lindroids prefers
-  them. Cromite needs to be the default browser, with *Allow custom tab intents* on.
+- Windows open in a Chromium-based browser (Chrome, Edge, Brave, Samsung Internet, Cromite…)
+  whatever the default browser is: there Recents shows the program's icon, and the window
+  closes when the program ends. A browser that opens an ordinary tab instead of a window (Cromite
+  without *Allow custom tab intents*) is passed over. With only Firefox, the window shows
+  Firefox's icon in Recents and an ended program's window asks for one tap on ✕: Firefox gives a
+  page no way to set either, and nothing outside it can close its window.
 - Full screen starts on the first tap: browsers allow it only then.
 - Files in Firefox: a picked file reaches the program as a copy, *Save As* goes to Downloads, and
   there is no folder picker. Chromium-based browsers (Chrome 132+, Edge, Brave, Cromite) have
