@@ -156,7 +156,7 @@ pub fn x11_env(runtime: &Path) -> (Vec<(String, String)>, bool) {
     }
 }
 
-fn which(cmd: &str) -> Option<PathBuf> {
+pub fn which(cmd: &str) -> Option<PathBuf> {
     if cmd.contains('/') {
         return Path::new(cmd).exists().then(|| PathBuf::from(cmd));
     }

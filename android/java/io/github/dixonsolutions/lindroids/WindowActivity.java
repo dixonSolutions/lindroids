@@ -158,6 +158,8 @@ public final class WindowActivity extends Activity {
 
         @Override public boolean onTouchEvent(MotionEvent e) {
             if (e.isFromSource(InputDevice.SOURCE_MOUSE)) return mouse(e);
+            int tool = e.getToolType(0);
+            if (tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_ERASER) return pen(e);
             int action = e.getActionMasked();
             int t = now(e);
             switch (action) {
@@ -185,13 +187,42 @@ public final class WindowActivity extends Activity {
         }
 
         int buttons;
+        boolean penIn;
+
+        /**
+         * A pen on the screen is a pointer with its first button down, so it draws in note and
+         * paint apps (which scroll on touch) and clicks elsewhere; hovering moves the pointer
+         * (onGenericMotionEvent). No pressure or tilt yet: that needs tablet-v2 in the server.
+         */
+        boolean pen(MotionEvent e) {
+            int t = now(e);
+            float x = e.getX(), y = e.getY();
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    if (!penIn) { Native.linkPointer(link, win, 0, x, y, 0, t); penIn = true; }
+                    Native.linkPointer(link, win, 2, x, y, 0, t);
+                    Native.linkPointer(link, win, 3, x, y, 1, t);
+                    break;
+                case MotionEvent.ACTION_MOVE:
+                    for (int h = 0; h < e.getHistorySize(); h++)
+                        Native.linkPointer(link, win, 2, e.getHistoricalX(h), e.getHistoricalY(h), 0, t);
+                    Native.linkPointer(link, win, 2, x, y, 0, t);
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    Native.linkPointer(link, win, 2, x, y, 0, t);
+                    Native.linkPointer(link, win, 4, x, y, 1, t);
+                    break;
+            }
+            return true;
+        }
 
         boolean mouse(MotionEvent e) {
             int t = now(e);
             float x = e.getX(), y = e.getY();
             switch (e.getActionMasked()) {
-                case MotionEvent.ACTION_HOVER_ENTER: Native.linkPointer(link, win, 0, x, y, 0, t); break;
-                case MotionEvent.ACTION_HOVER_EXIT: Native.linkPointer(link, win, 1, x, y, 0, t); break;
+                case MotionEvent.ACTION_HOVER_ENTER: Native.linkPointer(link, win, 0, x, y, 0, t); penIn = true; break;
+                case MotionEvent.ACTION_HOVER_EXIT: Native.linkPointer(link, win, 1, x, y, 0, t); penIn = false; break;
                 case MotionEvent.ACTION_HOVER_MOVE:
                 case MotionEvent.ACTION_MOVE: Native.linkPointer(link, win, 2, x, y, 0, t); break;
                 case MotionEvent.ACTION_SCROLL:

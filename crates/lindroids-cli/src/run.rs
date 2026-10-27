@@ -138,6 +138,23 @@ pub fn pick_distro(o: &mut Opts) {
     }
 }
 
+/// Whether the program (looked up on PATH, or in the distro's bin directories) only speaks X11.
+fn x11_only_program(o: &Opts, argv: &[String]) -> bool {
+    if is_shell_line(argv) {
+        return false;
+    }
+    let prog = &argv[0];
+    let path = match &o.distro {
+        Some(d) if !prog.contains('/') => {
+            let root = distro_rootfs(d);
+            DISTRO_BIN_DIRS.iter().map(|b| root.join(b).join(prog)).find(|p| p.is_file())
+        }
+        Some(d) => Some(distro_rootfs(d).join(prog.trim_start_matches('/'))),
+        None => sandbox::which(prog),
+    };
+    path.and_then(|p| crate::elf::needed(&std::fs::canonicalize(&p).unwrap_or(p))).map_or(false, |libs| crate::elf::x11_only(&libs))
+}
+
 /// What the user wants to run, resolved.
 pub enum Target {
     /// argv in the current sandbox (or a distro).
@@ -301,6 +318,15 @@ pub fn cmd_run(args: &[String]) -> i32 {
         Err(e) => return crate::fail(&e),
     };
     crate::ensure_app(&sb, &rt, false);
+    if let Target::Program(argv) = &target {
+        if !o.x11 && sandbox::x11_display(&rt).is_none() && x11_only_program(&o, argv) {
+            eprintln!(
+                "lindroids: {} is an X11 program, and X11 is not set up here yet: run `lindroids setup x11`",
+                program_of(argv)
+            );
+            eprintln!("  (it installs Xwayland), or try `lindroids run --x11 {}`.", argv.join(" "));
+        }
+    }
     let (name, icon) = identify(&o, &target);
     let mut cmd = match build_command(&o, &target, &rt) {
         Ok(c) => c,
