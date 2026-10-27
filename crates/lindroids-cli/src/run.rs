@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine;
@@ -373,16 +374,21 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
         Err(e) => return crate::fail(&e),
     };
     // Under proot (a distro, a Flatpak) a program killed by a signal shows only in proot's own
-    // report on stderr, and some proot builds exit 0 for SIGTRAP: watch for it.
+    // report on stderr, and some proot builds exit 0 for SIGTRAP: watch for it. A program in a
+    // window of its own: its last error lines go to that window if it fails.
     let under_proot = o.distro.is_some() || matches!(target, Target::Flatpak(..));
-    if under_proot {
+    if under_proot || own_window {
         cmd.stderr(std::process::Stdio::piped());
     }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return crate::fail(&format!("cannot start {}: {e}", o.command[0])),
     };
-    let signal_watch = child.stderr.take().map(|e| std::thread::spawn(move || forward_and_find_signal(e)));
+    let tail = Arc::new(Mutex::new(std::collections::VecDeque::new()));
+    let signal_watch = child.stderr.take().map(|e| {
+        let tail = tail.clone();
+        std::thread::spawn(move || forward_and_find_signal(e, &tail))
+    });
     if o.x11 && sandbox::x11_display(&rt).is_none() {
         // The display the wrapper was given is the last free one we picked: find its socket.
         let dir = x11_dir();
@@ -428,7 +434,15 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
         Err(e) => return crate::fail(&e.to_string()),
     };
     if own_window {
-        let _ = client::request(&rt, &CliRequest::RunEnded { pid: child.id(), code }, Duration::from_secs(2));
+        // An error: its last words go to its window, which is where the user is looking. (Not
+        // when its window was closed: 128 + SIGTERM, SIGKILL or SIGINT.)
+        let output = if code != 0 && ![130, 137, 143].contains(&code) {
+            std::thread::sleep(Duration::from_millis(200));
+            tail.lock().unwrap().iter().cloned().collect()
+        } else {
+            Vec::new()
+        };
+        let _ = client::request(&rt, &CliRequest::RunEnded { pid: child.id(), code, output }, Duration::from_secs(2));
     }
     match signal_watch.and_then(|t| t.join().ok()).flatten() {
         Some(sig) => {
@@ -439,9 +453,13 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
     }
 }
 
-/// Copy a child's stderr to ours as it comes, and return the signal proot reports the first
-/// program died of ("proot info: vpid 1: terminated with signal 5"), if it does.
-fn forward_and_find_signal(mut from: impl std::io::Read) -> Option<i32> {
+/// Lines of a program's error output kept for its window.
+const TAIL_LINES: usize = 12;
+
+/// Copy a child's stderr to ours as it comes, keep its last lines in `tail`, and return the signal
+/// proot reports the first program died of ("proot info: vpid 1: terminated with signal 5"), if
+/// it does.
+fn forward_and_find_signal(mut from: impl std::io::Read, tail: &Mutex<std::collections::VecDeque<String>>) -> Option<i32> {
     use std::io::Write;
     let mut found = None;
     let mut line = Vec::new();
@@ -455,7 +473,15 @@ fn forward_and_find_signal(mut from: impl std::io::Read) -> Option<i32> {
         let _ = err.write_all(&buf[..n]);
         for &b in &buf[..n] {
             if b == b'\n' {
-                found = found.or_else(|| proot_signal(&String::from_utf8_lossy(&line)));
+                let text = String::from_utf8_lossy(&line).trim_end().to_string();
+                found = found.or_else(|| proot_signal(&text));
+                if !text.trim().is_empty() {
+                    let mut t = tail.lock().unwrap();
+                    if t.len() == TAIL_LINES {
+                        t.pop_front();
+                    }
+                    t.push_back(text);
+                }
                 line.clear();
             } else if line.len() < 512 {
                 line.push(b);
@@ -549,7 +575,10 @@ mod tests {
         assert_eq!(proot_signal("proot info: vpid 1: terminated with signal 5"), Some(5));
         assert_eq!(proot_signal("proot info: vpid 2: terminated with signal 11"), None);
         assert_eq!(proot_signal("some program output"), None);
-        let found = forward_and_find_signal(&b"x\nproot info: vpid 1: terminated with signal 11\n"[..]);
+        let tail = Mutex::new(std::collections::VecDeque::new());
+        let found = forward_and_find_signal(&b"x\n\nproot info: vpid 1: terminated with signal 11\n"[..], &tail);
+        // Blank lines are not kept.
+        assert_eq!(tail.lock().unwrap().iter().cloned().collect::<Vec<_>>(), ["x", "proot info: vpid 1: terminated with signal 11"]);
         assert_eq!(found, Some(11));
     }
 

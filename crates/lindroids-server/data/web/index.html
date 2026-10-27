@@ -34,6 +34,9 @@
   #panel input { font: 24px monospace; width: 7em; text-align: center; letter-spacing: .2em; padding: 6px; border-radius: 6px; border: 1px solid #334; background: #0F1720; color: var(--fg); }
   #panel button, .toast button, .dialog button { font: inherit; padding: 8px 16px; margin: 4px; border-radius: 6px; border: 0; background: var(--accent); color: #0F1720; cursor: pointer; }
   #panel .err { color: #ff8a80; }
+  #panel pre.output { text-align: left; max-width: min(46em, 92vw); max-height: 40vh; overflow: auto; margin: 12px auto; padding: 10px 12px;
+    background: #1B2430; border: 1px solid #334; border-radius: 8px; color: #ffb4a9; font: 12px/1.45 monospace; white-space: pre-wrap; word-break: break-word; user-select: text; -webkit-user-select: text; }
+  #panel .box:has(pre.output) { max-width: 48em; }
   #ime { position: fixed; left: 0; top: 0; width: 2px; height: 2px; opacity: 0; border: 0; padding: 0; resize: none; pointer-events: none; font-size: 16px; }
   #toasts { position: fixed; right: 8px; bottom: 8px; display: flex; flex-direction: column; gap: 8px; max-width: min(360px, calc(100% - 16px)); z-index: 5; }
   .toast, .dialog { background: #1B2430; border: 1px solid #334; border-radius: 10px; padding: 10px 12px; box-shadow: 0 4px 16px #0008; }

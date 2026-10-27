@@ -180,8 +180,13 @@ pub enum ToApp {
     CloseNotification { id: String },
     /// Keep the screen on (a program inhibits idle: a video, a presentation), or no longer.
     WakeLock { on: bool },
-    /// The run this page shows ended (its program exited with `code`), windows or not.
-    RunEnded { code: i32 },
+    /// The run this page shows ended (its program exited with `code`), windows or not; for an
+    /// error, the last lines of its error output.
+    RunEnded {
+        code: i32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        output: Vec<String>,
+    },
     /// Open Android's file picker (ACTION_OPEN_DOCUMENT / OPEN_DOCUMENT_TREE / CREATE_DOCUMENT).
     /// Answered with FilesPicked.
     PickFiles(PickFiles),
@@ -481,8 +486,14 @@ pub enum CliRequest {
     Notify { title: String, body: String },
     /// `lindroids info`: what Android reports.
     Info,
-    /// The program the CLI started (`Launch`) ended, with this exit code.
-    RunEnded { pid: u32, code: i32 },
+    /// The program the CLI started (`Launch`) ended, with this exit code (and, for an error, the
+    /// last lines it wrote to stderr).
+    RunEnded {
+        pid: u32,
+        code: i32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        output: Vec<String>,
+    },
     /// The CLI started a program: windows from this process (or its children) get this name and
     /// icon.
     Launch {

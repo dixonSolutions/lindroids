@@ -283,7 +283,12 @@ async function handle(m, payload) {
     case 'run_ended':
       if (!OWN_WINDOW || windows.size) return;
       if (ended === null) ended = program ? program.name : 'The program';
-      if (!everShown) endedNote = `It ended before showing a window (exit code ${m.code}); its messages are in Termux.`;
+      if (m.output && m.output.length) {
+        endedNote = everShown ? `It stopped with an error (exit code ${m.code}):` : `It could not start (exit code ${m.code}):`;
+        endedOutput = m.output;
+      } else if (!everShown) {
+        endedNote = `It ended before showing a window (exit code ${m.code}); its messages are in Termux.`;
+      }
       return showEnded();
     case 'pick_files': return pickFiles(m);
     case 'fetch_file': return fetchFile(m);
@@ -339,7 +344,7 @@ function showPanel(html, after, icon) {
 // splash may give way to the window.
 const OWN_WINDOW = new URLSearchParams(location.search).has('window');
 const RUN = new URLSearchParams(location.search).get('run');
-let ended = null, endedIcon = null, endTimer = null, endedNote = '', everShown = false;
+let ended = null, endedIcon = null, endTimer = null, endedNote = '', endedOutput = [], everShown = false;
 let program = null; // { name, icon } of this window's run, from the server
 
 // The window as the browser shows it outside the page (title, icon; Chrome puts them on its task
@@ -371,7 +376,8 @@ $('tools').addEventListener('click', () => showTools(true));
 
 function showEnded() {
   const icon = endedIcon || (program && program.icon);
-  showPanel(`<p>${esc(program ? program.name : ended)} closed.</p>${endedNote ? `<p>${esc(endedNote)}</p>` : ''}<p>Close this window with the ✕ at the top.</p>`, null,
+  const out = endedOutput.length ? `<pre class="output">${esc(endedOutput.join('\n'))}</pre>` : '';
+  showPanel(`<p>${esc(program ? program.name : ended)} ${endedOutput.length ? 'stopped' : 'closed'}.</p>${endedNote ? `<p>${esc(endedNote)}</p>` : ''}${out}<p>Close this window with the ✕ at the top.</p>`, null,
     icon && `data:image/png;base64,${icon}`);
   // Out of full screen, so the browser's own close button shows where the page cannot close.
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});

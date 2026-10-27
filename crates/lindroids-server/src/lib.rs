@@ -986,9 +986,9 @@ impl State {
                 self.reroute();
                 Some(CliReply::Ok { message: "registered".into() })
             }
-            CliRequest::RunEnded { pid, code } => {
-                // Its page shows the end even when the program never showed a window.
-                self.send_from(Some(pid), &ToApp::RunEnded { code }, &[]);
+            CliRequest::RunEnded { pid, code, output } => {
+                // Its page shows the end even when the program never showed a window, and why.
+                self.send_from(Some(pid), &ToApp::RunEnded { code, output }, &[]);
                 Some(CliReply::Ok { message: "noted".into() })
             }
             CliRequest::Info => Some(CliReply::Info { system: portal::system() }),
