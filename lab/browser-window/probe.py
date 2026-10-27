@@ -37,6 +37,7 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
 const name = "NAME", o = document.getElementById('o');
 const out = s => o.textContent += s + "\n";
 let ws, n = 0;
+function sysColor(c) { const d = document.createElement('div'); d.style.color = c; document.body.appendChild(d); const v = getComputedStyle(d).color; d.remove(); return v; }
 function send(ev, extra) {
   const m = JSON.stringify(Object.assign({ev, name, t: Date.now(), vis: document.visibilityState}, extra || {}));
   if (ws && ws.readyState === 1) ws.send(m); else navigator.sendBeacon('/beacon', m);
@@ -49,7 +50,9 @@ function connect() {
     fullscreen: matchMedia('(display-mode: fullscreen)').matches,
     minimal: matchMedia('(display-mode: minimal-ui)').matches,
     browser: matchMedia('(display-mode: browser)').matches,
-    hist: history.length, ref: document.referrer, ua: navigator.userAgent, n: n++ });
+    hist: history.length, ref: document.referrer, ua: navigator.userAgent, n: n++,
+    dark: matchMedia('(prefers-color-scheme: dark)').matches, accent: sysColor('AccentColor'),
+    accentText: sysColor('AccentColorText'), highlight: sysColor('Highlight'), canvas: sysColor('Canvas') });
   ws.onmessage = e => {
     out('cmd ' + e.data);
     if (e.data === 'close') { send('closing'); window.close(); setTimeout(() => send('still-open'), 1000); }
@@ -64,6 +67,8 @@ document.addEventListener('visibilitychange', () => send('vis'));
 document.addEventListener('freeze', () => send('freeze-doc'));
 document.addEventListener('resume', () => send('resume-doc'));
 setInterval(() => send('beat'), 5000);
+// ?closetap: the first tap tries window.close() (does the browser allow it with a user gesture?)
+if (location.search.includes('closetap')) addEventListener('click', () => { send('tap-close'); window.close(); setTimeout(() => send('still-open-after-tap'), 800); });
 addEventListener('click', () => {
   const el = document.documentElement;
   if (!document.fullscreenElement && el.requestFullscreen)

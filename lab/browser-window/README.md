@@ -39,6 +39,9 @@ get without an APK, and what a relay sees when they open and close.
 | Custom Tab, Cromite | same, `-p org.cromite.cromite` | an ordinary tab |
 | Full screen in the Custom Tab | `requestFullscreen` on `click` (on `pointerdown`: denied) | full screen, no browser UI, no status bar |
 | `window.close()` in the Custom Tab | `/cmd/close/<name>`, fresh window | ignored (`beforeunload`, then still open) |
+| `window.close()` on a tap | `?closetap`, tap the page | ignored as well |
 | Close button of the Custom Tab | tap ✕ | `pagehide(persisted=false)`, close 1001, task gone |
+| Back in the Custom Tab, one history entry | `input keyevent 4` | the task goes to the back, alive and still in recents |
+| Android's accent colour | CSS `AccentColor` in Firefox | the system accent (`#824c76` on b16); `prefers-color-scheme` follows the system's dark mode |
 | Raise a Custom Tab | same intent, `NEW_DOCUMENT` without `MULTIPLE_TASK` | the existing task comes to the front; the page reloads |
 | Stock Chromium (Chrome's Custom Tabs) | — | not tested: installing the Chromium snapshot APK on the VM was not permitted in this session |

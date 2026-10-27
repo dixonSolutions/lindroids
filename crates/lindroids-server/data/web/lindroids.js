@@ -242,6 +242,7 @@ async function handle(m, payload) {
       return showPanel(`<p>${esc(m.reason)}.</p><p><button id="again">Show the windows here</button></p>`, () => $('again').onclick = connect);
     case 'run':
       program = { name: m.name, icon: m.icon_png_b64 || null };
+      showProgram();
       return hidePanelIfWindows();
     case 'window_new': return newWindow(m);
     case 'window_title': {
@@ -314,10 +315,25 @@ function showPanel(html, after, icon) {
 
 // In a window of its own (`?window`), the program's last window closing ends the window too: it
 // closes itself where the browser lets a page do that, and otherwise says so (Firefox's Custom
-// Tabs ignore window.close(); Back closes them). Not at once: a splash may give way to the window.
+// Tabs ignore window.close(), and Back only hides them: their ✕ closes them). Not at once: a
+// splash may give way to the window.
 const OWN_WINDOW = new URLSearchParams(location.search).has('window');
 let ended = null, endedIcon = null, endTimer = null;
 let program = null; // { name, icon } of this window's run, from the server
+
+// The window as the browser shows it outside the page (title, icon; Chrome puts them on its task
+// in recents): the program's, not Lindroids'.
+function showProgram() {
+  if (!program) return;
+  if (active === null) document.title = program.name;
+  if (!program.icon) return;
+  for (const l of document.querySelectorAll('link[rel~="icon"]')) l.remove();
+  const l = document.createElement('link');
+  l.rel = 'icon';
+  l.type = 'image/png';
+  l.href = `data:image/png;base64,${program.icon}`;
+  document.head.appendChild(l);
+}
 
 function hidePanelIfWindows() {
   if (!ready) return;
@@ -325,8 +341,10 @@ function hidePanelIfWindows() {
   if (windows.size) { ended = null; panel.hidden = true; return; }
   if (ended !== null) {
     const icon = endedIcon || (program && program.icon);
-    showPanel(`<p>${esc(program ? program.name : ended)} closed.</p><p>Press Back to close this window.</p>`, null,
+    showPanel(`<p>${esc(program ? program.name : ended)} closed.</p><p>Close this window with the ✕ at the top.</p>`, null,
       icon && `data:image/png;base64,${icon}`);
+    // Out of full screen, so the browser's own close button shows where the page cannot close.
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     endTimer = setTimeout(() => { if (!windows.size) window.close(); }, 1500);
     return;
   }
@@ -370,7 +388,7 @@ function removeWindow(win) {
     active = null;
     const next = order[order.length - 1];
     if (next !== undefined) activate(next);
-    else { document.title = 'Lindroids'; hideKeyboard(); }
+    else { document.title = program ? program.name : 'Lindroids'; hideKeyboard(); }
   }
   hidePanelIfWindows();
 }
@@ -705,6 +723,8 @@ $('kb').onclick = () => {
 // a tap; the canvas cancels touches (no click follows), so ask on the tap's end.
 if (new URLSearchParams(location.search).has('window')) {
   const full = () => {
+    // Not once the program has ended: the browser's close button is the way out then.
+    if (ended !== null && !windows.size) return;
     if (!document.fullscreenElement) document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
   };
   for (const ev of ['pointerup', 'touchend', 'click']) addEventListener(ev, full, { capture: true });
@@ -938,11 +958,23 @@ const motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
 const contrastQuery = matchMedia('(prefers-contrast: more)');
 let battery = null;
 
+// Android's accent colour (Material You), as the browser shows it: the CSS system colour
+// AccentColor, sRGB 0..1. libadwaita 1.6+ takes it through the portal (accent-color).
+function accentColor() {
+  if (!(window.CSS && CSS.supports('color', 'AccentColor'))) return undefined;
+  const d = document.createElement('div');
+  d.style.color = 'AccentColor';
+  document.body.appendChild(d);
+  const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(getComputedStyle(d).color);
+  d.remove();
+  return m ? [m[1] / 255, m[2] / 255, m[3] / 255] : undefined;
+}
+
 function sendSystem() {
   if (!ready) return;
   const mem = (navigator.deviceMemory || 0) * (1 << 30);
   send({
-    t: 'system', dark: darkQuery.matches, high_contrast: contrastQuery.matches, reduced_motion: motionQuery.matches,
+    t: 'system', dark: darkQuery.matches, accent: accentColor(), high_contrast: contrastQuery.matches, reduced_motion: motionQuery.matches,
     font_scale: 1, power_saver: false,
     network: { available: navigator.onLine, metered: !!(navigator.connection && navigator.connection.saveData), connectivity: navigator.onLine ? 4 : 1 },
     memory: { total: mem, available: mem, low: false },

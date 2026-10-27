@@ -163,9 +163,22 @@ pub fn app_changed(version: u32) {
     }
 }
 
-/// What Android last reported (`lindroids info`).
+/// What Android last reported (`lindroids info`): by a page now, or (kept on disk) before.
 pub fn system() -> Option<SystemState> {
     shared().system.lock().unwrap().clone()
+}
+
+/// Where the last state Android reported is kept: a program usually starts before its window
+/// links, and should not come up in the wrong theme until it does.
+fn system_file() -> std::path::PathBuf {
+    crate::state_dir().join("android-state.json")
+}
+
+/// Android's state as the Settings portal answers it: what is known, else the defaults. Never
+/// "not found": libadwaita reads the portal once when it starts, and on an error gives up on it
+/// (and its change signals) for good.
+fn current() -> SystemState {
+    system().unwrap_or_default()
 }
 
 // ------------------------------------------------------------------ the bus
@@ -188,6 +201,10 @@ impl Drop for Portal {
 pub fn start(runtime: &Path) -> Result<Portal, String> {
     if std::env::var("LINDROIDS_PORTAL").as_deref() == Ok("off") {
         return Err("off (LINDROIDS_PORTAL=off)".into());
+    }
+    // The state Android reported last, until a page reports it again.
+    if let Some(s) = std::fs::read(system_file()).ok().and_then(|b| serde_json::from_slice::<SystemState>(&b).ok()) {
+        shared().system.lock().unwrap().get_or_insert(s);
     }
     let daemon = crate::x11::which("dbus-daemon").ok_or("dbus-daemon is not installed (`lindroids setup x11`)")?;
     let socket = runtime.join("bus");
@@ -333,16 +350,23 @@ fn settings(s: &SystemState) -> Vec<(&'static str, &'static str, Value<'static>)
         ("org.gnome.desktop.interface", "gtk-theme", Value::from(if s.dark { "Adwaita-dark" } else { "Adwaita" })),
         ("org.gnome.desktop.interface", "text-scaling-factor", Value::from(f64::from(s.font_scale.max(0.5)))),
         ("org.gnome.desktop.interface", "enable-animations", Value::from(!s.reduced_motion)),
+        // GNOME's defaults. GTK 4 takes a namespace the portal has as the whole of it, and has
+        // its own stand-ins for the keys missing from it: icon theme "gnome" (no runtime has one:
+        // only GTK's few built-in icons draw) and a title bar with only a close button.
+        ("org.gnome.desktop.interface", "icon-theme", Value::from("Adwaita")),
+        ("org.gnome.desktop.interface", "cursor-theme", Value::from("Adwaita")),
+        ("org.gnome.desktop.interface", "cursor-size", Value::from(24i32)),
+        ("org.gnome.desktop.wm.preferences", "button-layout", Value::from("appmenu:close")),
         ("org.gnome.desktop.a11y.interface", "high-contrast", Value::from(s.high_contrast)),
     ];
-    if let Some([r, g, b]) = s.accent {
-        v.push(("org.freedesktop.appearance", "accent-color", Value::from((f64::from(r), f64::from(g), f64::from(b)))));
-    }
+    // Always there (libadwaita's own blue until Android's is known), so that libadwaita follows it.
+    let [r, g, b] = s.accent.unwrap_or([0x35 as f32 / 255.0, 0x84 as f32 / 255.0, 0xe4 as f32 / 255.0]);
+    v.push(("org.freedesktop.appearance", "accent-color", Value::from((f64::from(r), f64::from(g), f64::from(b)))));
     v
 }
 
 fn lookup(namespace: &str, key: &str) -> Option<Value<'static>> {
-    let s = system()?;
+    let s = current();
     settings(&s).into_iter().find(|(n, k, _)| *n == namespace && *k == key).map(|(_, _, v)| v)
 }
 
@@ -351,7 +375,9 @@ fn owned(v: Value<'_>) -> OwnedValue {
 }
 
 fn system_changed(new: SystemState) {
-    let old = shared().system.lock().unwrap().replace(new.clone());
+    let _ = std::fs::write(system_file(), serde_json::to_vec(&new).unwrap_or_default());
+    let old = Some(current());
+    shared().system.lock().unwrap().replace(new.clone());
     let before: HashMap<(&str, &str), Value> = old.as_ref().map(|o| settings(o).into_iter().map(|(n, k, v)| ((n, k), v)).collect()).unwrap_or_default();
     for (n, k, v) in settings(&new) {
         if before.get(&(n, k)) != Some(&v) {
@@ -377,11 +403,9 @@ impl Settings {
                 || namespaces.iter().any(|p| p.is_empty() || p == n || p.strip_suffix('*').is_some_and(|pre| n.starts_with(pre)))
         };
         let mut out: HashMap<String, HashMap<String, OwnedValue>> = HashMap::new();
-        if let Some(s) = system() {
-            for (n, k, v) in settings(&s) {
-                if wanted(n) {
-                    out.entry(n.to_string()).or_default().insert(k.to_string(), owned(v));
-                }
+        for (n, k, v) in settings(&current()) {
+            if wanted(n) {
+                out.entry(n.to_string()).or_default().insert(k.to_string(), owned(v));
             }
         }
         out
@@ -984,6 +1008,7 @@ mod tests {
         assert_eq!(get("org.freedesktop.appearance", "color-scheme"), Some(Value::from(1u32)));
         assert_eq!(get("org.gnome.desktop.interface", "gtk-theme"), Some(Value::from("Adwaita-dark")));
         assert!(get("org.freedesktop.appearance", "accent-color").is_some());
+        assert_eq!(get("org.gnome.desktop.interface", "icon-theme"), Some(Value::from("Adwaita")));
         let light = settings(&SystemState::default());
         assert!(light.iter().any(|(n, k, v)| *n == "org.freedesktop.appearance" && *k == "color-scheme" && *v == Value::from(2u32)));
     }
