@@ -867,6 +867,7 @@ impl State {
             | ToServer::FileChunk { .. }
             | ToServer::WriteResult { .. } => {}
             ToServer::Hello { .. } | ToServer::Auth { .. } => {}
+            ToServer::Log { msg } => info!("page {from}: {}", msg.chars().take(500).collect::<String>()),
             ToServer::AudioCredit { stream, bytes } => audio::credit(stream, bytes),
             ToServer::Resize { win, width, height, .. } => {
                 if let Some(w) = self.windows.get_mut(&win) {
@@ -968,6 +969,11 @@ impl State {
                 // Windows it opened before it was registered move to where they belong.
                 self.reroute();
                 Some(CliReply::Ok { message: "registered".into() })
+            }
+            CliRequest::RunEnded { pid, code } => {
+                // Its page shows the end even when the program never showed a window.
+                self.send_from(Some(pid), &ToApp::RunEnded { code }, &[]);
+                Some(CliReply::Ok { message: "noted".into() })
             }
             CliRequest::Info => Some(CliReply::Info { system: portal::system() }),
             CliRequest::Notify { title, body } => {

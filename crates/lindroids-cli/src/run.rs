@@ -427,6 +427,9 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
         Ok(st) => st.code().unwrap_or_else(|| 128 + std::os::unix::process::ExitStatusExt::signal(&st).unwrap_or(0)),
         Err(e) => return crate::fail(&e.to_string()),
     };
+    if own_window {
+        let _ = client::request(&rt, &CliRequest::RunEnded { pid: child.id(), code }, Duration::from_secs(2));
+    }
     match signal_watch.and_then(|t| t.join().ok()).flatten() {
         Some(sig) => {
             eprintln!("lindroids: {} crashed (signal {sig}, {})", program_of(&o.command), signal_name(sig));
@@ -481,15 +484,20 @@ fn signal_name(sig: i32) -> &'static str {
     }
 }
 
-/// The symbolic (one-colour) icon of what is being run, if it has one.
+/// A window, for the status bar of programs without a symbolic icon of their own (the shape of
+/// a full-colour icon is mostly a block).
+const GENERIC_SYMBOLIC: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" fill="none" stroke="#000" stroke-width="1.5"/><path d="M2 6h12" stroke="#000" stroke-width="1.5"/></svg>"##;
+
+/// The symbolic (one-colour) icon of what is being run: its own, else a window.
 pub fn symbolic(o: &Opts, target: &Target) -> Option<Vec<u8>> {
-    match target {
+    let own = match target {
         Target::Flatpak(app, _) => flatpak::symbolic(app),
         Target::Program(argv) => {
             let root = o.distro.as_deref().map(distro_rootfs).unwrap_or_else(|| PathBuf::from("/"));
             desktop::symbolic_for(&root, &program_of(argv))
         }
-    }
+    };
+    own.or_else(|| desktop::render_svg(GENERIC_SYMBOLIC.as_bytes(), 96))
 }
 
 /// Name and PNG icon for what is being run.

@@ -71,6 +71,15 @@ pub(crate) fn load_all() -> Vec<Exported> {
 }
 
 pub fn cmd_export(args: &[String]) -> i32 {
+    // `lindroids export <id>` of something exported before: again, as it was (its icon is updated
+    // in place), rather than a new export of a command named like the id.
+    if let [one] = args {
+        if let Some(rec) = lindroids_server::load_exported(one).filter(|r| r.run.first() != Some(one) || r.run.len() > 1) {
+            let mut again = vec!["--id".to_string(), rec.id.clone()];
+            again.extend(rec.run);
+            return cmd_export(&again);
+        }
+    }
     let mut o = match run::parse(args) {
         Ok(o) => o,
         Err(e) => return crate::fail(&e),

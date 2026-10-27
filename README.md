@@ -41,7 +41,8 @@ lindroids export org.gnome.Calculator  # a home screen icon; works with Termux c
 - **Android's side, piped in**: dark mode and accent colour; files (Android's picker for
   *Open…*, *Open with* from the Files app, saves to Downloads, the Camera as a photo source);
   notifications in Android's shade; links open in Android's browser; clipboard both ways; sound;
-  touch, pen, soft and hardware keyboards; network state.
+  keeping the screen on (for a video or a presentation); touch, pen, soft and hardware keyboards;
+  network state.
 
 ## How it works, and why
 
@@ -57,7 +58,7 @@ lindroids export org.gnome.Calculator  # a home screen icon; works with Termux c
   It serves the window page on a loopback port, sends the 64×64 tiles that changed (LZ4), and
   takes back touch, keys and text. Both ends prove themselves with P-256 keys before anything is
   shown. Android's state reaches programs through the standard desktop portals (Settings,
-  FileChooser, OpenURI, Notification), so GTK and libadwaita programs follow it unchanged.
+  FileChooser, OpenURI, Notification, Inhibit), so GTK and libadwaita programs follow it unchanged.
 - **Files from Android**: *Open with → Termux* runs `~/bin/termux-file-editor`, which Lindroids
   installs; it picks the Linux program for the file's type (`lindroids open --linux`).
 

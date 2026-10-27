@@ -61,7 +61,10 @@ pub fn toolkit_env() -> Vec<(&'static str, &'static str)> {
         ("CLUTTER_BACKEND", "wayland"),
         ("GSK_RENDERER", "cairo"),
         ("LIBGL_ALWAYS_SOFTWARE", "1"),
+        // No accessibility bus here (Android's screen reader cannot read the window's canvas):
+        // GTK 3 and GTK 4 would each warn about it at start.
         ("NO_AT_BRIDGE", "1"),
+        ("GTK_A11Y", "none"),
         ("XDG_SESSION_TYPE", "wayland"),
     ]
 }
@@ -167,6 +170,10 @@ pub enum ToApp {
     /// NotificationAction, dismissals as NotificationClosed.
     Notify(Notification),
     CloseNotification { id: String },
+    /// Keep the screen on (a program inhibits idle: a video, a presentation), or no longer.
+    WakeLock { on: bool },
+    /// The run this page shows ended (its program exited with `code`), windows or not.
+    RunEnded { code: i32 },
     /// Open Android's file picker (ACTION_OPEN_DOCUMENT / OPEN_DOCUMENT_TREE / CREATE_DOCUMENT).
     /// Answered with FilesPicked.
     PickFiles(PickFiles),
@@ -381,6 +388,8 @@ pub enum ToServer {
     /// (an empty last chunk with `error` set if it could not be read).
     FileChunk { request: u32, index: u32, last: bool, #[serde(default, skip_serializing_if = "Option::is_none")] error: Option<String>, len: u32 },
     WriteResult { request: u32, ok: bool, #[serde(default, skip_serializing_if = "Option::is_none")] message: Option<String> },
+    /// What the page wants in the server's log: its errors, and what the browser refused.
+    Log { msg: String },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -461,6 +470,8 @@ pub enum CliRequest {
     Notify { title: String, body: String },
     /// `lindroids info`: what Android reports.
     Info,
+    /// The program the CLI started (`Launch`) ended, with this exit code.
+    RunEnded { pid: u32, code: i32 },
     /// The CLI started a program: windows from this process (or its children) get this name and
     /// icon.
     Launch {

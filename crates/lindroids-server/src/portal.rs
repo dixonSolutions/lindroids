@@ -262,6 +262,7 @@ pub fn start(runtime: &Path) -> Result<Portal, String> {
         .and_then(|b| b.serve_at(DESKTOP, MemoryMonitor))
         .and_then(|b| b.serve_at(DESKTOP, NetworkMonitor))
         .and_then(|b| b.serve_at(DESKTOP, PowerProfileMonitor))
+        .and_then(|b| b.serve_at(DESKTOP, Inhibit))
         .and_then(|b| b.serve_at(NOTIFICATIONS, Notifications))
         .and_then(|b| b.name("org.freedesktop.portal.Desktop"))
         .and_then(|b| b.name("org.freedesktop.Notifications"))
@@ -973,6 +974,108 @@ impl PortalNotification {
     #[zbus(property)]
     fn version(&self) -> u32 {
         1
+    }
+}
+
+// ------------------------------------------------------------------ Inhibit
+
+/// A program keeps the screen on (inhibits idle or suspend) while its request lives: its page holds
+/// a screen wake lock. The request ends when the program closes it or exits.
+struct Inhibit;
+
+/// The Request object of a live inhibition; Close ends it.
+struct Inhibition {
+    pid: Option<u32>,
+    ended: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[zbus::interface(name = "org.freedesktop.portal.Request")]
+impl Inhibition {
+    fn close(&self, #[zbus(object_server)] server: &zbus::ObjectServer, #[zbus(header)] hdr: Header<'_>) {
+        if !self.ended.swap(true, Ordering::SeqCst) {
+            wake_lock(self.pid, false);
+        }
+        if let Some(path) = hdr.path() {
+            let path = path.to_owned();
+            let server = server.clone();
+            std::thread::spawn(move || {
+                let _ = zbus::block_on(server.remove::<Inhibition, _>(&path));
+            });
+        }
+    }
+}
+
+/// Live inhibitions by the pid that asked: the page keeps the lock while any is left.
+static INHIBITING: std::sync::Mutex<Vec<Option<u32>>> = std::sync::Mutex::new(Vec::new());
+
+fn wake_lock(pid: Option<u32>, on: bool) {
+    let mut v = INHIBITING.lock().unwrap();
+    if on {
+        v.push(pid);
+    } else if let Some(i) = v.iter().position(|p| *p == pid) {
+        v.remove(i);
+    }
+    let want = v.iter().any(|p| *p == pid);
+    drop(v);
+    info!("Inhibit: keep the screen on for {pid:?}: {want}");
+    to_app(pid, ToApp::WakeLock { on: want }, Vec::new());
+}
+
+#[zbus::interface(name = "org.freedesktop.portal.Inhibit")]
+impl Inhibit {
+    fn inhibit(&self, #[zbus(header)] hdr: Header<'_>, _window: String, flags: u32, options: HashMap<String, OwnedValue>) -> OwnedObjectPath {
+        let (handle, sender) = request_path(&hdr, &options);
+        // 4 suspend, 8 idle: the screen should stay on. Logout and user switch mean nothing here.
+        if flags & (4 | 8) == 0 {
+            return handle;
+        }
+        let h = handle.clone();
+        std::thread::spawn(move || {
+            let pid = caller_pid(&sender);
+            let ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            if let Some(c) = conn() {
+                let _ = c.object_server().at(&h, Inhibition { pid, ended: ended.clone() });
+            }
+            wake_lock(pid, true);
+            // A program that exits does not close its requests.
+            if let Some(p) = pid {
+                let proc = PathBuf::from(format!("/proc/{p}"));
+                while proc.exists() && !ended.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+                if !ended.swap(true, Ordering::SeqCst) {
+                    wake_lock(pid, false);
+                    if let Some(c) = conn() {
+                        let _ = c.object_server().remove::<Inhibition, _>(&h);
+                    }
+                }
+            }
+        });
+        handle
+    }
+
+    /// The session's state for the program (GTK asks once at startup): always running, the
+    /// screen saver off. Android ends programs itself; there is no logout to ask about.
+    fn create_monitor(&self, #[zbus(header)] hdr: Header<'_>, _window: String, options: HashMap<String, OwnedValue>) -> OwnedObjectPath {
+        let (handle, sender) = request_path(&hdr, &options);
+        let escaped = sender.trim_start_matches(':').replace('.', "_");
+        let token = opt_str(&options, "session_handle_token").unwrap_or_else(|| "lindroids".into());
+        let session = format!("{DESKTOP}/session/{escaped}/{token}");
+        let h = handle.clone();
+        std::thread::spawn(move || {
+            let Ok(path) = ObjectPath::try_from(session.as_str()) else { return respond(&sender, &h, 2, HashMap::new()) };
+            let mut results = HashMap::new();
+            results.insert("session_handle", Value::from(path));
+            respond(&sender, &h, 0, results);
+        });
+        handle
+    }
+
+    fn query_end_response(&self, _session_handle: OwnedObjectPath) {}
+
+    #[zbus(property)]
+    fn version(&self) -> u32 {
+        3
     }
 }
 

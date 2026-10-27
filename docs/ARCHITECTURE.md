@@ -186,6 +186,7 @@ with what a browser knows:
 | FileChooser | Android's picker through the browser (Files, Camera…), at once after the tap that asked; contents fetched into the runtime dir; saves become downloads |
 | Notification, fdo Notifications | Android notifications, posted by the `app_process` helper as Termux (program name and icon, a tap brings back its window), and notices in the page with their buttons |
 | NetworkMonitor | `navigator.onLine` |
+| Inhibit (idle, suspend) | a screen wake lock while the program's request lives; `CreateMonitor` answers "running" |
 
 Requests go to the page of the program that asked (the caller's pid → its run), sound included.
 Files come the other way too: Android's *Open with → Termux* (or Share) saves the file in

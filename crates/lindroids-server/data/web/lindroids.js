@@ -275,6 +275,12 @@ async function handle(m, payload) {
     case 'open_file': return openFile(m, payload);
     case 'notify': return notify(m);
     case 'close_notification': return closeToast('n:' + m.id);
+    case 'wake_lock': return wakeLock(m.on);
+    case 'run_ended':
+      if (!OWN_WINDOW || windows.size) return;
+      if (ended === null) ended = program ? program.name : 'The program';
+      if (!everShown) endedNote = `It ended before showing a window (exit code ${m.code}); its messages are in Termux.`;
+      return showEnded();
     case 'pick_files': return pickFiles(m);
     case 'fetch_file': return fetchFile(m);
     case 'write_file': return writeFile(m, payload);
@@ -329,7 +335,7 @@ function showPanel(html, after, icon) {
 // splash may give way to the window.
 const OWN_WINDOW = new URLSearchParams(location.search).has('window');
 const RUN = new URLSearchParams(location.search).get('run');
-let ended = null, endedIcon = null, endTimer = null;
+let ended = null, endedIcon = null, endTimer = null, endedNote = '', everShown = false;
 let program = null; // { name, icon } of this window's run, from the server
 
 // The window as the browser shows it outside the page (title, icon; Chrome puts them on its task
@@ -361,12 +367,17 @@ $('tools').addEventListener('click', () => showTools(true));
 
 function showEnded() {
   const icon = endedIcon || (program && program.icon);
-  showPanel(`<p>${esc(program ? program.name : ended)} closed.</p><p>Close this window with the ✕ at the top.</p>`, null,
+  showPanel(`<p>${esc(program ? program.name : ended)} closed.</p>${endedNote ? `<p>${esc(endedNote)}</p>` : ''}<p>Close this window with the ✕ at the top.</p>`, null,
     icon && `data:image/png;base64,${icon}`);
   // Out of full screen, so the browser's own close button shows where the page cannot close.
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   endTimer = setTimeout(() => { if (!windows.size) window.close(); }, 1500);
 }
+
+// Full screen that arrives after the end (the tap that closed the program asked for it too).
+document.addEventListener('fullscreenchange', () => {
+  if (document.fullscreenElement && ended !== null && !windows.size) document.exitFullscreen().catch(() => {});
+});
 
 function hidePanelIfWindows() {
   if (!ready) return;
@@ -395,6 +406,7 @@ function newWindow(m) {
   tabsEl.appendChild(tab);
   const w = { win: m.win, title: m.title, appId: m.app_id, icon: m.icon_png_b64, canvas, ctx: canvas.getContext('2d'), tab, pendingAck: false, size: [0, 0] };
   windows.set(m.win, w);
+  everShown = true;
   updateChrome();
   attachInput(w);
   resizeWindow(w);
@@ -892,6 +904,27 @@ function notify(n) {
     onClose: (r) => send({ t: 'notification_closed', id: n.id, reason: r }),
   }, n.urgency >= 2 ? 0 : 8000);
 }
+
+// Into the server's log (`server.log` in the runtime dir): what a phone's browser keeps to itself.
+function plog(msg) { send({ t: 'log', msg: String(msg) }); }
+addEventListener('error', (e) => plog(`error: ${e.message} (${e.filename}:${e.lineno})`));
+addEventListener('unhandledrejection', (e) => plog(`unhandled: ${e.reason}`));
+
+// A program keeps the screen on (a video, a presentation): Android's screen wake lock, while
+// this window is shown (the browser lets it go when it is hidden; it is taken again on return).
+let wantWake = false, wake = null;
+async function wakeLock(on) {
+  wantWake = on;
+  if (!navigator.wakeLock) return plog('no screen wake lock in this browser');
+  if (!on) { if (wake) { const w = wake; wake = null; await w.release().catch(() => {}); } return; }
+  if (wake || document.hidden) return;
+  try {
+    wake = await navigator.wakeLock.request('screen');
+    wake.addEventListener('release', () => { wake = null; });
+    plog('screen wake lock held');
+  } catch (e) { plog(`screen wake lock: ${e}`); }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && wantWake) wakeLock(true); });
 
 function activeGesture() {
   return navigator.userActivation ? navigator.userActivation.isActive : false;

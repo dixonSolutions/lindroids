@@ -248,8 +248,10 @@ pub fn open_run_window(_sb: &sandbox::Sandbox, rt: &Path, pid: u32) -> bool {
 /// whenever the page links. Returns whether it is linked.
 pub fn ensure_display(sb: &sandbox::Sandbox, rt: &Path, quiet: bool) -> bool {
     let linked = || matches!(client::status(rt), Ok(CliReply::Status { app_connected: true, .. }));
+    // A linked shared page, to bring back; another program's window of its own is not one (and
+    // its URL carries no ticket for a browser that has not paired).
     let page = match client::status(rt) {
-        Ok(CliReply::Status { app_connected: true, display_page, .. }) => Some(display_page.unwrap_or_else(|| "/".into())),
+        Ok(CliReply::Status { app_connected: true, display_page, .. }) => Some(display_page.unwrap_or_else(|| "/".into())).filter(|p| !p.contains("run=")),
         _ => None,
     };
     let _ = sb;

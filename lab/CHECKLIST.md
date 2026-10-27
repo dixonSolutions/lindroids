@@ -15,6 +15,7 @@ from Android**, through the window page and Termux, never by giving the containe
 | One program, one window of its own in Recents (not a tab) | ✅ | Custom Tab in its own task |
 | The program fills the window | ✅ | no tab strip for one window; tools behind a handle at the top; dialogs bring the tabs back |
 | Window shows the program's name and icon | 🟡 | title, start/ended screens, favicon; ⛔ Recents shows the browser's icon (Firefox sets its task icon itself; Chrome-family untested) |
+| The program's icon in the status bar while it runs | ✅ | its `-symbolic` icon (else a window glyph); tap → its window; goes when it ends, and after a killed server |
 | Full screen, no browser bars | 🟡 | after the first tap (browsers allow full screen only on a tap) |
 | Follows Android's dark mode and accent colour | ✅ | Settings portal; libadwaita, GTK 3 |
 | Program's icons and title bar draw right (Adwaita) | ✅ | portal sends GNOME's icon theme and button layout |
@@ -32,6 +33,8 @@ from Android**, through the window page and Termux, never by giving the containe
 | Shortcut works with Termux closed | ✅ | [demo](../media/demos/launch-from-home.mp4) |
 | Shortcut works right after a reboot, Termux never opened | ✅ | window in ~1–2 s, enforcing |
 | The window says the program ended even when Termux closes with it | ✅ | |
+| A program that exits before any window says so in its window | ✅ | "ended before showing a window (exit code N)" |
+| The window opens even when Android's reply trips over noted app ops | ✅ | helper treats `SyncNotedAppOp` reply errors as done (the start went through) |
 
 ## Android → program (piped in)
 
@@ -45,6 +48,7 @@ from Android**, through the window page and Termux, never by giving the containe
 | Linux files visible to Android apps | ✅ | Termux's storage provider in Files (`~/downloads`, Flatpak data under `~/.var/app`) |
 | Notifications are Android notifications | ✅ | posted as Termux, with the program's name and icon; tap brings back its window |
 | Requests reach the program's own window | ✅ | sound, pickers, links, notifications by pid → run |
+| A program can keep the screen on (Inhibit portal) | ✅ | page's screen wake lock; Android held it exactly while the program inhibited |
 | Links open in Android's browser | ✅ | |
 | Clipboard both ways (text) | ✅ | images ❌ |
 | Sound out | 🟡 | per program; the VM has no audio output to check by ear |

@@ -140,11 +140,27 @@ public final class Shortcut {
             if (args[i] == null && t == int.class) args[i] = 0;
             if (args[i] == null && t == boolean.class) args[i] = false;
         }
-        Object r = m.invoke(svc, args);
+        Object r;
+        try {
+            r = m.invoke(svc, args);
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            // Since Android 11 a reply can carry the app ops the call noted; reading them fails
+            // in a process that is not an app (SyncNotedAppOp's checks), after the call itself
+            // went through. Its answer is lost: null.
+            if (!String.valueOf(e.getCause()).contains("SyncNotedAppOp") && !stackMentions(e.getCause(), "SyncNotedAppOp")) throw e;
+            r = null;
+        }
         if (future != null) {
             return ((Future<?>) future).get(10, TimeUnit.SECONDS);
         }
         return r;
+    }
+
+    static boolean stackMentions(Throwable t, String what) {
+        for (; t != null; t = t.getCause()) {
+            if (String.valueOf(t.getMessage()).contains(what)) return true;
+        }
+        return false;
     }
 
     static void pin(String pkg, String id, String label, String iconPath, String action, String component, String type, String text) throws Exception {
@@ -232,8 +248,9 @@ public final class Shortcut {
         for (String browser : browsers) {
             Object r = call(atm, "startActivity", pkg, windowIntent(url, browser, flags));
             // ActivityManager.START_SUCCESS and the other non-negative codes (delivered to the top,
-            // task brought to the front) all mean the window is there.
-            if (r instanceof Integer && (Integer) r >= 0) return browser;
+            // task brought to the front) all mean the window is there; no answer (see call) means
+            // the start went through too.
+            if (r == null || (r instanceof Integer && (Integer) r >= 0)) return browser;
             last = browser + ": start result " + r;
         }
         throw new IllegalStateException(last);
