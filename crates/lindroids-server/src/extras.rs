@@ -148,7 +148,7 @@ impl Dispatch<xdg_activation_v1::XdgActivationV1, ()> for State {
                 let Some(i) = state.extras.tokens.iter().position(|t| *t == token) else { return };
                 state.extras.tokens.remove(i);
                 if let Some(win) = state.window_of(&surface.id()) {
-                    state.send_app(&ToApp::WindowActivate { win });
+                    state.send_win(win, &ToApp::WindowActivate { win });
                 }
             }
             _ => {}

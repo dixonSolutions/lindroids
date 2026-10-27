@@ -6,7 +6,7 @@ Lindroids has three parts, and only the first is installed:
 |---|---|---|
 | `lindroids` | inside the sandbox (Termux, a proot distro, a desktop) | one binary: the CLI and, as `lindroids server`, the server |
 | server | the same place, started on demand | a Wayland compositor and a PulseAudio-protocol sound server, which also serves the page (`crates/lindroids-server`) |
-| the page | the phone's web browser | windows, input, sound output, clipboard, files, notifications (`crates/lindroids-server/data/web`, embedded in the binary) |
+| the page | a window of its own on Android (a browser's Custom Tab, opened by Termux), a browser tab elsewhere | windows, input, sound output, clipboard, files, notifications (`crates/lindroids-server/data/web`, embedded in the binary) |
 
 ## Why the server is a plain Linux program
 
@@ -23,61 +23,80 @@ reaches it.
 ## Why the display is the browser
 
 Lindroids used to ship a companion app for the display, which needed installing, pairing and
-Termux's `allow-external-apps` setting, and broke whenever the two fell out of step. Showing Linux
-windows on Android without any app of its own leaves two places: the terminal itself, or the web
-browser every phone already has. The browser can do everything the app did that matters — a
-canvas at the screen's resolution, multi-touch, pen and hardware keyboard events, the soft
-keyboard, Web Audio, the clipboard, file pickers, full screen and home-screen icons — and asking it
-to open a page is an ordinary intent any app may send. (Drawing overlay windows from a process
-started with `app_process` in Termux was tried too: Android 13's system server crashes on the
-"displaying over other apps" notification of a window whose session has no package.)
+Termux's `allow-external-apps` setting, and broke whenever the two fell out of step. Without an
+app of its own, the only thing on a phone that can draw a window for it is the browser: every
+window is an activity of an installed app, and Termux's one window is its terminal. The browser
+can do everything the app did that matters: a canvas at the screen's resolution, multi-touch,
+pen and hardware keyboard events, the soft keyboard, Web Audio, the clipboard, file pickers and
+full screen.
+
+On Android each program gets **a window of its own**. Termux's `app_process` helper opens it as a
+browser **Custom Tab**: its own task in recents, no tabs, no address bar, and full screen from
+the first tap. Closing it ends the program. [DISPLAY.md](DISPLAY.md) has the design, everything
+that was tried and why it was rejected (installed web apps, overlays, the terminal), and the lab
+tests behind each step.
 
 The page is served by the server it shows, from the binary, so the two never disagree about the
 protocol.
 
 ## The link
 
-The server's loopback port, `127.0.0.1:<47000 + uid offset>` (fixed per uid, so a page on the
-home screen finds it again), speaks both HTTP and the link protocol; the first bytes tell which
-(`web.rs`). `GET /` serves the page, `GET /link` upgrades to a WebSocket that carries the link:
-every server message is one WebSocket message, so the page needs no framer; what the page sends is
-a byte stream of the same lines. Messages are JSON lines; a message with a `len` field is followed
-by that many bytes of payload (`crates/lindroids-proto`). Raw TCP and the abstract socket
-`@lindroids.server.<uid>` still carry the same bytes for `lindroids debug-app`, the stand-in display
-the tests use.
+The server's loopback port (`server_tcp_port`: 47000 + the uid's offset, fixed per uid) speaks
+both HTTP and the link protocol; the first bytes tell which (`web.rs`).
 
-**Who may connect.** Any app can reach a loopback port, and a web site could try to through the
-browser. The server answers only requests whose `Host` is `127.0.0.1:<port>` or `localhost:<port>`
-(a site that rebinds its name to 127.0.0.1 still sends its own name) and upgrades only WebSockets
-whose `Origin` is the page's own; responses forbid framing. Then the page authenticates like the
-app did, with WebCrypto:
+- `GET /` serves the page; `GET /link` upgrades to a WebSocket that carries the link.
+- Every server message is one WebSocket message, so the page needs no framer. What the page sends
+  is a byte stream of the same lines.
+- Messages are JSON lines; a message with a `len` field is followed by that many bytes of payload
+  (`crates/lindroids-proto`).
+- Raw TCP and the abstract socket `@lindroids.server.<uid>` carry the same bytes for
+  `lindroids debug-app`, the stand-in display the tests use.
 
-```
-page   → Hello { nonce_a }
-server → Challenge { nonce_s, HMAC(secret, "lindroids-server" | nonce_a) }
-page   : verifies the server (no proof, no secret sent)
-page   → Auth { HMAC(secret, "lindroids-app" | nonce_s) }      or  Auth { code }
-server → Hello            (or AuthFailed; Paired { secret } after a code)
-```
+**One origin.** Pages are served only at `http://<label>.localhost:<port>/`, where the label is
+130 random bits kept in `~/.local/share/lindroids/origin`. Browsers treat `*.localhost` as
+loopback and as a secure context. Requests with any other `Host`, and WebSockets with any other
+`Origin`, get nothing (`421`), not even the label. So an app that takes the port while the server
+is down cannot serve a page into our origin, and a web site cannot reach the link.
 
-The secret lives in `~/.local/share/lindroids/secret`. `lindroids run` opens
-`http://127.0.0.1:<port>/#k=<secret>`: the part after `#` never leaves the browser, and the page
-moves it into its origin's storage and out of the address bar at once. A page opened by hand asks
-for the 6-digit code `lindroids pair` shows; five wrong codes close pairing until the server
-restarts.
+**Who may connect.** Both ends hold ECDSA P-256 keys (`lindroids-proto/src/auth.rs`; WebCrypto in
+the page):
 
-**One display at a time.** A newly linked page replaces the old one, which is told so (`Bye`) and
-waits rather than taking the link back; a tab with one history entry (one the browser opened for
-`lindroids run`) closes itself, so browsers that open a new tab per intent do not pile them up.
+- **The relay's key** is `~/.local/share/lindroids/relay.key`.
+- **Each display** (a browser profile, `debug-app`) made its own key pair when it paired. The
+  page's private key is a non-extractable CryptoKey in IndexedDB. The relay keeps only public keys
+  (`displays/<id>.json`; `lindroids displays [forget <id>]`).
+- **The handshake.** Each side signs the other's nonce together with the page's origin. The page
+  accepts only the relay key it pinned when it paired.
+- **Pairing.** A display pairs with a *ticket* that the CLI puts in the URL fragment of the window
+  it opens (`#t=…`, never sent over HTTP), or with the 6-digit code `lindroids pair` shows. Five
+  wrong codes close pairing until the server restarts.
+- **Attaching to a run.** A run's window must also present that run's ticket.
 
-**Opening the page.** The CLI sends a VIEW intent from the terminal: Termux's am socket server
-(`termux-am`), else Termux's `am` (app_process; skipped on x86 images with an ARM translation
-layer, where seccomp kills it), else Android's `am`; `xdg-open` on a desktop. No permission is
-involved. The intent names the browser application id `lindroids`, which Chrome uses to bring back
-the same tab. When a page is already linked, the CLI raises it with exactly its URL (the page
-reports its path): Firefox then switches to that tab instead of opening another, and Chrome
-reuses its tab (and reloads it; the page relinks at once). On a desktop a linked page is left
-where it is.
+There is no TLS and no message encryption: on loopback they would protect against nobody that
+cannot already read the keys. DISPLAY.md has the messages and the threat model.
+
+**Pages and runs.** What `lindroids run` starts on Android is a *run* (the pid it forked), with its
+own page, `/?window&run=<pid>`:
+
+- **Routing.** The server routes each window to its run's page: Wayland clients by their process
+  ancestry, X11 windows by their X client's pid (X-Resource).
+- **One page per run.** A run has one page; a second one for the same run stands down.
+- **The shared page.** It (`/`, for desktops and browsers without Custom Tabs) shows the rest;
+  the newest wins there.
+- **Lifecycle.** When a run's page closes, the run ends 5 s later; if its link is just lost, 60 s
+  later (`LINDROIDS_LINGER`). The whole process tree goes. When the program ends, the page shows
+  its icon and "closed".
+- **Hidden pages wait.** A page nobody can see does not link until it is shown.
+- **Updates.** A page from an older build reloads itself.
+
+**Opening the page.**
+
+- **On Android:** the helper (`shortcut.dex open`, run with `app_process` as Termux) sends a VIEW
+  intent with a Custom Tabs session extra to the first installed browser that has Custom Tabs
+  (`LINDROIDS_BROWSER` first). The same URL again brings back the same window.
+- **Elsewhere:** Termux's `termux-am`, else `am`, else `xdg-open` open the shared page.
+
+No permission is involved.
 
 ## Frames
 
@@ -195,14 +214,16 @@ arguments, with the distro found pinned) and pins a shortcut — with no app of 
   `com.termux` (`IShortcutService.requestPinShortcut`, reached by reflection: its signature
   changes between releases), and the launcher asks the user to add it. Termux has a foreground
   activity or service at that moment, which the service requires. `lindroids remove` disables it
-  (an app cannot take a pinned shortcut off the home screen).
+  (an app cannot take a pinned shortcut off the home screen); exporting the same id again
+  enables it first, since a disabled shortcut can be neither updated nor pinned.
 - **What it does.** Its intent is a shared URL, `http://127.0.0.1:<port>/launch/termux/<id>`,
   sent to Termux's share receiver (`TermuxFileReceiverActivity`): no permission or Termux setting
   is involved, Termux starts if it is closed, and it runs `~/bin/termux-url-opener <url>` in a
   session. `lindroids export` installs that opener; it runs `lindroids launch <id>` for these URLs
   and hands every other URL to the opener the user had (kept in
   `~/.local/share/lindroids/termux-url-opener.before`). `lindroids launch` is `lindroids run` with
-  the recorded arguments: it starts the server if needed and brings the browser to the front.
+  the recorded arguments: it starts the server if needed and opens the program's window. If the
+  program is already running (`<runtime>/launched/<id>.pid`), it brings back its window instead.
 - **Where it does not work.** On x86 images with an ARM translation layer, `app_process` is
   killed by seccomp (see above), so no shortcut is made; `lindroids launch <id>` still works. On
   a desktop, an exported program gets a `.desktop` file instead.

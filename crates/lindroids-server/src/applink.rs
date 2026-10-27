@@ -79,15 +79,15 @@ pub enum Outcome {
     Linked {
         conn: Conn,
         framer: Framer,
-        /// Set when pairing by code worked: the secret to keep.
-        paired: Option<String>,
+        /// Set when pairing by code worked: the display id given, and the relay's key to pin.
+        paired: Option<(String, String)>,
         sandbox: String,
         /// Messages that arrived with the server's Hello.
         backlog: Vec<(ToApp, Vec<u8>)>,
     },
     /// Not paired, or wrong code. `open`: pairing still accepts codes.
     Denied { open: bool, reason: String },
-    /// The server could not prove it knows our secret: a stale pairing, or not the real server.
+    /// The server could not prove it holds the relay key we pinned: not the real server.
     WrongServer,
     /// Nothing there, or it hung up.
     Absent(String),
@@ -135,7 +135,50 @@ pub struct Display {
     pub screen: Option<(u32, u32)>,
 }
 
-pub fn connect(uid: u32, socket_name: Option<&str>, secret: Option<&str>, code: Option<&str>, display: Display, build: &str) -> Outcome {
+/// Who the app is to the relay: its key pair and, once paired, its display id and the relay key
+/// it pinned. Kept as a file (`load`/`save`) only this user can read.
+pub struct Identity {
+    pub key: auth::KeyPair,
+    pub display: Option<String>,
+    pub relay_key: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct IdentityFile {
+    key: String,
+    display: Option<String>,
+    relay_key: Option<String>,
+}
+
+impl Identity {
+    /// The identity in `path`, or a new unpaired one.
+    pub fn load(path: &std::path::Path) -> Identity {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let file: Option<IdentityFile> = std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        if let Some(f) = file {
+            if let Some(key) = b64.decode(&f.key).ok().and_then(|b| auth::KeyPair::from_bytes(&b)) {
+                return Identity { key, display: f.display, relay_key: f.relay_key };
+            }
+        }
+        Identity { key: auth::KeyPair::generate().expect("randomness"), display: None, relay_key: None }
+    }
+
+    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        use base64::Engine;
+        use std::os::unix::fs::OpenOptionsExt;
+        let f = IdentityFile {
+            key: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(self.key.to_bytes()),
+            display: self.display.clone(),
+            relay_key: self.relay_key.clone(),
+        };
+        let _ = std::fs::remove_file(path);
+        let mut out = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+        out.write_all(&serde_json::to_vec(&f).unwrap_or_default())
+    }
+}
+
+pub fn connect(uid: u32, socket_name: Option<&str>, id: &Identity, code: Option<&str>, display: Display, build: &str) -> Outcome {
     let mut conn = match reach(uid, socket_name) {
         Ok(c) => c,
         Err(e) => return Outcome::Absent(e),
@@ -154,20 +197,30 @@ pub fn connect(uid: u32, socket_name: Option<&str>, secret: Option<&str>, code: 
     if let Err(e) = conn.write_all(&proto::encode(&hello)) {
         return Outcome::Absent(e.to_string());
     }
-    let (server_nonce, proof) = match read_one(&mut conn, &mut framer, deadline) {
-        Ok((ToApp::Challenge { nonce, proof }, _)) => (nonce, proof),
+    let (server_nonce, proof, relay_key) = match read_one(&mut conn, &mut framer, deadline) {
+        Ok((ToApp::Challenge { nonce, proof, relay_key }, _)) => (nonce, proof, relay_key),
         Ok((other, _)) => return Outcome::Absent(format!("unexpected answer {other:?}")),
         Err(e) => return Outcome::Absent(e),
     };
-    let auth_msg = match (secret, code) {
-        (_, Some(c)) => ToServer::Auth { proof: None, code: Some(c.into()) },
-        (Some(s), None) => {
-            if !auth::same(&proof, &auth::server_proof(s, &nonce)) {
-                return Outcome::WrongServer;
-            }
-            ToServer::Auth { proof: Some(auth::app_proof(s, &server_nonce)), code: None }
+    // Not a web page: no origin in what is signed.
+    let relay_signed = auth::relay_transcript("", &nonce, &server_nonce);
+    if id.relay_key.as_deref().map_or(false, |k| k != relay_key) || !auth::verify(&relay_key, &relay_signed, &proof) {
+        return Outcome::WrongServer;
+    }
+    let my_proof = Some(id.key.sign(&auth::display_transcript("", &server_nonce, &nonce)));
+    let auth_msg = match (&id.display, code) {
+        (Some(d), _) if id.relay_key.is_some() => {
+            ToServer::Auth { display: Some(d.clone()), proof: my_proof, public_key: None, ticket: None, code: None, name: None }
         }
-        (None, None) => ToServer::Auth { proof: None, code: None },
+        (_, Some(c)) => ToServer::Auth {
+            display: None,
+            proof: my_proof,
+            public_key: Some(id.key.public()),
+            ticket: None,
+            code: Some(c.into()),
+            name: Some(build.into()),
+        },
+        _ => ToServer::Auth { display: None, proof: None, public_key: None, ticket: None, code: None, name: None },
     };
     if let Err(e) = conn.write_all(&proto::encode(&auth_msg)) {
         return Outcome::Absent(e.to_string());
@@ -175,7 +228,7 @@ pub fn connect(uid: u32, socket_name: Option<&str>, secret: Option<&str>, code: 
     let mut paired = None;
     loop {
         match read_one(&mut conn, &mut framer, deadline) {
-            Ok((ToApp::Paired { secret }, _)) => paired = Some(secret),
+            Ok((ToApp::Paired { display }, _)) => paired = Some((display, relay_key.clone())),
             Ok((ToApp::AuthFailed { reason, pairing_open }, _)) => return Outcome::Denied { open: pairing_open, reason },
             Ok((ToApp::Hello { sandbox, .. }, _)) => {
                 conn.set_timeout(None);

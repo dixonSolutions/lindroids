@@ -18,6 +18,66 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use log::{info, warn};
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// The running xwayland-satellite (its pid) and the X display it serves, for `run_for_window`.
+static SATELLITE: AtomicU32 = AtomicU32::new(0);
+static DISPLAY: AtomicU32 = AtomicU32::new(u32::MAX);
+
+/// The run an X11 window belongs to. Satellite shows every X11 window as one Wayland client of
+/// its own, so the Wayland side cannot tell whose it is; the X server can. Find the X toplevel
+/// with this title and class, ask the X-Resource extension which process owns it, and go up from
+/// that process to what `lindroids run` started. Only for satellite's windows (`client_pid`), so
+/// asking never starts X11 by itself.
+pub fn run_for_window(client_pid: Option<u32>, title: &str, app_id: &str) -> Option<u32> {
+    let sat = SATELLITE.load(Ordering::SeqCst);
+    if sat == 0 || client_pid != Some(sat) {
+        return None;
+    }
+    // On a thread, with a deadline: this runs in the compositor, and Xwayland reaches the
+    // compositor through satellite, so a stuck X server must not stop it.
+    let (title, app_id) = (title.to_string(), app_id.to_string());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(owner_of_x_window(&title, &app_id));
+    });
+    rx.recv_timeout(Duration::from_millis(500)).ok().flatten()
+}
+
+fn owner_of_x_window(title: &str, app_id: &str) -> Option<u32> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::res::{ClientIdMask, ClientIdSpec, ConnectionExt as _};
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+
+    let display = DISPLAY.load(Ordering::SeqCst);
+    if display == u32::MAX {
+        return None;
+    }
+    let (conn, screen) = x11rb::rust_connection::RustConnection::connect(Some(&format!(":{display}"))).ok()?;
+    let root = conn.setup().roots.get(screen)?.root;
+    let atom = |name: &[u8]| conn.intern_atom(false, name).ok()?.reply().ok().map(|r| r.atom);
+    let (net_name, utf8) = (atom(b"_NET_WM_NAME")?, atom(b"UTF8_STRING")?);
+    let text = |w: u32, prop: u32, ty: u32| -> Option<Vec<u8>> {
+        let r = conn.get_property(false, w, prop, ty, 0, 1024).ok()?.reply().ok()?;
+        (r.value_len > 0).then_some(r.value)
+    };
+    let mut best: Option<(u32, u32)> = None; // (score, window)
+    for w in conn.query_tree(root).ok()?.reply().ok()?.children {
+        let Some(class) = text(w, AtomEnum::WM_CLASS.into(), AtomEnum::STRING.into()) else { continue };
+        let class_ok = class.split(|b| *b == 0).any(|c| !c.is_empty() && c == app_id.as_bytes());
+        let name = text(w, net_name, utf8).or_else(|| text(w, AtomEnum::WM_NAME.into(), AtomEnum::STRING.into()));
+        let title_ok = !title.is_empty() && name.as_deref() == Some(title.as_bytes());
+        let score = class_ok as u32 * 2 + title_ok as u32;
+        if score > 0 && best.map_or(true, |(s, _)| score > s) {
+            best = Some((score, w));
+        }
+    }
+    let (_, window) = best?;
+    let spec = ClientIdSpec { client: window, mask: ClientIdMask::LOCAL_CLIENT_PID };
+    let ids = conn.res_query_client_ids(&[spec]).ok()?.reply().ok()?;
+    let pid = ids.ids.iter().find(|id| id.spec.mask.contains(ClientIdMask::LOCAL_CLIENT_PID)).and_then(|id| id.value.first().copied())?;
+    crate::icons::launch_of_pid(pid)
+}
 
 /// Where satellite comes from, in order: LINDROIDS_XWAYLAND_SATELLITE, the copy Lindroids ships
 /// next to its own binary (`<prefix>/libexec/lindroids/`), then PATH (a distro's own package).
@@ -205,6 +265,8 @@ impl X11 {
         match cmd.spawn() {
             Ok(child) => {
                 info!("X11: started xwayland-satellite for :{} (pid {})", self.display, child.id());
+                SATELLITE.store(child.id(), Ordering::SeqCst);
+                DISPLAY.store(self.display, Ordering::SeqCst);
                 self.phase = Phase::Running { child, since: Instant::now() };
             }
             Err(e) => {

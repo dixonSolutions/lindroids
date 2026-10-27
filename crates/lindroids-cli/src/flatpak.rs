@@ -281,8 +281,7 @@ fn android_timezone() -> Option<String> {
 
 /// Where generated per-app state lives (skeleton roots, /etc files).
 fn state_dir() -> PathBuf {
-    let secret = lindroids_server::secret_path();
-    secret.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("/tmp")).join("flatpak")
+    lindroids_server::state_dir().join("flatpak")
 }
 
 fn io_err(p: &Path, e: std::io::Error) -> String {

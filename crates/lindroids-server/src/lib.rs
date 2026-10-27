@@ -57,8 +57,6 @@ pub struct Config {
     pub sandbox: String,
     /// Output scale; None picks one from the screen density.
     pub scale: Option<u32>,
-    /// Long-term secret the app proves itself with. None: load or create the per-user one.
-    pub secret: Option<String>,
     /// Abstract socket for the app. None: `lindroids.server.<uid>`.
     pub socket_name: Option<String>,
 }
@@ -69,7 +67,6 @@ impl Config {
             runtime_dir: std::env::var_os("LINDROIDS_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(default_runtime_dir),
             sandbox: "Linux".into(),
             scale: std::env::var("LINDROIDS_SCALE").ok().and_then(|s| s.parse().ok()),
-            secret: None,
             socket_name: None,
         };
         let mut it = args.iter();
@@ -78,7 +75,6 @@ impl Config {
                 "--runtime-dir" => cfg.runtime_dir = it.next().map(PathBuf::from).unwrap_or(cfg.runtime_dir),
                 "--sandbox" => cfg.sandbox = it.next().cloned().unwrap_or(cfg.sandbox),
                 "--scale" => cfg.scale = it.next().and_then(|s| s.parse().ok()),
-                "--secret" => cfg.secret = it.next().cloned(),
                 "--socket-name" => cfg.socket_name = it.next().cloned(),
                 _ => {}
             }
@@ -92,7 +88,7 @@ pub fn default_runtime_dir() -> PathBuf {
     tmp.join(format!("lindroids-{}", unsafe { libc::getuid() }))
 }
 
-/// Where lindroids keeps what lasts: the pairing secret, exported programs.
+/// Where lindroids keeps what lasts: the relay's key, paired displays, exported programs.
 pub fn state_dir() -> PathBuf {
     std::env::var_os("LINDROIDS_STATE_DIR").map(PathBuf::from).unwrap_or_else(|| {
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
@@ -100,10 +96,6 @@ pub fn state_dir() -> PathBuf {
     })
 }
 
-/// Where the long-term pairing secret lives.
-pub fn secret_path() -> PathBuf {
-    state_dir().join("secret")
-}
 
 /// An exported program's record (`lindroids export`), if `id` is one.
 pub fn exported_path(id: &str) -> Option<PathBuf> {
@@ -115,21 +107,88 @@ pub fn load_exported(id: &str) -> Option<proto::Exported> {
     std::fs::read(p).ok().and_then(|b| serde_json::from_slice(&b).ok())
 }
 
-pub fn load_or_create_secret() -> String {
-    let path = secret_path();
+/// Writes a file only this user can read, creating its directory.
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("new");
+    let _ = std::fs::remove_file(&tmp);
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+    f.write_all(bytes)?;
+    drop(f);
+    std::fs::rename(&tmp, path)
+}
+
+/// The label of the pages' origin, `http://<label>.localhost:<port>`: 128 random bits, made
+/// once. An app that takes the port while the server is down can serve pages, but not in this
+/// origin, so not with what pages keep (see docs/DISPLAY.md, "The origin").
+pub fn origin_label() -> String {
+    let path = state_dir().join("origin");
     if let Ok(s) = std::fs::read_to_string(&path) {
-        let s = s.trim().to_string();
-        if s.len() >= 32 {
-            return s;
+        let s = s.trim();
+        if s.len() >= 26 && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()) {
+            return s.to_string();
         }
     }
-    let s = shm::random_string(43, b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_");
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+    // Base32 (lowercase, so it survives DNS case folding): 26 characters, 130 bits.
+    let mut bytes = [0u8; 26];
+    let _ = proto::auth::random_bytes(&mut bytes);
+    let label: String = bytes.iter().map(|b| b"abcdefghijklmnopqrstuvwxyz234567"[(b & 31) as usize] as char).collect();
+    let _ = write_private(&path, label.as_bytes());
+    // Whoever wrote first wins (two processes starting at once).
+    std::fs::read_to_string(&path).map(|s| s.trim().to_string()).unwrap_or(label)
+}
+
+/// The pages' origin.
+pub fn page_origin(port: u16) -> String {
+    format!("http://{}.localhost:{port}", origin_label())
+}
+
+/// The relay's own key pair (`<state>/relay.key`, 0600), made once.
+pub fn load_or_create_relay_key() -> proto::auth::KeyPair {
+    let path = state_dir().join("relay.key");
+    if let Some(k) = std::fs::read(&path).ok().and_then(|b| proto::auth::KeyPair::from_bytes(&b)) {
+        return k;
     }
-    let _ = std::fs::write(&path, &s);
-    let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600));
-    s
+    let k = proto::auth::KeyPair::generate().expect("randomness for the relay's key");
+    if let Err(e) = write_private(&path, &k.to_bytes()) {
+        warn!("cannot keep the relay's key in {}: {e} (displays will have to pair again)", path.display());
+    }
+    k
+}
+
+fn displays_dir() -> PathBuf {
+    state_dir().join("displays")
+}
+
+/// The displays that paired with this relay.
+pub fn load_displays() -> Vec<proto::DisplayInfo> {
+    let Ok(rd) = std::fs::read_dir(displays_dir()) else { return Vec::new() };
+    let mut v: Vec<proto::DisplayInfo> = rd
+        .flatten()
+        .filter(|e| e.path().extension().map_or(false, |x| x == "json"))
+        .filter_map(|e| std::fs::read(e.path()).ok().and_then(|b| serde_json::from_slice(&b).ok()))
+        .collect();
+    v.sort_by_key(|d| d.paired);
+    v
+}
+
+fn find_display(id: &str) -> Option<proto::DisplayInfo> {
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return None;
+    }
+    std::fs::read(displays_dir().join(format!("{id}.json"))).ok().and_then(|b| serde_json::from_slice(&b).ok())
+}
+
+fn save_display(d: &proto::DisplayInfo) -> std::io::Result<()> {
+    write_private(&displays_dir().join(format!("{}.json", d.id)), &serde_json::to_vec_pretty(d).unwrap_or_default())
+}
+
+/// Forget a display: it has to pair again.
+pub fn forget_display(id: &str) -> bool {
+    find_display(id).is_some() && std::fs::remove_file(displays_dir().join(format!("{id}.json"))).is_ok()
 }
 
 // ------------------------------------------------------------------ cross-thread handoff
@@ -235,6 +294,10 @@ pub struct Window {
     /// xdg-decoration object, and the mode told to the client (None: not told yet).
     pub decoration: Option<wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1>,
     pub decoration_mode: Option<wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode>,
+    /// The run (the pid `lindroids run` started) this window belongs to, once known.
+    pub run: Option<u32>,
+    /// The link (page) the window is announced on.
+    pub link: Option<u64>,
 }
 
 struct CliConn {
@@ -260,10 +323,16 @@ pub struct State {
     pub windows: BTreeMap<u32, Window>,
     next_win: u32,
     pub scale: u32,
-    pub link: Option<Link>,
+    /// Linked pages: one per run that has a window of its own, and the page showing the rest.
+    pub links: Vec<Link>,
+    next_link: u64,
+    /// The page last used (linked, or touched): what is not about one window goes there.
+    primary: Option<u64>,
     /// Links that have not authenticated yet.
     pending: Vec<Link>,
-    secret: String,
+    relay_key: auth::KeyPair,
+    /// Tickets handed to the CLI for page URLs: (ticket, the run it is for, good until).
+    tickets: Vec<(String, Option<u32>, Instant)>,
     pub pairing_code: String,
     pairing_failures: u32,
     pub seat: seat::Seat,
@@ -275,6 +344,9 @@ pub struct State {
     /// Surfaces not shown anywhere whose frame callbacks are due.
     pub frame_due: Vec<ObjectId>,
     pub running: bool,
+    /// Pages that went away, by the run they showed (None: the page showing everything else):
+    /// what was started into them ends when the grace is over, unless a page for it links again.
+    unlinked: Vec<(Option<u32>, Instant, Duration)>,
     clis: Vec<CliConn>,
     next_request: u32,
     clients: u32,
@@ -290,30 +362,140 @@ impl State {
         self.start.elapsed().as_millis() as u32
     }
 
+    /// A ticket for a page URL: the run's (good while it runs), or the shared page's (good for
+    /// 10 minutes). The same one again while it is good, so the URL stays the same and opening it
+    /// again brings back the same window.
+    fn ticket(&mut self, run: Option<u32>) -> String {
+        self.tickets.retain(|(_, r, until)| *until > Instant::now() && r.map_or(true, |p| Path::new(&format!("/proc/{p}")).exists()));
+        if let Some((t, ..)) = self.tickets.iter().find(|(_, r, _)| *r == run) {
+            return t.clone();
+        }
+        let t = auth::random_token(16);
+        let life = if run.is_some() { Duration::from_secs(24 * 3600) } else { Duration::from_secs(600) };
+        self.tickets.push((t.clone(), run, Instant::now() + life));
+        t
+    }
+
+    /// Whether `t` is a ticket handed out and still good; for `run`, that run's.
+    fn ticket_valid(&mut self, t: &str, run: Option<u32>) -> bool {
+        self.tickets.retain(|(_, r, until)| *until > Instant::now() && r.map_or(true, |p| Path::new(&format!("/proc/{p}")).exists()));
+        self.tickets.iter().any(|(v, r, _)| auth::same(v, t) && (run.is_none() || *r == run))
+    }
+
+    /// The origin pages are served in.
+    fn origin(&self) -> String {
+        format!("http://{}.localhost:{}", web::origin_label(), proto::server_tcp_port(proto::real_uid()))
+    }
+
+    /// Whether any page is linked.
+    pub fn linked(&self) -> bool {
+        !self.links.is_empty()
+    }
+
+    fn primary_link(&self) -> Option<&Link> {
+        self.primary.and_then(|id| self.links.iter().find(|l| l.id == id)).or_else(|| self.links.last())
+    }
+
+    /// What is not about one window (sound, the portal, notifications, the cursor): to the page
+    /// last used.
     pub fn send_app(&mut self, msg: &ToApp) {
         self.send_app_with(msg, &[]);
     }
 
     pub fn send_app_with(&mut self, msg: &ToApp, payload: &[u8]) {
-        let Some(link) = &mut self.link else { return };
-        link.send_with(msg, payload);
-        if link.broken {
-            warn!("app link write failed");
-            self.drop_link();
+        if let Some(id) = self.primary_link().map(|l| l.id) {
+            self.send_to(id, msg, payload);
         }
     }
 
-    fn drop_link(&mut self) {
-        self.link = None;
-        portal::app_changed(0);
-        for w in self.windows.values_mut() {
+    /// About one window: to the page that shows it.
+    pub fn send_win(&mut self, win: u32, msg: &ToApp) {
+        self.send_win_with(win, msg, &[]);
+    }
+
+    pub fn send_win_with(&mut self, win: u32, msg: &ToApp, payload: &[u8]) {
+        if let Some(id) = self.windows.get(&win).and_then(|w| w.link) {
+            self.send_to(id, msg, payload);
+        }
+    }
+
+    fn send_to(&mut self, id: u64, msg: &ToApp, payload: &[u8]) {
+        let Some(link) = self.links.iter_mut().find(|l| l.id == id) else { return };
+        link.send_with(msg, payload);
+        if link.broken {
+            warn!("app link write failed");
+            self.drop_link(id);
+        }
+    }
+
+    /// The page for a run: its own window, else (for what did not ask for one) the page showing
+    /// everything else, else the page last used. None: not shown (yet).
+    fn route(&self, run: Option<u32>) -> Option<u64> {
+        if let Some(r) = run {
+            if let Some(l) = self.links.iter().rev().find(|l| l.run == Some(r)) {
+                return Some(l.id);
+            }
+            if icons::wants_own_window(r) {
+                return None;
+            }
+        }
+        self.links.iter().rev().find(|l| l.run.is_none()).map(|l| l.id).or_else(|| self.primary_link().map(|l| l.id))
+    }
+
+    /// A window starts over on another page (or none): what the old one showed is forgotten.
+    fn unshow(&mut self, win: u32) {
+        if let Some(w) = self.windows.get_mut(&win) {
             w.announced = false;
+            w.link = None;
             w.in_flight = false;
             w.shown.clear();
             w.shown_size = (0, 0);
             w.dirty = true;
             self.frame_due.extend(w.waiting.drain(..));
         }
+    }
+
+    /// The run a window belongs to: what `lindroids run` started its client (a Wayland client
+    /// descending from it, or an X11 window owned by one), if anything.
+    fn run_of(&self, win: u32) -> Option<u32> {
+        let w = self.windows.get(&win)?;
+        w.run
+            .or_else(|| icons::launch_for_window(&self.dh, &w.client))
+            .or_else(|| x11::run_for_window(icons::client_pid(&self.dh, &w.client), &w.title, &w.app_id))
+    }
+
+    /// Show every window on the page it belongs on now that pages (or launches) came or went.
+    fn reroute(&mut self) {
+        let wins: Vec<u32> = self.windows.keys().copied().collect();
+        for win in wins {
+            let Some(w) = self.windows.get(&win) else { continue };
+            if !w.mapped {
+                continue;
+            }
+            let run = self.run_of(win);
+            let to = self.route(run);
+            if w.link == to && w.announced {
+                continue;
+            }
+            if w.announced && w.link.is_some() {
+                self.send_win(win, &ToApp::WindowClose { win });
+            }
+            self.unshow(win);
+            self.announce(win);
+        }
+    }
+
+    fn drop_link(&mut self, id: u64) {
+        self.links.retain(|l| l.id != id);
+        if self.primary == Some(id) {
+            self.primary = self.links.last().map(|l| l.id);
+        }
+        portal::app_changed(self.primary_link().map_or(0, |l| l.version));
+        let wins: Vec<u32> = self.windows.iter().filter(|(_, w)| w.link == Some(id)).map(|(k, _)| *k).collect();
+        for win in wins {
+            self.unshow(win);
+        }
+        self.reroute();
     }
 
     /// The window that a surface (or the popup/subsurface tree it belongs to) is drawn in.
@@ -349,9 +531,17 @@ impl State {
 
     fn announce(&mut self, win: u32) {
         let Some(w) = self.windows.get(&win) else { return };
-        if w.announced || !w.mapped || self.link.is_none() {
+        if w.announced || !w.mapped {
             return;
         }
+        let run = self.run_of(win);
+        let Some(to) = self.route(run) else {
+            if let Some(w) = self.windows.get_mut(&win) {
+                w.run = run;
+            }
+            return;
+        };
+        let Some(w) = self.windows.get(&win) else { return };
         let launched = icons::name_for_window(&self.dh, &w.client);
         // A rootful Xwayland window is the X11 program the user ran: name it after that.
         let title = if w.app_id == "org.freedesktop.Xwayland" && launched.is_some() {
@@ -370,8 +560,10 @@ impl State {
         if let Some(w) = self.windows.get_mut(&win) {
             w.announced = true;
             w.dirty = true;
+            w.run = run;
+            w.link = Some(to);
         }
-        self.send_app(&msg);
+        self.send_win(win, &msg);
     }
 
     pub fn window_mapped(&mut self, win: u32) {
@@ -387,7 +579,9 @@ impl State {
     pub fn window_gone(&mut self, win: u32) {
         if let Some(w) = self.windows.remove(&win) {
             if w.announced {
-                self.send_app(&ToApp::WindowClose { win });
+                if let Some(id) = w.link {
+                    self.send_to(id, &ToApp::WindowClose { win }, &[]);
+                }
             }
             if self.seat.focus_win == Some(win) {
                 self.seat.focus_win = None;
@@ -421,35 +615,68 @@ impl State {
         match (&link.phase, msg) {
             (Phase::Hello, ToServer::Hello { version, build, density, nonce: app_nonce, screen, page }) => {
                 link.page = page.filter(|p| p.starts_with('/') && p.len() < 256);
-                let nonce = shm::random_string(32, b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
-                let proof = auth::server_proof(&self.secret, &app_nonce);
-                link.send(&ToApp::Challenge { nonce: nonce.clone(), proof });
+                link.run = link.page.as_deref().and_then(run_of_page);
+                let nonce = auth::random_token(24);
+                let proof = self.relay_key.sign(&auth::relay_transcript(&link.origin, &app_nonce, &nonce));
+                link.send(&ToApp::Challenge { nonce: nonce.clone(), proof, relay_key: self.relay_key.public() });
                 link.phase = Phase::Auth { nonce, app_nonce, density, version, build, screen };
                 Some(link)
             }
-            (Phase::Auth { nonce, density, version, build, screen, .. }, ToServer::Auth { proof, code }) => {
+            (Phase::Auth { nonce, app_nonce, density, version, build, screen }, ToServer::Auth { display, proof, public_key, ticket, code, name }) => {
                 let (density, version, build, screen) = (*density, *version, build.clone(), *screen);
-                let by_secret = proof.as_deref().map_or(false, |p| auth::same(p, &auth::app_proof(&self.secret, nonce)));
-                let by_code = !by_secret
+                let signed = auth::display_transcript(&link.origin, nonce, app_nonce);
+                let proof = proof.unwrap_or_default();
+                // A paired display signs with the key it paired with.
+                let known = display.as_deref().and_then(find_display);
+                let by_key = known.as_ref().map_or(false, |d| auth::verify(&d.public_key, &signed, &proof));
+                // A new one shows it holds its new key, and has a ticket or the code.
+                let new_key = public_key.filter(|k| !by_key && auth::valid_public(k) && auth::verify(k, &signed, &proof));
+                // The code first: typed by the user, it is also their say-so for a new relay key.
+                let by_code = new_key.is_some()
                     && self.pairing_failures < MAX_PAIRING_FAILURES
                     && code.as_deref().map(|c| c.trim()) == Some(self.pairing_code.as_str());
-                if !by_secret && !by_code {
-                    if code.is_some() {
+                let by_ticket = new_key.is_some() && !by_code && ticket.as_deref().map_or(false, |t| self.ticket_valid(t, None));
+                // A run's window also needs that run's ticket, which only the CLI hands out (in the
+                // URL it opens): a page in our origin that the CLI did not open (the key works there
+                // too: it cannot be read out, but it can be used) attaches to nothing.
+                let run_ok = link.run.map_or(true, |r| ticket.as_deref().map_or(false, |t| self.ticket_valid(t, Some(r))));
+                if (!by_key && !by_ticket && !by_code) || !run_ok {
+                    if code.is_some() && !by_code {
                         self.pairing_failures += 1;
                     }
                     warn!("app at {} failed to authenticate", link.peer);
-                    let reason = if code.is_some() { "wrong pairing code" } else { "not paired" };
+                    let reason = if !run_ok && (by_key || by_ticket || by_code) {
+                        "this window was not opened by lindroids run"
+                    } else if code.is_some() {
+                        "wrong pairing code"
+                    } else if display.is_some() {
+                        "this display is not paired with this Lindroids any more"
+                    } else {
+                        "not paired"
+                    };
                     link.send(&ToApp::AuthFailed { reason: reason.into(), pairing_open: self.pairing_failures < MAX_PAIRING_FAILURES });
                     // Let the answer drain; the link closes when the app hangs up.
                     let mut l = link;
                     l.flush();
                     return None;
                 }
-                if by_code {
-                    link.send(&ToApp::Paired { secret: self.secret.clone() });
-                    // A code works once.
-                    self.pairing_code = new_pairing_code();
-                    write_pairing_code(&self.cfg, &self.pairing_code);
+                if let Some(public_key) = new_key.filter(|_| by_ticket || by_code) {
+                    let paired = proto::DisplayInfo {
+                        id: auth::random_token(9),
+                        name: name.unwrap_or_default().chars().take(80).collect(),
+                        public_key,
+                        paired: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()),
+                    };
+                    if let Err(e) = save_display(&paired) {
+                        warn!("cannot keep the new display: {e}");
+                    }
+                    info!("display {} ({}) paired by {}", paired.id, paired.name, if by_ticket { "ticket" } else { "code" });
+                    link.send(&ToApp::Paired { display: paired.id });
+                    if by_code {
+                        // A code works once.
+                        self.pairing_code = new_pairing_code();
+                        write_pairing_code(&self.cfg, &self.pairing_code);
+                    }
                 }
                 info!("app linked ({}, protocol {version}, build {build}, density {density})", link.peer);
                 if version != proto::PROTOCOL_VERSION {
@@ -459,16 +686,44 @@ impl State {
                 link.build = build.clone();
                 link.version = version;
                 link.phase = Phase::Ready;
-                // One display at a time: the newest wins, and the one before is told why it lost
-                // the link (a browser tab then waits instead of taking it straight back).
-                if let Some(old) = self.link.as_mut() {
-                    old.send(&ToApp::Bye { reason: "another display took over".into() });
+                // One page per run (and one for the rest). A run's window that is already linked
+                // stays: bringing it back sends its intent again, and Firefox then raises the
+                // window *and* loads a second copy nobody sees, which is told to stand down.
+                let run = link.run;
+                if run.is_some() && self.links.iter().any(|l| l.run == run) {
+                    info!("{} already has its window: the new page stands down", run.map_or(String::new(), |r| format!("run {r}")));
+                    link.send(&ToApp::Bye { reason: "this program's window is open already".into() });
+                    let mut l = link;
+                    l.flush();
+                    return None;
                 }
-                self.drop_link();
-                self.link = Some(link);
+                // For the rest, the newest wins, and the one before is told why it lost the link
+                // (a browser tab then waits instead of taking it back).
+                let old: Vec<u64> = self.links.iter().filter(|l| l.run == run).map(|l| l.id).collect();
+                for id in old {
+                    if let Some(l) = self.links.iter_mut().find(|l| l.id == id) {
+                        l.send(&ToApp::Bye { reason: "another display took over".into() });
+                        l.flush();
+                    }
+                    self.drop_link(id);
+                }
+                self.next_link += 1;
+                let id = self.next_link;
+                link.id = id;
+                self.links.push(link);
+                self.primary = Some(id);
+                let before = self.unlinked.len();
+                self.unlinked.retain(|(r, ..)| *r != run);
+                if self.unlinked.len() != before {
+                    info!("a page linked again: what was started keeps running");
+                }
                 portal::app_changed(version);
-                let hello = ToApp::Hello { version: proto::PROTOCOL_VERSION, build: BUILD.into(), sandbox: self.cfg.sandbox.clone() };
-                self.send_app(&hello);
+                let hello = ToApp::Hello { version: proto::PROTOCOL_VERSION, build: web::page_build().into(), sandbox: self.cfg.sandbox.clone() };
+                self.send_to(id, &hello, &[]);
+                // A run's window shows the program's name and icon until its first window does.
+                if let Some((name, icon_png_b64)) = run.and_then(icons::launch_info) {
+                    self.send_to(id, &ToApp::Run { name, icon_png_b64 }, &[]);
+                }
                 audio::link_up();
                 if let Some((w, h)) = screen {
                     output::screen_size_hint(self, w, h);
@@ -480,10 +735,7 @@ impl State {
                         output::scale_changed(self);
                     }
                 }
-                let wins: Vec<u32> = self.windows.keys().copied().collect();
-                for w in wins {
-                    self.announce(w);
-                }
+                self.reroute();
                 None
             }
             (_, other) => {
@@ -493,7 +745,10 @@ impl State {
         }
     }
 
-    fn handle_app_message(&mut self, msg: ToServer, payload: Vec<u8>) {
+    fn handle_app_message(&mut self, from: u64, msg: ToServer, payload: Vec<u8>) {
+        if matches!(msg, ToServer::Touch { .. } | ToServer::Pointer { .. } | ToServer::Key { .. } | ToServer::Text { .. } | ToServer::Focus { focused: true, .. }) {
+            self.primary = Some(from);
+        }
         if portal::wants(&msg) {
             return portal::from_app(msg, payload);
         }
@@ -535,6 +790,11 @@ impl State {
                 }
                 log::debug!("frame done win {win}: {n} callbacks");
             }
+            ToServer::Closing => {
+                if let Some(l) = self.links.iter_mut().find(|l| l.id == from) {
+                    l.closing = true;
+                }
+            }
             ToServer::Close { win } => {
                 if let Some(w) = self.windows.get(&win) {
                     w.toplevel.close();
@@ -565,9 +825,11 @@ impl State {
             CliRequest::Status => Some(CliReply::Status {
                 version: proto::PROTOCOL_VERSION,
                 build: BUILD.into(),
-                app_connected: self.link.is_some(),
-                app_build: self.link.as_ref().map(|l| l.build.clone()),
-                display_page: self.link.as_ref().and_then(|l| l.page.clone()),
+                app_connected: self.linked(),
+                app_build: self.primary_link().map(|l| l.build.clone()),
+                display_page: self.primary_link().and_then(|l| l.page.clone()),
+                shown_runs: self.links.iter().filter_map(|l| l.run).collect(),
+                origin: self.origin(),
                 pairing_code: (self.pairing_failures < MAX_PAIRING_FAILURES).then(|| self.pairing_code.clone()),
                 windows: self
                     .windows
@@ -582,17 +844,26 @@ impl State {
                     .collect(),
                 clients: self.clients,
             }),
+            CliRequest::Ticket { run } => Some(CliReply::Ticket { ticket: self.ticket(run), origin: self.origin() }),
+            CliRequest::Displays => Some(CliReply::Displays { displays: load_displays() }),
+            CliRequest::ForgetDisplay { id } => Some(if forget_display(&id) {
+                CliReply::Ok { message: format!("forgot {id}: it has to pair again") }
+            } else {
+                CliReply::Error { message: format!("no display {id:?} (lindroids displays)") }
+            }),
             CliRequest::Stop => {
                 self.running = false;
                 Some(CliReply::Ok { message: "stopping".into() })
             }
-            CliRequest::Launch { pid, name, icon_png_b64 } => {
-                icons::register_launch(pid, name, icon_png_b64);
+            CliRequest::Launch { pid, name, icon_png_b64, window } => {
+                icons::register_launch(pid, name, icon_png_b64, window);
+                // Windows it opened before it was registered move to where they belong.
+                self.reroute();
                 Some(CliReply::Ok { message: "registered".into() })
             }
             CliRequest::Info => Some(CliReply::Info { system: portal::system() }),
             CliRequest::Notify { title, body } => {
-                if self.link.is_none() {
+                if !self.linked() {
                     Some(no_app())
                 } else {
                     portal::notify(title, body);
@@ -625,7 +896,7 @@ impl State {
                 }
             },
             CliRequest::PickFolder => {
-                if self.link.is_none() {
+                if !self.linked() {
                     Some(no_app())
                 } else {
                     self.next_request += 1;
@@ -790,7 +1061,8 @@ pub fn run(cfg: Config) -> i32 {
 
     let mut display: Display<State> = Display::new().expect("wayland display");
     let dh = display.handle();
-    let secret = cfg.secret.clone().unwrap_or_else(load_or_create_secret);
+    let relay_key = load_or_create_relay_key();
+    web::set_origin_label(origin_label());
     let pairing_code = new_pairing_code();
     write_pairing_code(&cfg, &pairing_code);
     let scale = cfg.scale.unwrap_or(1);
@@ -803,9 +1075,12 @@ pub fn run(cfg: Config) -> i32 {
         windows: BTreeMap::new(),
         next_win: 0,
         scale,
-        link: None,
+        links: Vec::new(),
+        next_link: 0,
+        primary: None,
         pending: Vec::new(),
-        secret,
+        relay_key,
+        tickets: Vec::new(),
         pairing_code,
         pairing_failures: 0,
         seat: seat::Seat::default(),
@@ -814,6 +1089,7 @@ pub fn run(cfg: Config) -> i32 {
         extras: extras::ExtrasState::default(),
         popups: HashMap::new(),
         frame_due: Vec::new(),
+        unlinked: Vec::new(),
         running: true,
         clis: Vec::new(),
         next_request: 0,
@@ -850,6 +1126,7 @@ pub fn run(cfg: Config) -> i32 {
     let _ = std::io::stdout().flush();
 
     let mut last_frame_flush = Instant::now();
+    let mut last_socket_check = Instant::now();
     while state.running {
         let mut fds: Vec<libc::pollfd> = Vec::with_capacity(8 + state.clis.len() + state.pending.len());
         let pfd = |fd: RawFd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
@@ -859,12 +1136,14 @@ pub fn run(cfg: Config) -> i32 {
         fds.push(pfd(cli_listener.as_raw_fd()));
         fds.push(pfd(app_listener.as_ref().map_or(-1, |l| l.as_raw_fd())));
         fds.push(pfd(tcp_listener.as_ref().map_or(-1, |l| l.as_raw_fd())));
-        let link_idx = fds.len();
-        let mut lp = pfd(state.link.as_ref().map_or(-1, |l| l.fd()));
-        if state.link.as_ref().map_or(false, |l| l.wants_write()) {
-            lp.events |= libc::POLLOUT;
+        let link_base = fds.len();
+        for l in &state.links {
+            let mut lp = pfd(l.fd());
+            if l.wants_write() {
+                lp.events |= libc::POLLOUT;
+            }
+            fds.push(lp);
         }
-        fds.push(lp);
         let pending_base = fds.len();
         for p in &state.pending {
             let mut f = pfd(p.fd());
@@ -881,6 +1160,13 @@ pub fn run(cfg: Config) -> i32 {
         for fd in x11.as_ref().map(|x| x.poll_fds()).unwrap_or_default() {
             fds.push(pfd(fd));
         }
+        let due: Vec<Option<u32>> = state.unlinked.iter().filter(|(_, since, grace)| since.elapsed() >= *grace).map(|(r, ..)| *r).collect();
+        if !due.is_empty() {
+            state.unlinked.retain(|(_, since, grace)| since.elapsed() < *grace);
+            for run in due {
+                end_launches(run);
+            }
+        }
         let mut timeout = if state.frame_due.is_empty() { 1000 } else { 16 };
         if let Some(t) = x11.as_ref().and_then(|x| x.wants_timeout()) {
             timeout = timeout.min(t.as_millis() as i32);
@@ -890,6 +1176,15 @@ pub fn run(cfg: Config) -> i32 {
         if STOP.load(std::sync::atomic::Ordering::SeqCst) {
             info!("stopping on a signal");
             state.running = false;
+        }
+        // Termux empties its tmp dir when it starts again: a server whose control socket went
+        // with it can no longer be reached or stopped, and would hold the port for good.
+        if last_socket_check.elapsed() >= Duration::from_secs(2) {
+            last_socket_check = Instant::now();
+            if !cli_path.exists() {
+                warn!("{} is gone (the runtime dir was emptied): stopping", cli_path.display());
+                state.running = false;
+            }
         }
         if let Some(x) = x11.as_mut() {
             if fds[x11_base..].iter().any(|p| p.revents != 0) {
@@ -976,11 +1271,15 @@ pub fn run(cfg: Config) -> i32 {
                 None => {}
             }
         }
-        if fds[link_idx].revents != 0 && state.link.is_some() {
+        let polled: Vec<(u64, i16)> = state.links.iter().enumerate().map(|(k, l)| (l.id, fds.get(link_base + k).map_or(0, |p| p.revents))).collect();
+        for (id, revents) in polled {
+            if revents == 0 {
+                continue;
+            }
             let mut msgs = Vec::new();
             let alive = {
-                let l = state.link.as_mut().unwrap();
-                if fds[link_idx].revents & libc::POLLOUT != 0 {
+                let Some(l) = state.links.iter_mut().find(|l| l.id == id) else { continue };
+                if revents & libc::POLLOUT != 0 {
                     l.flush();
                 }
                 let alive = l.read();
@@ -991,13 +1290,22 @@ pub fn run(cfg: Config) -> i32 {
             };
             for m in msgs {
                 match m {
-                    Ok((m, payload)) => state.handle_app_message(m, payload),
+                    Ok((m, payload)) => state.handle_app_message(id, m, payload),
                     Err(e) => warn!("bad message from app: {e}"),
                 }
             }
             if !alive {
-                info!("app link closed");
-                state.drop_link();
+                // Closed on purpose (the page said so: its window was closed, or it reloads), or
+                // lost (the browser died: swiped away with its last window, or killed for memory,
+                // and then it reloads the page when the user comes back). Either way a page that
+                // links again in time keeps the programs; otherwise they end with their window.
+                let Some(l) = state.links.iter().find(|l| l.id == id) else { continue };
+                let (run, grace) = (l.run, if l.closing { Duration::from_secs(5) } else { linger() });
+                info!("page for {} closed; what was started into it ends in {}s unless it links again", run.map_or("the rest".into(), |r| format!("run {r}")), grace.as_secs());
+                state.drop_link(id);
+                if !state.links.iter().any(|l| l.run == run) {
+                    state.unlinked.push((run, Instant::now(), grace));
+                }
             }
         }
         let mut i = state.clis.len();
@@ -1052,15 +1360,52 @@ pub fn run(cfg: Config) -> i32 {
     0
 }
 
-/// Compose every window that changed and send what differs from what the app shows.
-fn render_dirty(state: &mut State) {
-    if state.link.as_ref().map_or(true, |l| l.pending() > (8 << 20)) {
+/// The run a page shows: `?run=<pid>` in its URL.
+fn run_of_page(page: &str) -> Option<u32> {
+    let query = page.split_once('?')?.1;
+    query.split('&').find_map(|kv| kv.strip_prefix("run=")).and_then(|v| v.parse().ok())
+}
+
+/// How long programs outlive a page that vanished without saying so (`LINDROIDS_LINGER`, seconds).
+fn linger() -> Duration {
+    Duration::from_secs(std::env::var("LINDROIDS_LINGER").ok().and_then(|v| v.parse().ok()).unwrap_or(60))
+}
+
+/// The window is gone, so are the programs `lindroids run` and `launch` started into it (`run`:
+/// that run; None: those without a window of their own): SIGTERM, and SIGKILL for whatever is
+/// still there 5 s later. (proot's --kill-on-exit takes its tracees.)
+fn end_launches(run: Option<u32>) {
+    let pids: Vec<u32> = match run {
+        Some(r) => icons::launched_pids().into_iter().filter(|p| *p == r).collect(),
+        None => icons::launched_pids().into_iter().filter(|p| !icons::wants_own_window(*p)).collect(),
+    };
+    if pids.is_empty() {
         return;
     }
+    info!("the window is gone: ending {pids:?}");
+    // The whole tree under each, children first: a program under proot is proot's tracee, and
+    // outlives proot otherwise.
+    let tree: Vec<u32> = pids.iter().flat_map(|p| icons::process_tree(*p)).collect();
+    for &p in &tree {
+        unsafe { libc::kill(p as i32, libc::SIGTERM) };
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(5));
+        for p in pids.iter().flat_map(|p| icons::process_tree(*p)) {
+            unsafe { libc::kill(p as i32, libc::SIGKILL) };
+        }
+    });
+}
+
+/// Compose every window that changed and send what differs from what the app shows.
+fn render_dirty(state: &mut State) {
+    // Pages with a lot still to send get no new frames until it has gone out.
+    let busy: Vec<u64> = state.links.iter().filter(|l| l.pending() > (8 << 20)).map(|l| l.id).collect();
     let wins: Vec<u32> = state
         .windows
         .iter()
         .filter(|(_, w)| w.dirty && w.announced && !w.in_flight && w.phys.is_some())
+        .filter(|(_, w)| w.link.map_or(false, |id| !busy.contains(&id)))
         .map(|(k, _)| *k)
         .collect();
     for win in wins {
@@ -1108,6 +1453,20 @@ fn render_dirty(state: &mut State) {
         w.waiting.extend(layers.surfaces);
         log::debug!("frame win {win}: {} rects, {} bytes", rects.len(), payload.len());
         let msg = ToApp::Tiles { win, width: pw, height: ph, rects, len: payload.len() as u32 };
-        state.send_app_with(&msg, &payload);
+        state.send_win_with(win, &msg, &payload);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_of_page;
+
+    #[test]
+    fn pages_name_their_run() {
+        assert_eq!(run_of_page("/?window&run=4242"), Some(4242));
+        assert_eq!(run_of_page("/?run=7&window"), Some(7));
+        assert_eq!(run_of_page("/?window"), None);
+        assert_eq!(run_of_page("/"), None);
+        assert_eq!(run_of_page("/?run=x"), None);
     }
 }

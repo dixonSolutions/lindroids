@@ -95,21 +95,23 @@ pub fn cmd_debug_app(args: &[String]) -> i32 {
     let _ = std::fs::create_dir_all(&dir);
     let rt = crate::sandbox::runtime_dir();
     let uid = unsafe { libc::getuid() };
-    // Pair once by code like the app does, then keep the secret.
-    let secret_file = dir.join(".secret");
-    let secret = std::fs::read_to_string(&secret_file).ok();
-    let code = if secret.is_none() { std::fs::read_to_string(rt.join("pairing-code")).ok() } else { None };
+    // Pair once by code like a browser can, then keep the key and the id.
+    let id_file = dir.join(".display");
+    let mut id = applink::Identity::load(&id_file);
+    let code = if id.display.is_none() { std::fs::read_to_string(rt.join("pairing-code")).ok() } else { None };
     let socket = if force_tcp { Some("lindroids.nothing-listens-here") } else { socket_name.as_deref() };
-    let (conn, mut framer, backlog) = match applink::connect(uid, socket, secret.as_deref(), code.as_deref().map(str::trim), applink::Display { density: 1.0, screen: Some(size) }, "debug-app") {
+    let (conn, mut framer, backlog) = match applink::connect(uid, socket, &id, code.as_deref().map(str::trim), applink::Display { density: 1.0, screen: Some(size) }, "debug-app") {
         Outcome::Linked { conn, framer, paired, sandbox, backlog } => {
-            if let Some(s) = paired {
-                let _ = std::fs::write(&secret_file, s);
+            if let Some((display, relay_key)) = paired {
+                id.display = Some(display);
+                id.relay_key = Some(relay_key);
+                let _ = id.save(&id_file);
             }
             println!("linked over {} to {sandbox}", conn.kind());
             (conn, framer, backlog)
         }
         Outcome::Denied { reason, .. } => return crate::fail(&format!("denied: {reason}")),
-        Outcome::WrongServer => return crate::fail("the server did not prove it knows our secret"),
+        Outcome::WrongServer => return crate::fail("the server did not prove it holds the relay key paired with (remove .display to pair again)"),
         Outcome::Absent(e) => return crate::fail(&format!("no server: {e}")),
     };
     let mut reader = conn.try_clone().unwrap();

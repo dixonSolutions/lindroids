@@ -321,6 +321,17 @@ exit $rc
 "#;
 
 pub fn cmd_run(args: &[String]) -> i32 {
+    cmd_run_launched(args, None)
+}
+
+/// Where `launch` notes the pid of an exported program it started, so that tapping its icon again
+/// brings back its window instead of starting another.
+pub fn launched_marker(id: &str) -> PathBuf {
+    sandbox::runtime_dir().join("launched").join(format!("{id}.pid"))
+}
+
+/// `run`, for the exported program `launched` (`lindroids launch <id>`) if given.
+pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
     let mut o = match parse(args) {
         Ok(o) => o,
         Err(e) => return crate::fail(&e),
@@ -335,7 +346,12 @@ pub fn cmd_run(args: &[String]) -> i32 {
         Ok(rt) => rt,
         Err(e) => return crate::fail(&e),
     };
-    crate::ensure_display(&sb, &rt, false);
+    // On Android every run gets a window of its own (a Custom Tab for `?run=<pid>`, opened once
+    // the program has a pid); elsewhere, and without a browser that has Custom Tabs, the shared page.
+    let own_window = sandbox::on_android();
+    if !own_window {
+        crate::ensure_display(&sb, &rt, false);
+    }
     if let Target::Program(argv) = &target {
         if !o.x11 && sandbox::x11_display(&rt).is_none() && x11_only_program(&o, argv) {
             eprintln!(
@@ -380,13 +396,28 @@ pub fn cmd_run(args: &[String]) -> i32 {
             });
         }
     }
-    let _ = client::request(
-        &rt,
-        &CliRequest::Launch { pid: child.id(), name, icon_png_b64: Some(base64::engine::general_purpose::STANDARD.encode(icon)) },
-        Duration::from_secs(3),
-    );
-    let code = match child.wait() {
-        Ok(st) => st.code().unwrap_or(1),
+    let marker = launched.map(launched_marker);
+    if let Some(m) = &marker {
+        let _ = std::fs::create_dir_all(m.parent().unwrap());
+        let _ = std::fs::write(m, child.id().to_string());
+    }
+    let icon_b64 = Some(base64::engine::general_purpose::STANDARD.encode(icon));
+    let register = |window: bool| {
+        let req = CliRequest::Launch { pid: child.id(), name: name.clone(), icon_png_b64: icon_b64.clone(), window };
+        let _ = client::request(&rt, &req, Duration::from_secs(3));
+    };
+    register(own_window);
+    if own_window && !crate::open_run_window(&sb, &rt, child.id()) {
+        register(false);
+        crate::ensure_display(&sb, &rt, false);
+    }
+    let waited = child.wait();
+    if let Some(m) = &marker {
+        let _ = std::fs::remove_file(m);
+    }
+    let code = match waited {
+        // Killed (its window closed, Ctrl+C): 128 + the signal, as a shell reports it.
+        Ok(st) => st.code().unwrap_or_else(|| 128 + std::os::unix::process::ExitStatusExt::signal(&st).unwrap_or(0)),
         Err(e) => return crate::fail(&e.to_string()),
     };
     match signal_watch.and_then(|t| t.join().ok()).flatten() {

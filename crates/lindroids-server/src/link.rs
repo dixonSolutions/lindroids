@@ -53,9 +53,19 @@ pub struct Link {
     pub build: String,
     /// The app's protocol version (from its Hello).
     pub version: u32,
-    /// The page's path, for a browser.
+    /// The page's path and query, for a browser.
     pub page: Option<String>,
     pub broken: bool,
+    /// Names this link among the others (windows remember which link shows them).
+    pub id: u64,
+    /// The run this page shows (`?run=<pid>`: a window of its own for what `lindroids run`
+    /// started); None for the page that shows everything else.
+    pub run: Option<u32>,
+    /// The page said it is going away (`Closing`) before its link closed.
+    pub closing: bool,
+    /// The origin of the page (its WebSocket's Origin); empty for a display that is not a page.
+    /// Signatures in the handshake cover it.
+    pub origin: String,
 }
 
 impl Link {
@@ -76,6 +86,10 @@ impl Link {
             version: 0,
             page: None,
             broken: false,
+            id: 0,
+            run: None,
+            closing: false,
+            origin: String::new(),
         }
     }
 
@@ -194,6 +208,7 @@ impl Link {
                                 self.out.extend_from_slice(&bytes);
                             }
                             web::Answer::Upgrade(bytes) => {
+                                self.origin = req.header("Origin").unwrap_or_default().to_string();
                                 log::info!("browser at {} opened the link", self.peer);
                                 self.wire = Wire::WebSocket;
                                 self.peer = format!("browser ({})", self.peer);

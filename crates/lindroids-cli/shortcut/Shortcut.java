@@ -60,8 +60,11 @@ public final class Shortcut {
                 pin(a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]);
             } else if (a.length >= 3 && a[0].equals("remove")) {
                 remove(a[1], a[2]);
+            } else if (a.length >= 5 && a[0].equals("open")) {
+                System.out.println("browser " + open(a[1], a[2], a[3], Arrays.copyOfRange(a, 4, a.length)));
             } else {
-                throw new IllegalArgumentException("usage: pin <package> <id> <label> <icon> <action> <component> <type> <text> | remove <package> <id>");
+                throw new IllegalArgumentException("usage: pin <package> <id> <label> <icon> <action> <component> <type> <text> | remove <package> <id>"
+                        + " | open <package> new|raise <url> <browser>...");
             }
             System.out.println("ok");
             System.exit(0);
@@ -141,6 +144,13 @@ public final class Shortcut {
         ShortcutInfo s = b.build();
 
         Object svc = service();
+        // Removed before (`lindroids remove` disables it: an app cannot unpin): a disabled
+        // shortcut can be neither updated nor pinned again until it is enabled.
+        try {
+            call(svc, "enableShortcuts", pkg, Arrays.asList(id), userId());
+        } catch (Exception ignored) {
+            // Never pinned: nothing to enable.
+        }
         // Already pinned (exported again): update it in place; the launcher keeps it where it is.
         try {
             Object list = Class.forName("android.content.pm.ParceledListSlice").getConstructor(List.class).newInstance(Arrays.asList(s));
@@ -150,6 +160,41 @@ public final class Shortcut {
         }
         Object r = call(svc, "requestPinShortcut", pkg, s, userId());
         if (Boolean.FALSE.equals(r)) throw new IllegalStateException("the launcher does not take pinned shortcuts");
+    }
+
+    /**
+     * Opens {@code url} as a window of its own: a Custom Tab of the first browser in
+     * {@code browsers} that is installed, in a task of its own (one window in recents per URL).
+     * {@code new} always makes a new window; {@code raise} brings back the window that has this URL,
+     * if there is one. A Custom Tab needs a session extra holding a Binder, which `am` cannot send;
+     * a null one asks for a tab without a session. Returns the browser used.
+     */
+    static String open(String pkg, String mode, String url, String[] browsers) throws Exception {
+        Class<?> sm = Class.forName("android.os.ServiceManager");
+        IBinder b = (IBinder) sm.getMethod("getService", String.class).invoke(null, "activity_task");
+        String stub = "android.app.IActivityTaskManager$Stub";
+        if (b == null) { // before Android 10
+            b = (IBinder) sm.getMethod("getService", String.class).invoke(null, "activity");
+            stub = "android.app.IActivityManager$Stub";
+        }
+        Object atm = Class.forName(stub).getMethod("asInterface", IBinder.class).invoke(null, b);
+        int flags = Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT;
+        if (mode.equals("new")) flags |= Intent.FLAG_ACTIVITY_MULTIPLE_TASK;
+        String last = "no browser given";
+        for (String browser : browsers) {
+            Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+            i.setPackage(browser);
+            i.addFlags(flags);
+            android.os.Bundle extras = new android.os.Bundle();
+            extras.putBinder("android.support.customtabs.extra.SESSION", null);
+            i.putExtras(extras);
+            Object r = call(atm, "startActivity", pkg, i);
+            // ActivityManager.START_SUCCESS and the other non-negative codes (delivered to the top,
+            // task brought to the front) all mean the window is there.
+            if (r instanceof Integer && (Integer) r >= 0) return browser;
+            last = browser + ": start result " + r;
+        }
+        throw new IllegalStateException(last);
     }
 
     /** A pinned shortcut cannot be taken off the home screen by its app, only disabled. */

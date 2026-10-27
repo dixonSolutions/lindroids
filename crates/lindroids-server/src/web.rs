@@ -17,6 +17,20 @@ const INDEX_HTML: &str = include_str!("../data/web/index.html");
 const CLIENT_JS: &str = include_str!("../data/web/lindroids.js");
 const ICON_SVG: &str = include_str!("../data/web/icon.svg");
 
+/// The build of the page as served: the program's build and a hash of the page itself, so that
+/// it changes with every change to the page, dev builds included. The server says it in its
+/// Hello; a page left open across an update (a window raised rather than reloaded) reloads.
+pub fn page_build() -> &'static str {
+    static B: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    B.get_or_init(|| {
+        let mut h = Sha1::new();
+        h.update(INDEX_HTML.as_bytes());
+        h.update(CLIENT_JS.as_bytes());
+        let d = h.finalize();
+        format!("{}+{:02x}{:02x}{:02x}{:02x}", crate::BUILD, d[0], d[1], d[2], d[3])
+    })
+}
+
 /// Path of the WebSocket.
 pub const LINK_PATH: &str = "/link";
 
@@ -73,10 +87,26 @@ pub fn sniff(buf: &[u8]) -> Sniff {
     Sniff::Http(Request { method, path, headers }, buf[end + 4..].to_vec())
 }
 
-/// The origins this server answers to. A page from anywhere else (a web site, a site that
-/// rebinds its DNS name to 127.0.0.1) gets nothing.
+static LABEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The label of the one origin pages are served in (`crate::origin_label`).
+pub fn set_origin_label(label: String) {
+    let _ = LABEL.set(label);
+}
+
+pub fn origin_label() -> &'static str {
+    LABEL.get().map_or("", String::as_str)
+}
+
+/// The origin this server answers to, `<label>.localhost:<port>`. Anything else (a web site, a
+/// site that rebinds its DNS name to 127.0.0.1, an app guessing at 127.0.0.1:<port>) gets
+/// nothing, not even the label.
 fn our_host(host: &str, port: u16) -> bool {
-    host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}")
+    LABEL.get().map_or(false, |l| auth_same(host, &format!("{l}.localhost:{port}")))
+}
+
+fn auth_same(a: &str, b: &str) -> bool {
+    lindroids_proto::auth::same(&a.to_ascii_lowercase(), b)
 }
 
 fn our_origin(origin: &str, port: u16) -> bool {
@@ -115,7 +145,7 @@ pub fn answer(req: &Request, port: u16) -> Answer {
     }
     let (ctype, body): (&str, std::borrow::Cow<[u8]>) = match req.path.as_str() {
         "/" | "/index.html" => ("text/html; charset=utf-8", INDEX_HTML.as_bytes().into()),
-        "/lindroids.js" => ("text/javascript; charset=utf-8", CLIENT_JS.replace("@BUILD@", crate::BUILD).into_bytes().into()),
+        "/lindroids.js" => ("text/javascript; charset=utf-8", CLIENT_JS.replace("@BUILD@", page_build()).into_bytes().into()),
         "/icon.svg" => ("image/svg+xml", ICON_SVG.as_bytes().into()),
         _ => return Answer::Close(response(404, "text/plain", b"not found\n")),
     };
@@ -279,9 +309,18 @@ mod tests {
                 ("Sec-WebSocket-Key".into(), "dGhlIHNhbXBsZSBub25jZQ==".into()),
             ],
         };
-        assert!(matches!(answer(&req("127.0.0.1:47000", "http://127.0.0.1:47000"), 47000), Answer::Upgrade(_)));
+        set_origin_label("k7f3q9abcdefghijklmnopqrst".into());
+        let ours = "k7f3q9abcdefghijklmnopqrst.localhost:47000";
+        assert!(matches!(answer(&req(ours, &format!("http://{ours}")), 47000), Answer::Upgrade(_)));
+        // Names DNS is the same as ours, case and all.
+        assert!(matches!(answer(&req(&ours.to_uppercase(), &format!("http://{ours}")), 47000), Answer::Upgrade(_)));
+        // Not the label: an app guessing at the port, or a web site.
+        assert!(matches!(answer(&req("127.0.0.1:47000", "http://127.0.0.1:47000"), 47000), Answer::Close(_)));
+        assert!(matches!(answer(&req("localhost:47000", "http://localhost:47000"), 47000), Answer::Close(_)));
+        assert!(matches!(answer(&req("other.localhost:47000", "http://other.localhost:47000"), 47000), Answer::Close(_)));
         assert!(matches!(answer(&req("evil.example:47000", "http://evil.example:47000"), 47000), Answer::Close(_)));
-        assert!(matches!(answer(&req("127.0.0.1:47000", "https://evil.example"), 47000), Answer::Close(_)));
+        assert!(matches!(answer(&req(ours, "https://evil.example"), 47000), Answer::Close(_)));
+        assert!(matches!(answer(&req(ours, "http://127.0.0.1:47000"), 47000), Answer::Close(_)));
     }
 
     #[test]

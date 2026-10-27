@@ -39,6 +39,7 @@ USAGE
   lindroids open <file|URI>          open with Android (what xdg-open does for Linux programs)
   lindroids notify <title> [body]    an Android notification
   lindroids info [--json]            Android's theme, accent, network, memory, battery
+  lindroids displays [forget <id>]    the browsers paired with this server
   lindroids status | start | stop | pair | doctor | version
 
 RUN OPTIONS
@@ -58,14 +59,17 @@ Programs also get the browser's side of the desktop through the standard portal 
 session bus: dark mode, the browser's file chooser and downloads, links opened in new tabs,
 notifications in the page, network state.
 
-X11 programs need no option: every program gets DISPLAY as well as WAYLAND_DISPLAY, and each X11
-window becomes its own tab in the page (xwayland-satellite, started on the first X11 connection).
-`lindroids doctor` shows whether X11 is ready; `lindroids setup x11` installs what is missing.
+X11 programs need no option: every program gets DISPLAY as well as WAYLAND_DISPLAY
+(xwayland-satellite, started on the first X11 connection). `lindroids doctor` shows whether X11 is
+ready; `lindroids setup x11` installs what is missing.
 
-Windows show in the phone's web browser: `lindroids run` opens http://127.0.0.1:<port>/ there (no
-app to install, no permission to grant). A browser opened by hand asks for the pairing code that
-`lindroids pair` shows. `lindroids export` puts a program on the home screen (a shortcut that has
-Termux start it).
+On Android every program gets a window of its own: a full-screen Custom Tab of a browser that has
+them (Firefox, Chrome, Edge, Samsung Internet, Brave…; LINDROIDS_BROWSER picks one), opened by
+Termux, with no app to install and no permission to grant. Closing the window ends the program;
+the program ending leaves its window saying so. Elsewhere the windows show in a browser page.
+The first time, the page pairs with a ticket in its URL; a page opened by hand asks for the code
+`lindroids pair` shows. `lindroids export` puts a program on the home screen (a shortcut, with the
+program's icon, that has Termux start it, or bring back its window).
 ";
 
 fn main() {
@@ -90,6 +94,7 @@ fn main() {
         Some("stop") => cmd_stop(),
         Some("status") => cmd_status(),
         Some("pair") => cmd_pair(),
+        Some("displays") => cmd_displays(&args[1..]),
         Some("setup") if args.get(1).map(String::as_str) == Some("x11") => setup_x11::cmd_setup_x11(&args[2..]),
         Some("setup") if args.get(1).map(String::as_str) == Some("flatpak") => cmd_setup_flatpak(),
         Some("setup") => cmd_setup(),
@@ -185,6 +190,42 @@ pub fn ensure_server(sb: &sandbox::Sandbox) -> Result<std::path::PathBuf, String
     Err(format!("the server did not start:\n{tail}"))
 }
 
+/// The URL of a page of the running server (`run`: the page for that run; else the shared one),
+/// with a ticket to pair with.
+pub fn page_url(rt: &Path, run: Option<u32>, window: bool) -> Option<String> {
+    match client::request(rt, &CliRequest::Ticket { run }, Duration::from_secs(3)) {
+        Ok(CliReply::Ticket { ticket, origin }) => Some(sandbox::page_url(&origin, run, window, Some(&ticket))),
+        _ => None,
+    }
+}
+
+/// The running server's pages, to tell the user (no ticket: they pair by code).
+fn shown_origin(rt: &Path) -> String {
+    match client::status(rt) {
+        Ok(CliReply::Status { origin, .. }) if !origin.is_empty() => format!("{origin}/"),
+        _ => "the windows page (start a program first: `lindroids run <program>`)".into(),
+    }
+}
+
+/// Opens the window of its own for the run `pid` (Android): a Custom Tab showing only that run.
+/// False when no browser here has Custom Tabs; the caller falls back to the shared page.
+pub fn open_run_window(_sb: &sandbox::Sandbox, rt: &Path, pid: u32) -> bool {
+    let Some(url) = page_url(rt, Some(pid), true) else { return false };
+    if let Err(e) = shortcut::open_window(&url) {
+        eprintln!("lindroids: no window of its own ({e}); showing it in the browser");
+        return false;
+    }
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_secs(10) {
+        if matches!(client::status(rt), Ok(CliReply::Status { ref shown_runs, .. }) if shown_runs.contains(&pid)) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    eprintln!("lindroids: the window has not linked yet; it shows the program as soon as it does");
+    true
+}
+
 /// Make sure a display (the browser page) is linked: open the page if not, and on Android bring it
 /// to the front, where the windows are about to appear. Never blocks for long: windows show
 /// whenever the page links. Returns whether it is linked.
@@ -194,16 +235,21 @@ pub fn ensure_display(sb: &sandbox::Sandbox, rt: &Path, quiet: bool) -> bool {
         Ok(CliReply::Status { app_connected: true, display_page, .. }) => Some(display_page.unwrap_or_else(|| "/".into())),
         _ => None,
     };
+    let _ = sb;
+    // On Android the windows are a Custom Tab of their own (no tabs, no address bar), raised again
+    // by the same URL; a browser tab when no browser here has Custom Tabs.
+    let window = || sandbox::on_android() && page_url(rt, None, true).map_or(false, |u| shortcut::open_window(&u).is_ok());
     if let Some(page) = page {
         // On a desktop a linked page stays where it is; a new tab each time would only pile up.
-        if sandbox::on_android() {
+        if sandbox::on_android() && !window() {
             // Exactly the page's URL: Firefox switches to that tab, Chrome reuses its tab.
-            sandbox::open_browser(&format!("http://127.0.0.1:{}{page}", lindroids_proto::server_tcp_port(sb.uid)));
+            if let Ok(CliReply::Status { origin, .. }) = client::status(rt) {
+                sandbox::open_browser(&format!("{origin}{page}"));
+            }
         }
         return true;
     }
-    let secret = lindroids_server::load_or_create_secret();
-    let how = sandbox::open_browser(&sandbox::display_url(sb.uid, Some(&secret)));
+    let how = if window() { Some("custom tab") } else { page_url(rt, None, false).and_then(|u| sandbox::open_browser(&u)) };
     let t0 = Instant::now();
     while t0.elapsed() < Duration::from_secs(if how.is_some() { 10 } else { 1 }) {
         if linked() {
@@ -216,7 +262,7 @@ pub fn ensure_display(sb: &sandbox::Sandbox, rt: &Path, quiet: bool) -> bool {
             Ok(CliReply::Status { pairing_code: Some(c), .. }) => c,
             _ => "(see `lindroids pair`)".into(),
         };
-        let url = sandbox::display_url(sb.uid, None);
+        let url = shown_origin(rt);
         if how.is_some() {
             eprintln!("lindroids: the browser has not opened the windows page yet. It shows the windows as soon as");
             eprintln!("  it does. If it asks for a pairing code: {code}");
@@ -248,7 +294,7 @@ fn cmd_status() -> i32 {
             if app_connected {
                 println!("display     linked (browser)");
             } else {
-                println!("display     none: open {} in a browser, or `lindroids run <program>`", sandbox::display_url(sandbox::detect().uid, None));
+                println!("display     none: open {} in a browser, or `lindroids run <program>`", shown_origin(&rt));
             }
             if !app_connected {
                 if let Some(c) = pairing_code {
@@ -266,6 +312,39 @@ fn cmd_status() -> i32 {
     }
 }
 
+/// `lindroids displays [forget <id>]`: the browsers (and debug apps) paired with this server.
+fn cmd_displays(args: &[String]) -> i32 {
+    let rt = sandbox::runtime_dir();
+    match args.first().map(String::as_str) {
+        Some("forget") => {
+            let Some(id) = args.get(1) else { return fail("which one? (lindroids displays)") };
+            match client::request(&rt, &CliRequest::ForgetDisplay { id: id.clone() }, Duration::from_secs(3)) {
+                Ok(CliReply::Ok { message }) => {
+                    println!("{message}");
+                    0
+                }
+                Ok(CliReply::Error { message }) => fail(&message),
+                Ok(other) => fail(&format!("unexpected reply {other:?}")),
+                Err(e) => fail(&e),
+            }
+        }
+        None => match client::request(&rt, &CliRequest::Displays, Duration::from_secs(3)) {
+            Ok(CliReply::Displays { displays }) => {
+                if displays.is_empty() {
+                    println!("No display has paired yet.");
+                }
+                for d in displays {
+                    println!("{:<14} {}", d.id, if d.name.is_empty() { "(unnamed)" } else { &d.name });
+                }
+                0
+            }
+            Ok(other) => fail(&format!("unexpected reply {other:?}")),
+            Err(e) => fail(&e),
+        },
+        Some(other) => fail(&format!("unknown: displays {other}")),
+    }
+}
+
 fn cmd_pair() -> i32 {
     let sb = sandbox::detect();
     let rt = match ensure_server(&sb) {
@@ -273,12 +352,12 @@ fn cmd_pair() -> i32 {
         Err(e) => return fail(&e),
     };
     if ensure_display(&sb, &rt, true) {
-        println!("The browser is showing this server's windows ({}).", sandbox::display_url(sb.uid, None));
+        println!("The browser is showing this server's windows ({}).", shown_origin(&rt));
         return 0;
     }
     match client::status(&rt) {
         Ok(CliReply::Status { pairing_code: Some(c), .. }) => {
-            println!("Open {} in a web browser on this device and enter this code:\n\n    {c}\n", sandbox::display_url(sb.uid, None));
+            println!("Open {} in a web browser on this device and enter this code:\n\n    {c}\n", shown_origin(&rt));
             let t0 = Instant::now();
             while t0.elapsed() < Duration::from_secs(120) {
                 if let Ok(CliReply::Status { app_connected: true, .. }) = client::status(&rt) {
@@ -303,7 +382,7 @@ pub fn cmd_setup() -> i32 {
         Err(e) => return fail(&e),
     };
     if ensure_display(&sb, &rt, false) {
-        println!("Ready: windows show in the browser ({}). Try: lindroids run <program>", sandbox::display_url(sb.uid, None));
+        println!("Ready: windows show in the browser ({}). Try: lindroids run <program>", shown_origin(&rt));
         0
     } else {
         1
@@ -365,7 +444,7 @@ fn cmd_doctor() -> i32 {
     let running = match client::status(&rt) {
         Ok(CliReply::Status { app_connected, .. }) => {
             println!("server      running, display {}", if app_connected { "linked (browser)" } else { "not linked" });
-            println!("windows at  {}", sandbox::display_url(sb.uid, None));
+            println!("windows at  {}", shown_origin(&rt));
             true
         }
         _ => {

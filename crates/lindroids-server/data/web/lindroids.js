@@ -3,13 +3,16 @@
 //
 // The page speaks the server's link protocol (crates/lindroids-proto) over the WebSocket at /link:
 // each message from the server is one WebSocket message (a JSON line, then its payload, if any).
-// It proves itself with the pairing secret, which `lindroids run` puts in the URL's fragment
-// (#k=...), and keeps it in this origin's storage.
+// Both ends prove themselves with ECDSA P-256 keys (docs/DISPLAY.md, "The handshake"): this page
+// made its key pair when it paired (the private key cannot be read out, only used) and keeps it
+// in IndexedDB with the relay's public key, pinned then. It pairs with the ticket `lindroids run`
+// puts in the URL's fragment (#t=...), or with the code `lindroids pair` shows.
 'use strict';
 
 const BUILD = '@BUILD@';
-const PROTOCOL_VERSION = 4;
-const SECRET_KEY = 'lindroids.secret';
+const PROTOCOL_VERSION = 5;
+// What pages kept before keys (protocol 4): gone, it no longer proves anything.
+try { localStorage.removeItem('lindroids.secret'); } catch (e) { /* storage off */ }
 
 const $ = (id) => document.getElementById(id);
 const tabsEl = $('tabs'), stage = $('stage'), panel = $('panel'), ime = $('ime'), toastsEl = $('toasts');
@@ -27,23 +30,57 @@ const order = []; // most recently active last
 
 // ------------------------------------------------------------------ secret and auth
 
-function takeSecretFromUrl() {
-  const m = /[#&]k=([^&]+)/.exec(location.hash);
+// The ticket `lindroids run` put in the URL, for pairing: kept in memory only, and out of the
+// address bar, history and bookmarks at once.
+let ticket = null;
+function takeTicketFromUrl() {
+  const m = /[#&]t=([^&]+)/.exec(location.hash);
   if (!m) return false;
-  localStorage.setItem(SECRET_KEY, decodeURIComponent(m[1]));
-  // Keep the secret out of the address bar, history and bookmarks.
+  ticket = decodeURIComponent(m[1]);
   history.replaceState(null, '', location.pathname + location.search);
   return true;
 }
-takeSecretFromUrl();
+takeTicketFromUrl();
 
 // `lindroids run` opens the page again to bring it to the front; the browser reuses this tab and
 // only the fragment changes. If this tab had lost the link (to another tab, or a server that
-// restarted with a new secret), take it back now: the user asked for it.
+// restarted), take it back now: the user asked for it.
 window.addEventListener('hashchange', () => {
-  if (!takeSecretFromUrl()) return;
+  if (!takeTicketFromUrl()) return;
   if (!ws || !ready) connect();
 });
+
+// What this page keeps: its key pair, its display id, the relay's key (IndexedDB: a CryptoKey
+// is stored as itself, so a non-extractable private key stays one).
+function store(mode, f) {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open('lindroids', 1);
+    open.onupgradeneeded = () => open.result.createObjectStore('kv');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction('kv', mode);
+      const req = f(tx.objectStore('kv'));
+      tx.oncomplete = () => { open.result.close(); resolve(req && req.result); };
+      tx.onerror = () => { open.result.close(); reject(tx.error); };
+    };
+  });
+}
+const kvGet = (k) => store('readonly', (s) => s.get(k));
+const kvSet = (k, v) => store('readwrite', (s) => s.put(v, k));
+const kvDel = (k) => store('readwrite', (s) => s.delete(k));
+
+function b64dec(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(b, (c) => c.charCodeAt(0));
+}
+
+// What each side signs: a label, this page's origin and both nonces (auth.rs in lindroids-proto).
+function transcript(label, a, b) {
+  return enc.encode([label, location.origin, a, b].join('\0'));
+}
+const ECDSA = { name: 'ECDSA', namedCurve: 'P-256' };
+const SIGN = { name: 'ECDSA', hash: 'SHA-256' };
+let pairing = null; // { keys, relayKey } until the relay says Paired
 
 function b64url(buf) {
   let s = '';
@@ -51,14 +88,6 @@ function b64url(buf) {
   return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-async function mac(secret, label, nonce) {
-  const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const l = enc.encode(label), n = enc.encode(nonce);
-  const data = new Uint8Array(l.length + 1 + n.length);
-  data.set(l, 0);
-  data.set(n, l.length + 1);
-  return b64url(await crypto.subtle.sign('HMAC', key, data));
-}
 
 function randomNonce() {
   const a = new Uint8Array(24);
@@ -68,7 +97,22 @@ function randomNonce() {
 
 // ------------------------------------------------------------------ the link
 
+// A page nobody can see does not take the link: browsers bring back old tabs in the background
+// (Firefox restores every tab when it starts), and the newest page to link wins. It links once shown.
+let linkWhenShown = false;
 function connect() {
+  if (document.hidden) {
+    if (!linkWhenShown) {
+      linkWhenShown = true;
+      document.addEventListener('visibilitychange', function shown() {
+        if (document.hidden) return;
+        document.removeEventListener('visibilitychange', shown);
+        linkWhenShown = false;
+        connect();
+      });
+    }
+    return;
+  }
   clearTimeout(retry);
   replaced = false;
   ready = false;
@@ -85,7 +129,7 @@ function connect() {
     send({
       t: 'hello', version: PROTOCOL_VERSION, build: BUILD, density: dpr, nonce: myNonce,
       screen: [Math.round(screen.width * dpr), Math.round(screen.height * dpr)],
-      page: location.pathname,
+      page: location.pathname + location.search,
     });
   };
   ws.onmessage = (ev) => {
@@ -129,30 +173,63 @@ const now = () => Math.round(performance.now() - t0) >>> 0;
 async function handle(m, payload) {
   switch (m.t) {
     case 'challenge': {
-      const secret = localStorage.getItem(SECRET_KEY);
-      // A pairing code typed while disconnected goes in as soon as the server asks.
-      if (pendingCode && !secret) {
-        const code = pendingCode;
-        pendingCode = null;
-        return send({ t: 'auth', code });
+      // The relay first: it signed our nonce with its key. Once paired, only the key we pinned.
+      const pinned = await kvGet('relay_key');
+      const relayKey = await crypto.subtle.importKey('raw', b64dec(m.relay_key), ECDSA, false, ['verify']);
+      const genuine = await crypto.subtle.verify(SIGN, relayKey, b64dec(m.proof), transcript('lindroids/relay', myNonce, m.nonce));
+      const code = pendingCode;
+      pendingCode = null;
+      // Another key than the one pinned: not the relay this browser paired with (something took
+      // its port), unless the user says otherwise with the pairing code (Lindroids reinstalled).
+      if (!genuine || (pinned && pinned !== m.relay_key && !code)) {
+        replaced = true;
+        ws.close();
+        return askCode(null, 'This is not the Lindroids this browser paired with: something else answers on its port. ' +
+          'If you reinstalled Lindroids, pair again with the code from `lindroids pair`.');
       }
-      if (secret) {
-        if (m.proof === await mac(secret, 'lindroids-server', myNonce)) {
-          return send({ t: 'auth', proof: await mac(secret, 'lindroids-app', m.nonce) });
-        }
-        // A secret for another server (or one from before `lindroids` made a new one).
-        localStorage.removeItem(SECRET_KEY);
+      const signed = transcript('lindroids/display', m.nonce, myNonce);
+      const keys = await kvGet('keys'), display = await kvGet('display');
+      // The ticket goes along every time: a run's window attaches with it.
+      if (pinned === m.relay_key && keys && display) {
+        return send({ t: 'auth', display, proof: b64url(await crypto.subtle.sign(SIGN, keys.privateKey, signed)), ...(ticket ? { ticket } : {}) });
       }
-      return askCode(m.nonce, '');
+      if (!ticket && !code) return askCode(null, '');
+      // Pairing: a new key pair whose private half never leaves WebCrypto.
+      const fresh = await crypto.subtle.generateKey(ECDSA, false, ['sign', 'verify']);
+      pairing = { keys: fresh, relayKey: m.relay_key };
+      return send({
+        t: 'auth',
+        public_key: b64url(await crypto.subtle.exportKey('raw', fresh.publicKey)),
+        proof: b64url(await crypto.subtle.sign(SIGN, fresh.privateKey, signed)),
+        ...(code ? { code } : {}),
+        ...(ticket ? { ticket } : {}),
+        name: browserName(),
+      });
     }
     case 'auth_failed':
+      if (m.reason === 'this window was not opened by lindroids run') {
+        replaced = true;
+        return showPanel(`<p>This window was not opened by <code>lindroids run</code>.</p>
+          <p>Start the program from Termux, or from its icon, to see it.</p>`);
+      }
+      // What we kept no longer works (the relay forgot this display): pair again.
+      if (/not paired with this Lindroids/.test(m.reason)) await kvDel('display');
       if (!m.pairing_open) return showPanel(`<p class="err">Pairing is closed after too many wrong codes.</p>
         <p>Run <code>lindroids stop</code>, then <code>lindroids run &lt;program&gt;</code> again in Termux.</p>`);
-      replaced = true; // reconnect by hand, with the code
+      replaced = true; // reconnect by hand, with the code (or at once, with a ticket)
+      if (ticket && m.reason !== 'not paired') { replaced = false; ws.close(); return; }
       return askCode(null, m.reason);
     case 'paired':
-      return localStorage.setItem(SECRET_KEY, m.secret);
+      if (pairing) {
+        await kvSet('keys', pairing.keys);
+        await kvSet('relay_key', pairing.relayKey);
+        await kvSet('display', m.display);
+        pairing = null;
+      }
+      return;
     case 'hello':
+      // A page from before an update (a window raised rather than reloaded): load the new one.
+      if (m.build && m.build !== BUILD && !BUILD.startsWith('@')) return location.reload();
       ready = true;
       hidePanelIfWindows();
       sendSystem();
@@ -163,6 +240,9 @@ async function handle(m, payload) {
       // the browser lets a page do that (one history entry), so tabs do not pile up.
       if (history.length <= 1) setTimeout(() => window.close(), 300);
       return showPanel(`<p>${esc(m.reason)}.</p><p><button id="again">Show the windows here</button></p>`, () => $('again').onclick = connect);
+    case 'run':
+      program = { name: m.name, icon: m.icon_png_b64 || null };
+      return hidePanelIfWindows();
     case 'window_new': return newWindow(m);
     case 'window_title': {
       const w = windows.get(m.win);
@@ -214,19 +294,45 @@ function askCode(nonce, err) {
 }
 let pendingCode = null;
 
+// What this display is called in `lindroids displays`.
+function browserName() {
+  const ua = navigator.userAgent;
+  const b = /Firefox\/[\d.]+/.exec(ua) || /(Edg|SamsungBrowser|Chrome)\/[\d.]+/.exec(ua);
+  const os = /Android [\d.]+/.exec(ua) || /\(([^;)]+)/.exec(ua);
+  return [b && b[0], os && (os[1] || os[0])].filter(Boolean).join(', ') || 'a browser';
+}
+
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-function showPanel(html, after) {
+function showPanel(html, after, icon) {
   panel.hidden = false;
-  panel.innerHTML = `<div class="box"><img src="/icon.svg" alt="">${html}</div>`;
+  panel.innerHTML = `<div class="box"><img src="${icon || '/icon.svg'}" alt="">${html}</div>`;
   if (after) after();
 }
 
+// In a window of its own (`?window`), the program's last window closing ends the window too: it
+// closes itself where the browser lets a page do that, and otherwise says so (Firefox's Custom
+// Tabs ignore window.close(); Back closes them). Not at once: a splash may give way to the window.
+const OWN_WINDOW = new URLSearchParams(location.search).has('window');
+let ended = null, endedIcon = null, endTimer = null;
+let program = null; // { name, icon } of this window's run, from the server
+
 function hidePanelIfWindows() {
   if (!ready) return;
-  if (windows.size) { panel.hidden = true; return; }
+  clearTimeout(endTimer);
+  if (windows.size) { ended = null; panel.hidden = true; return; }
+  if (ended !== null) {
+    const icon = endedIcon || (program && program.icon);
+    showPanel(`<p>${esc(program ? program.name : ended)} closed.</p><p>Press Back to close this window.</p>`, null,
+      icon && `data:image/png;base64,${icon}`);
+    endTimer = setTimeout(() => { if (!windows.size) window.close(); }, 1500);
+    return;
+  }
+  if (program) {
+    return showPanel(`<p>Starting ${esc(program.name)}…</p>`, null, program.icon && `data:image/png;base64,${program.icon}`);
+  }
   showPanel(`<p>Connected. No windows yet.</p><p>Run a program in Termux: <code>lindroids run &lt;program&gt;</code></p>`);
 }
 
@@ -255,6 +361,7 @@ function removeWindow(win) {
   const w = windows.get(win);
   if (!w) return;
   windows.delete(win);
+  if (OWN_WINDOW && !windows.size) { ended = w.title || 'The program'; endedIcon = w.icon || null; }
   w.canvas.remove();
   w.tab.remove();
   const i = order.indexOf(win);
@@ -593,6 +700,15 @@ $('kb').onclick = () => {
   if (document.activeElement === ime) hideKeyboard();
   else showKeyboard();
 };
+// A window of its own (a Custom Tab opened by `lindroids run`, `?window`): the first tap takes the
+// whole screen, so nothing of the browser is left. Browsers allow full screen only while handling
+// a tap; the canvas cancels touches (no click follows), so ask on the tap's end.
+if (new URLSearchParams(location.search).has('window')) {
+  const full = () => {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
+  };
+  for (const ev of ['pointerup', 'touchend', 'click']) addEventListener(ev, full, { capture: true });
+}
 $('fs').onclick = () => {
   if (document.fullscreenElement) document.exitFullscreen();
   else document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
@@ -847,6 +963,11 @@ if (navigator.getBattery) {
     sendSystem();
   }).catch(() => {});
 }
+
+// The page is going away for good (its window closed, or a reload): say so, so the server does
+// not wait a minute for a browser that might come back. A page put in the back/forward cache
+// (persisted) is not going away.
+addEventListener('pagehide', e => { if (!e.persisted && ready) send({ t: 'closing' }); });
 
 // ------------------------------------------------------------------ start
 

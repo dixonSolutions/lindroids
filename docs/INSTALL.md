@@ -2,9 +2,10 @@
 
 Lindroids is one Linux package, the **`lindroids` CLI**, which is also the server and runs
 wherever your Linux programs run: Termux, a Linux distribution under proot (proot-distro,
-UserLAnd, Andronix), or an ordinary Linux machine. There is no Android app to install: the
-windows show in the phone's own web browser, on a page the server serves at
-`http://127.0.0.1:<port>/`, which `lindroids run` opens.
+UserLAnd, Andronix), or an ordinary Linux machine. There is no Android app to install: on Android
+every program gets a window of its own, a full-screen Custom Tab of a browser already on the phone
+(Firefox, Chrome, Edge, Samsung Internet, Brave…), which `lindroids run` opens from Termux. On a
+desktop the windows show in a browser page.
 
 One command installs or updates it anywhere:
 
@@ -75,9 +76,9 @@ Optional packages: `pkg install proot-distro` to run programs from a Debian/Ubun
 (from Termux's x11-repo); xwayland-satellite, which gives every X11 window its own window on the page,
 comes with Lindroids. Anywhere else, `lindroids setup x11` uses that system's package manager.
 
-**Pairing:** the page `lindroids run` opens carries the server's secret, so it needs no code. A
-page opened by hand (`http://127.0.0.1:<port>/`) asks for the 6-digit code that `lindroids pair`
-prints.
+**Pairing:** the window `lindroids run` opens carries a ticket, so the browser pairs by itself
+the first time and signs in with its own key after that (`lindroids displays` lists the paired
+browsers). A page opened by hand asks for the 6-digit code that `lindroids pair` prints.
 
 Programs installed inside a proot-distro distro (`proot-distro login debian`, then `apt install
 xournalpp`) run from Termux as they are: `lindroids run xournalpp` finds that `xournalpp` is not in
@@ -100,7 +101,7 @@ apt update && apt install lindroids
 ```sh
 apt remove lindroids
 rm $PREFIX/etc/apt/sources.list.d/lindroids.list $PREFIX/etc/apt/keyrings/lindroids.gpg
-rm -rf ~/.local/share/lindroids        # pairing secret and exported-app records
+rm -rf ~/.local/share/lindroids        # relay key, paired browsers, exported-app records
 ```
 
 ### Termux with pacman

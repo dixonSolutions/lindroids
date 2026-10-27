@@ -227,7 +227,7 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, Mutex<TextInputState>> for Stat
                         let focused = state.seat.kb_focus.as_ref().map_or(false, |s| same_client(res, s));
                         if focused {
                             if let Some(win) = state.seat.focus_win {
-                                state.send_app(&ToApp::Keyboard { win, show: en });
+                                state.send_win(win, &ToApp::Keyboard { win, show: en });
                             }
                         }
                     }

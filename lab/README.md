@@ -26,7 +26,7 @@ lab/fetch-images.sh [a7 a9 b15 b16]   # resumable, md5-checked (SourceForge), + 
 lab/vm.sh b16 start                   # headless, KVM, 3 GB / 4 vCPU; max 2 lab VMs; checks MemAvailable
 lab/vm.sh b16 wait-boot
 lab/provision.sh b16                  # setup wizard off, Termux + openssh + foot + lab key, sshd
-lab/test-lindroids.sh b16             # CLI + page + window + typing + relink + shortcut -> lab/results/b16/<mode>/
+lab/test-lindroids.sh b16             # CLI + window + typing + closing + second run + shortcut -> lab/results/b16/<mode>/
 lab/vm.sh b16 stop                    # adb `reboot -p`, then QMP quit
 ```
 
@@ -62,6 +62,30 @@ decided by the image's own, enforced policy; it only adds emulator-only rules fo
 running in the init domain). For a7/a9, `late` also switches to software rendering
 (`GPU=std HWACCEL=0`): with virgl their apps still cannot initialise EGL under enforcing.
 `getenforce` reports `Enforcing`; `run/<vm>/shim.txt` lists what was applied.
+
+## Results with windows of their own (2026-10-27)
+
+Each program in a Custom Tab of its own, opened by Termux's `app_process` helper; no Lindroids app,
+no Termux setting, no browser install. Termux 0.118.3 (F-Droid), Firefox 158 (the first browser
+with Custom Tabs on the image; the default browser is Jellyfish). The test turns the images' crash
+dialogs off (`hide_error_dialogs`): Media Storage keeps crashing on the nearly full data disk, and
+its dialog swallowed the test's taps.
+
+| Android | Image | SELinux | Paired (ticket) | Window | Typing | Closing ends the program | Second run, same pairing | Shortcut, Termux stopped |
+|---------|-------|---------|-----------------|--------|--------|--------------------------|--------------------------|--------------------------|
+| 13 | BlissOS 16.9.7 | permissive | yes | yes | yes | 5 s | yes | 2 s |
+| 13 | BlissOS 16.9.7 | enforcing (`late`) | yes | yes | yes | 5 s | yes | 1 s |
+
+Checked by hand on the same VM: X11 (xclock), a Flatpak (GNOME Calculator), a proot-distro
+program (Xournal++ in Debian; its whole process tree ends with the window), two programs at once in
+two windows (closing one leaves the other), tapping a running program's icon (its window comes
+back, no second copy), and the security cases in [docs/DISPLAY.md](../docs/DISPLAY.md): `127.0.0.1`
+gets `421`, a run URL without its ticket attaches to nothing, a forgotten browser re-pairs with
+the ticket, a replaced relay key is refused until the pairing code is entered.
+
+## Browser windows: what Android allows (2026-10-27)
+
+Custom Tab and installed web app windows, intents, close detection, Termux's share receiver and wake lock, windows from `app_process`: [browser-window/](browser-window/README.md), behind [docs/DISPLAY.md](../docs/DISPLAY.md).
 
 ## Results with the browser as the display (2026-10-27)
 

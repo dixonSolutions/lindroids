@@ -227,14 +227,30 @@ pub fn open_browser(url: &str) -> Option<&'static str> {
     None
 }
 
-/// The page that shows this server's windows. With the secret, the browser links without asking
-/// for a pairing code; the part after `#` never leaves the browser.
-pub fn display_url(uid: u32, secret: Option<&str>) -> String {
-    let port = proto::server_tcp_port(uid);
-    match secret {
-        Some(k) => format!("http://127.0.0.1:{port}/#k={k}"),
-        None => format!("http://127.0.0.1:{port}/"),
+/// A page's URL in `origin` (the server's, `http://<label>.localhost:<port>`): for the run `run`
+/// (what `lindroids run` started, by pid) or the shared page; `window`: a window of its own
+/// (Android), which goes full screen on the first tap; `ticket`: lets a browser that has not
+/// paired yet pair. The fragment never leaves the browser, and the page drops it at once. The
+/// same run gets the same URL (its ticket lasts while it runs), so opening it again brings back
+/// the same window.
+pub fn page_url(origin: &str, run: Option<u32>, window: bool, ticket: Option<&str>) -> String {
+    let mut query = Vec::new();
+    if window {
+        query.push("window".to_string());
     }
+    if let Some(pid) = run {
+        query.push(format!("run={pid}"));
+    }
+    let mut url = format!("{origin}/");
+    if !query.is_empty() {
+        url.push('?');
+        url.push_str(&query.join("&"));
+    }
+    if let Some(t) = ticket {
+        url.push_str("#t=");
+        url.push_str(t);
+    }
+    url
 }
 
 /// liblindroids-compat.so for this CPU, empty where none is needed (see build.rs).

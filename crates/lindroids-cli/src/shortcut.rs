@@ -36,6 +36,35 @@ fn package() -> String {
         .unwrap_or_else(|| "com.termux".into())
 }
 
+/// Browsers whose Custom Tabs open as windows of their own, in the order tried. Cromite and
+/// WebView-based browsers are missing on purpose: they open a Custom Tab intent as an ordinary tab.
+const WINDOW_BROWSERS: &[&str] = &[
+    "org.mozilla.firefox",
+    "com.android.chrome",
+    "com.microsoft.emmx",
+    "com.sec.android.app.sbrowser",
+    "com.brave.browser",
+    "com.vivaldi.browser",
+    "org.mozilla.firefox_beta",
+    "org.mozilla.fenix",
+    "com.chrome.beta",
+    "org.chromium.chrome",
+];
+
+/// Shows `url` in a window of its own: a Custom Tab, in its own task, of the first browser that
+/// has them (`LINDROIDS_BROWSER`, comma-separated packages, goes first). Sending the same URL again
+/// brings that window back instead of opening another. Returns the browser used.
+pub fn open_window(url: &str) -> Result<String, String> {
+    let mut browsers: Vec<String> = std::env::var("LINDROIDS_BROWSER")
+        .map(|v| v.split(',').map(|b| b.trim().to_string()).filter(|b| !b.is_empty()).collect())
+        .unwrap_or_default();
+    browsers.extend(WINDOW_BROWSERS.iter().map(|b| b.to_string()));
+    let mut args = vec!["open".to_string(), package(), "raise".into(), url.to_string()];
+    args.extend(browsers);
+    let out = helper(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
+    Ok(out.lines().find_map(|l| l.strip_prefix("browser ")).unwrap_or("?").to_string())
+}
+
 /// The URL a shortcut shares with the terminal app.
 pub fn launch_url(uid: u32, id: &str) -> String {
     format!("http://127.0.0.1:{}/launch/termux/{id}", proto::server_tcp_port(uid))
@@ -77,8 +106,8 @@ fn android_env() -> Vec<(String, String)> {
     vec![("ANDROID_ROOT".into(), "/system".into()), ("ANDROID_DATA".into(), "/data".into())]
 }
 
-/// Runs the helper; Ok when it says "ok".
-fn helper(args: &[&str]) -> Result<(), String> {
+/// Runs the helper; Ok with what it printed when it says "ok".
+fn helper(args: &[&str]) -> Result<String, String> {
     if sandbox::native_bridge() {
         // app_process loads the ARM translation layer there, and seccomp kills it.
         return Err("this Android has an ARM translation layer (x86 image), which stops app_process: no shortcut".into());
@@ -104,7 +133,7 @@ fn helper(args: &[&str]) -> Result<(), String> {
         .map_err(|e| format!("app_process: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     if stdout.lines().any(|l| l.trim() == "ok") {
-        return Ok(());
+        return Ok(stdout.into_owned());
     }
     let msg = stdout.lines().find_map(|l| l.strip_prefix("error: ")).map(str::to_string).unwrap_or_else(|| {
         let e = String::from_utf8_lossy(&out.stderr);
@@ -192,7 +221,7 @@ pub fn remove(sb: &Sandbox, id: &str) -> Result<(), String> {
         Kind::Proot => Ok(()),
         Kind::Termux => {
             let _ = std::fs::remove_file(lindroids_server::state_dir().join("apps").join(format!("{id}.png")));
-            helper(&["remove", &package(), id])
+            helper(&["remove", &package(), id]).map(|_| ())
         }
     }
 }

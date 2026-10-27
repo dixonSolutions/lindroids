@@ -1,0 +1,144 @@
+    0.00 listening 48100
+    0.94 GET /app/one/ host=abc123.localhost:48100
+    7.08 GET /app/loccromite/ host=k7f3q9.localhost:48100
+    7.14 WS-UPGRADE loccromite host=k7f3q9.localhost:48100 origin=http://k7f3q9.localhost:48100
+    7.14 WS-OPEN loccromite
+    7.16 EV loccromite {"ev": "open", "vis": "visible", "href": "http://k7f3q9.localhost:48100/app/loccromite/", "secure": true, "subtle": true, "standalone": false, "fullscreen": false, "minimal": false, "browser": true, "hist": 1, "ref": "", "n": 0}
+    7.18 EV loccromite {"ev": "installable", "vis": "visible"}
+   13.51 GET /app/locmozilla/ host=k7f3q9.localhost:48100
+   13.68 WS-UPGRADE locmozilla host=k7f3q9.localhost:48100 origin=http://k7f3q9.localhost:48100
+   13.68 WS-OPEN locmozilla
+   13.73 BEACON {"ev":"pageshow","name":"locmozilla","t":1793080104781,"vis":"visible","persisted":false}
+   13.73 EV locmozilla {"ev": "open", "vis": "visible", "href": "http://k7f3q9.localhost:48100/app/locmozilla/", "secure": true, "subtle": true, "standalone": false, "fullscreen": false, "minimal": false, "browser": true, "hist": 1, "ref": "", "n": 0}
+   13.94 EV loccromite {"ev": "visibilitychange", "vis": "hidden"}
+   13.94 EV loccromite {"ev": "vis", "vis": "hidden"}
+   19.53 EV locmozilla {"ev": "visibilitychange", "vis": "hidden"}
+   19.53 EV locmozilla {"ev": "vis", "vis": "hidden"}
+   20.17 GET /app/loceu/ host=k7f3q9.localhost:48100
+   21.14 WS-UPGRADE loceu host=k7f3q9.localhost:48100 origin=http://k7f3q9.localhost:48100
+   21.14 WS-OPEN loceu
+   21.20 BEACON {"ev":"pageshow","name":"loceu","t":1793080112247,"vis":"visible","persisted":false}
+   21.20 EV loceu {"ev": "open", "vis": "visible", "href": "http://k7f3q9.localhost:48100/app/loceu/", "secure": true, "subtle": true, "standalone": false, "fullscreen": false, "minimal": false, "browser": true, "hist": 1, "ref": "", "n": 0}
+   35.20 EV loceu {"ev": "visibilitychange", "vis": "hidden"}
+   35.20 EV loceu {"ev": "vis", "vis": "hidden"}
+   35.21 EV loccromite {"ev": "visibilitychange", "vis": "visible"}
+   35.21 EV loccromite {"ev": "vis", "vis": "visible"}
+   35.23 EV loccromite {"ev": "visibilitychange", "vis": "hidden"}
+   35.23 EV loccromite {"ev": "vis", "vis": "hidden"}
+   35.26 GET /app/crA/ host=k7f3q9.localhost:48100
+   35.31 WS-UPGRADE crA host=k7f3q9.localhost:48100 origin=http://k7f3q9.localhost:48100
+   35.31 WS-OPEN crA
+   35.33 EV crA {"ev": "open", "vis": "visible", "href": "http://k7f3q9.localhost:48100/app/crA/", "secure": true, "subtle": true, "standalone": false, "fullscreen": false, "minimal": false, "browser": true, "hist": 1, "ref": "", "n": 0}
+   35.34 EV crA {"ev": "installable", "vis": "visible"}
+   63.08 EV crA {"ev": "choice", "vis": "visible", "r": "accepted"}
+   63.08 EV crA {"ev": "installed", "vis": "visible"}
+   99.20 EV crA {"ev": "visibilitychange", "vis": "hidden"}
+   99.20 EV crA {"ev": "vis", "vis": "hidden"}
+   99.23 GET /app/crA/?via=view host=k7f3q9.localhost:48100
+   99.29 WS-UPGRADE crA host=k7f3q9.localhost:48100 origin=http://k7f3q9.localhost:48100
+   99.29 WS-OPEN crA
+   99.31 EV crA {"ev": "open", "vis": "visible", "href": "http://k7f3q9.localhost:48100/app/crA/?via=view", "secure": true, "subtle": true, "standalone": false, "fullscreen": false, "minimal": false, "browser": true, "hist": 1, "ref": "", "n": 0}
+   99.32 EV crA {"ev": "installable", "vis": "visible"}
+  122.36 EV crA {"ev": "visibilitychange", "vis": "hidden"}
+  122.36 EV crA {"ev": "vis", "vis": "hidden"}
+  122.39 GET /app/crA/?via=nomac host=k7f3q9.localhost:48100
+  122.50 WS-UPGRADE crA host=k7f3q9.localhost:48100 origin=http://k7f3q9.localhost:48100
+  122.50 WS-OPEN crA
+  122.53 EV crA {"ev": "open", "vis": "visible", "href": "http://k7f3q9.localhost:48100/app/crA/?via=nomac", "secure": true, "subtle": true, "standalone": false, "fullscreen": false, "minimal": false, "browser": true, "hist": 1, "ref": "", "n": 0}
+  122.55 EV crA {"ev": "installable", "vis": "visible"}
+  136.41 EV crA {"ev": "visibilitychange", "vis": "hidden"}
+  136.41 EV crA {"ev": "visibilitychange", "vis": "visible"}
+  136.41 EV crA {"ev": "vis", "vis": "hidden"}
+  136.41 EV crA {"ev": "vis", "vis": "visible"}
+  136.43 EV crA {"ev": "beforeunload", "vis": "visible"}
+  136.43 GET /app/crA/ host=k7f3q9.localhost:48100
+  136.44 EV crA {"ev": "pagehide", "vis": "visible", "persisted": false}
+  136.44 EV crA {"ev": "visibilitychange", "vis": "hidden"}
+  136.44 EV crA {"ev": "vis", "vis": "hidden"}
+  136.44 EV crA {"ev": "unload", "vis": "hidden"}
+  136.44 WS-CLOSE-FRAME crA 1001 
+  136.47 WS-UPGRADE crA host=k7f3q9.localhost:48100 origin=http://k7f3q9.localhost:48100
+  136.47 WS-OPEN crA
+  136.48 EV crA {"ev": "open", "vis": "visible", "href": "http://k7f3q9.localhost:48100/app/crA/", "secure": true, "subtle": true, "standalone": false, "fullscreen": false, "minimal": false, "browser": true, "hist": 1, "ref": "", "n": 0}
+  136.50 EV crA {"ev": "installable", "vis": "visible"}
+  150.06 EV crA {"ev": "visibilitychange", "vis": "hidden"}
+  150.06 EV crA {"ev": "vis", "vis": "hidden"}
+  157.47 GET /app/crA/ host=k7f3q9.localhost:48100
+  157.54 WS-UPGRADE crA host=k7f3q9.localhost:48100 origin=http://k7f3q9.localhost:48100
+  157.54 WS-OPEN crA
+  157.55 EV crA {"ev": "open", "vis": "visible", "href": "http://k7f3q9.localhost:48100/app/crA/", "secure": true, "subtle": true, "standalone": true, "fullscreen": false, "minimal": false, "browser": false, "hist": 1, "ref": "", "n": 0}
+  171.62 EV crA {"ev": "closing", "vis": "visible"}
+  171.62 EV crA {"ev": "beforeunload", "vis": "visible"}
+  171.62 EV crA {"ev": "visibilitychange", "vis": "hidden"}
+  171.62 EV crA {"ev": "vis", "vis": "hidden"}
+  171.63 EV crA {"ev": "pagehide", "vis": "hidden", "persisted": false}
+  171.63 EV crA {"ev": "unload", "vis": "hidden"}
+  171.64 WS-CLOSE-FRAME crA 1001 
+  184.73 WS-EOF crA IncompleteReadError
+  184.73 WS-EOF loccromite IncompleteReadError
+  184.73 WS-EOF crA IncompleteReadError
+  184.73 WS-EOF crA IncompleteReadError
+MARK-SWIPE
+  237.38 GET /app/crA/ host=k7f3q9.localhost:48100
+  237.49 WS-UPGRADE crA host=k7f3q9.localhost:48100 origin=http://k7f3q9.localhost:48100
+  237.49 WS-OPEN crA
+  237.51 EV crA {"ev": "open", "vis": "visible", "href": "http://k7f3q9.localhost:48100/app/crA/", "secure": true, "subtle": true, "standalone": true, "fullscreen": false, "minimal": false, "browser": false, "hist": 1, "ref": "", "n": 0}
+MARK-RECENTS
+  251.20 EV crA {"ev": "visibilitychange", "vis": "hidden"}
+  251.20 EV crA {"ev": "vis", "vis": "hidden"}
+MARK-SWIPE
+  253.68 WS-EOF crA IncompleteReadError
+  285.26 GET /app/tabB/ host=k7f3q9.localhost:48100
+  285.33 WS-UPGRADE tabB host=k7f3q9.localhost:48100 origin=http://k7f3q9.localhost:48100
+  285.33 WS-OPEN tabB
+  285.33 EV tabB {"ev": "open", "vis": "visible", "href": "http://k7f3q9.localhost:48100/app/tabB/", "secure": true, "subtle": true, "standalone": false, "fullscreen": false, "minimal": false, "browser": true, "hist": 1, "ref": "", "n": 0}
+  285.39 EV tabB {"ev": "installable", "vis": "visible"}
+  291.24 EV tabB {"ev": "visibilitychange", "vis": "hidden"}
+  291.24 EV tabB {"ev": "vis", "vis": "hidden"}
+  294.33 GET /app/crA/ host=k7f3q9.localhost:48100
+  294.40 WS-UPGRADE crA host=k7f3q9.localhost:48100 origin=http://k7f3q9.localhost:48100
+  294.40 WS-OPEN crA
+  294.43 EV crA {"ev": "open", "vis": "visible", "href": "http://k7f3q9.localhost:48100/app/crA/", "secure": true, "subtle": true, "standalone": true, "fullscreen": false, "minimal": false, "browser": false, "hist": 1, "ref": "", "n": 0}
+MARK2-RECENTS
+  302.87 EV crA {"ev": "visibilitychange", "vis": "hidden"}
+  302.87 EV crA {"ev": "vis", "vis": "hidden"}
+MARK2-SWIPE
+  305.33 EV crA {"ev": "pagehide", "vis": "hidden", "persisted": false}
+  305.33 EV crA {"ev": "unload", "vis": "hidden"}
+  305.34 WS-CLOSE-FRAME crA 1001 
+  322.64 GET /app/ffA/ host=k7f3q9.localhost:48100
+  322.72 WS-UPGRADE ffA host=k7f3q9.localhost:48100 origin=http://k7f3q9.localhost:48100
+  322.72 WS-OPEN ffA
+  322.74 BEACON {"ev":"pageshow","name":"ffA","t":1793080413795,"vis":"visible","persisted":false}
+  322.74 EV ffA {"ev": "open", "vis": "visible", "href": "http://k7f3q9.localhost:48100/app/ffA/", "secure": true, "subtle": true, "standalone": false, "fullscreen": false, "minimal": false, "browser": true, "hist": 1, "ref": "", "n": 0}
+  335.20 EV loceu {"ev": "freeze", "vis": "hidden"}
+  335.20 EV loceu {"ev": "freeze-doc", "vis": "hidden"}
+  366.09 EV ffA {"ev": "visibilitychange", "vis": "hidden"}
+  366.09 EV ffA {"ev": "vis", "vis": "hidden"}
+  382.91 GET /app/ffA/?via=sc host=k7f3q9.localhost:48100
+  382.92 WS-UPGRADE ffA host=k7f3q9.localhost:48100 origin=http://k7f3q9.localhost:48100
+  382.92 WS-OPEN ffA
+  382.93 EV ffA {"ev": "open", "vis": "visible", "href": "http://k7f3q9.localhost:48100/app/ffA/?via=sc", "secure": true, "subtle": true, "standalone": false, "fullscreen": false, "minimal": false, "browser": true, "hist": 1, "ref": "", "n": 0}
+  382.93 BEACON {"ev":"pageshow","name":"ffA","t":1793080473984,"vis":"visible","persisted":false}
+  475.26 EV ffA {"ev": "visibilitychange", "vis": "hidden"}
+  475.26 EV ffA {"ev": "vis", "vis": "hidden"}
+  478.37 GET /app/crA/ host=k7f3q9.localhost:48100
+  478.44 WS-UPGRADE crA host=k7f3q9.localhost:48100 origin=http://k7f3q9.localhost:48100
+  478.44 WS-OPEN crA
+  478.47 EV crA {"ev": "open", "vis": "visible", "href": "http://k7f3q9.localhost:48100/app/crA/", "secure": true, "subtle": true, "standalone": true, "fullscreen": false, "minimal": false, "browser": false, "hist": 1, "ref": "", "n": 0}
+  485.79 EV crA {"ev": "visibilitychange", "vis": "hidden"}
+  485.79 EV crA {"ev": "vis", "vis": "hidden"}
+  603.98 EV crA {"ev": "visibilitychange", "vis": "visible"}
+  603.98 EV crA {"ev": "vis", "vis": "visible"}
+  612.46 EV crA {"ev": "visibilitychange", "vis": "hidden"}
+  612.46 EV crA {"ev": "vis", "vis": "hidden"}
+  616.36 EV crA {"ev": "visibilitychange", "vis": "visible"}
+  616.36 EV crA {"ev": "vis", "vis": "visible"}
+  652.04 EV crA {"ev": "visibilitychange", "vis": "hidden"}
+  652.04 EV crA {"ev": "vis", "vis": "hidden"}
+  654.06 EV crA {"ev": "visibilitychange", "vis": "visible"}
+  654.06 EV crA {"ev": "vis", "vis": "visible"}
+  686.44 EV crA {"ev": "visibilitychange", "vis": "hidden"}
+  686.44 EV crA {"ev": "vis", "vis": "hidden"}
+  689.52 EV crA {"ev": "visibilitychange", "vis": "visible"}
+  689.52 EV crA {"ev": "vis", "vis": "visible"}

@@ -8,17 +8,21 @@ phone's web browser — with touch, the pen, the keyboard, sound and the clipboa
 installed with Termux's own package manager. No app to install, no permission to grant, no root.</p>
 
 ```sh
-lindroids run mousepad            # its window opens in the browser
+lindroids run mousepad            # it opens in a window of its own
 lindroids export xournalpp        # a home screen icon that starts it, Termux open or not
 ```
 
 <table>
 <tr>
+<td align="center"><img src="media/screenshots/window-of-its-own.png" width="400"><br><sub><code>lindroids run mousepad</code>: a window of its own, full screen (a Firefox Custom Tab opened by Termux)</sub></td>
+<td align="center"><img src="media/screenshots/window-program-closed.png" width="400"><br><sub>The program ended: its window says so, with its icon; Back closes it</sub></td>
+</tr>
+<tr>
 <td align="center"><img src="media/screenshots/browser-mousepad.png" width="400"><br><sub>Mousepad (GTK 3) from Termux, typed into on Android 13</sub></td>
 <td align="center"><img src="media/screenshots/browser-xournalpp-pen.png" width="400"><br><sub>Xournal++ from a proot-distro Debian, drawn with the pen</sub></td>
 </tr>
 <tr>
-<td align="center"><img src="media/screenshots/browser-xclock-x11.png" width="400"><br><sub>X11: <code>lindroids run xclock</code>, a tab next to Xournal++</sub></td>
+<td align="center"><img src="media/screenshots/browser-xclock-x11.png" width="400"><br><sub>X11: <code>lindroids run xclock</code> (earlier: one page, a tab per window)</sub></td>
 <td align="center"><img src="media/screenshots/browser-phone-dialog.png" width="200"><br><sub>A GTK 4 dialog on a phone-sized screen</sub></td>
 </tr>
 <tr>
@@ -28,10 +32,12 @@ lindroids export xournalpp        # a home screen icon that starts it, Termux op
 
 ## What it does
 
-- **Every Linux window is a tab of one page.** `lindroids run` starts the program and brings the
-  Lindroids page to the front of the browser (`http://127.0.0.1:<port>/`, served by lindroids
-  itself). Menus, popups and dialogs work; small dialogs are centred, and windows that insist on
-  being larger than the screen are scaled down to fit. The ⛶ button makes it full screen.
+- **Every program gets a window of its own.** On Android, `lindroids run` starts the program and
+  opens its window: a browser Custom Tab that Termux opens in a task of its own, with no tabs and
+  no address bar, and full screen from the first tap. Closing the window ends the program; the
+  program ending leaves its window showing its icon and "closed". Menus, popups and dialogs
+  work; small dialogs are centred, and windows that insist on being larger than the screen are
+  scaled down to fit. On a desktop the windows are tabs of one browser page.
 - **Anything with a window.** Native Termux packages (GTK, Qt, SDL, foot, mpv…), programs in a
   proot distro (found there without `--distro`), **Flatpaks** from Flathub — in Termux itself,
   with no root and no distro: `install.sh` builds Flatpak natively for Termux (Android patches in
@@ -75,9 +81,9 @@ desktop Linux — **Debian/Ubuntu/Kali** (APT), **Arch/Manjaro/Artix** (pacman),
 **Void** (xbps). Anywhere else it installs a static binary.
 Details: [docs/INSTALL.md](docs/INSTALL.md).
 
-Nothing else to set up: the page `lindroids run` opens carries the pairing secret in its `#`
-part, which never leaves the browser. A page opened by hand asks once for the code that
-`lindroids pair` shows.
+Nothing else to set up: the window `lindroids run` opens carries a ticket in its `#` part, which
+never leaves the browser, and the browser pairs with it once. A page opened by hand asks once for
+the code that `lindroids pair` shows.
 
 ## Use
 
@@ -109,13 +115,13 @@ Useful environment: `LINDROIDS_SCALE=2` (output scale; default follows the scree
 ## How it works
 
 ```
- Termux / proot distro / Flatpak                          the phone's web browser
+ Termux / proot distro / Flatpak                          the phone's browser (Custom Tabs)
  ┌────────────────────────────────────┐                   ┌──────────────────────────────┐
- │ Linux programs                      │                   │ http://127.0.0.1:<port>/     │
- │   │ Wayland    │ PulseAudio  X11    │                   │  one tab per Linux window:   │
+ │ Linux programs                      │                   │ one window per program:      │
+ │   │ Wayland    │ PulseAudio  X11    │                   │ <label>.localhost:<port>/    │
  │   ▼            ▼             ▼      │  WebSocket on     │  <canvas> ← changed tiles    │
- │ lindroids server ◀── xwayland-sat.  │◀═ 127.0.0.1 ═════▶│  touch, pen, keys, text      │
- │  (Rust Wayland compositor +         │  (HMAC auth)      │  Web Audio, clipboard,       │
+ │ lindroids server ◀── xwayland-sat.  │◀═ loopback ══════▶│  touch, pen, keys, text      │
+ │  (Rust Wayland compositor +         │  (P-256 keys)     │  Web Audio, clipboard,       │
  │   sound server, serves the page)    │                   │  files, notifications        │
  └────────────────────────────────────┘                   └──────────────────────────────┘
 ```
@@ -125,11 +131,14 @@ Useful environment: `LINDROIDS_SCALE=2` (output scale; default follows the scree
   any sandbox. It composites each window on the CPU and sends only the 64×64 tiles that changed,
   LZ4-compressed, one frame in flight per window; the page draws them into a canvas.
 - The server's loopback port serves the page (embedded in the binary, so it always matches) and
-  a WebSocket for the link. Pages from other sites are refused (Host and Origin checks), and the
-  page proves it knows the pairing secret (HMAC-SHA256 over the server's nonce) before it sees
-  or touches anything.
-- `lindroids run` opens the page with an ordinary VIEW intent from the terminal (`termux-am` or
-  `am`), which any app may send; Chrome brings the same tab back each time.
+  a WebSocket for the link, only at `http://<label>.localhost:<port>/` (a random label: anything
+  else gets nothing). Both ends prove themselves with ECDSA P-256 keys before the page sees or
+  touches anything: the browser made its key pair when it paired, and the server keeps only its
+  public key. A program's window also needs that run's ticket, which only the CLI hands out.
+- `lindroids run` opens each program's window from Termux with a Custom Tab intent (sent by a
+  small `app_process` helper, as Termux, which needs no permission); the same program's window
+  comes back to the front instead of opening twice.
+- Details, everything that was tried, and the lab tests: [docs/DISPLAY.md](docs/DISPLAY.md).
 
 More: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

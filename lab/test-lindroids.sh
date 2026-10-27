@@ -69,7 +69,7 @@ sys.exit(1)' "$1"
 }
 
 finish() {
-  # logcat-1 = deploy + pairing (saved before the reconnect test clears the buffer), then the rest.
+  # logcat-1 = deploy + pairing (saved before the closing test clears the buffer), then the rest.
   { cat "$OUT/logcat-1.txt" 2>/dev/null; adb_ logcat -d -v threadtime 2>/dev/null; } >"$OUT/logcat.txt"
   rm -f "$OUT/logcat-1.txt"
   # Denials whose subject is an app domain (Termux and the browser are both untrusted_app*;
@@ -84,7 +84,7 @@ finish() {
   R[avc_denied]=$(wc -l <"$OUT/avc-denied.txt")
   {
     for k in vm android image kernel selinux cmdline_selinux gpu cli browser cli_push opened_by linked \
-      window window_size typing reconnect window_after_reconnect shortcut avc_denied result notes; do
+      window window_size typing close_ends_program second_run shortcut avc_denied result notes; do
       printf '%-24s %s\n' "$k" "${R[$k]:-}"
     done
   } | tee "$OUT/result.txt"
@@ -99,13 +99,13 @@ summary_row() {
 
 Written by lab/test-lindroids.sh (one row per VM and SELinux mode; re-running replaces the row).
 
-| VM | SELinux | Android | Image | Browser | Linked | Window | Typing | Reconnect | AVC denials (browser/Termux) | Result | Date |
+| VM | SELinux | Android | Image | Browser | Linked | Window | Typing | Closing ends it | AVC denials (browser/Termux) | Result | Date |
 |----|---------|---------|-------|---------|--------|--------|--------|-----------|------------------------------|--------|------|
 EOF
   fi
   grep -vF "$key" "$f" >"$f.tmp" || true
   printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' "$NAME" "${R[selinux]}" "${R[android]}" \
-    "${R[image]}" "${R[browser]:-}" "${R[linked]:-}" "${R[window]:-}" "${R[typing]:-}" "${R[reconnect]:-}" \
+    "${R[image]}" "${R[browser]:-}" "${R[linked]:-}" "${R[window]:-}" "${R[typing]:-}" "${R[close_ends_program]:-}" \
     "${R[avc_denied]:-}" "${R[result]:-}" "$(date +%F)" >>"$f.tmp"
   mv "$f.tmp" "$f"
 }
@@ -126,13 +126,22 @@ log "Termux uid $TUID"
 
 adb_ logcat -c
 # A clean slate: no Lindroids app (there is none any more), no Termux setting that lets apps run
-# commands in Termux, no secret stored in the browser.
-tsh 'lindroids stop >/dev/null 2>&1; pkill -x foot; sed -i "/allow-external-apps/d" ~/.termux/termux.properties 2>/dev/null; termux-reload-settings 2>/dev/null; true'
+# commands in Termux, no display paired (the browser pairs again with the ticket in its URL).
+tsh 'lindroids stop >/dev/null 2>&1; pkill -x foot; rm -rf ~/.local/share/lindroids/displays; sed -i "/allow-external-apps/d" ~/.termux/termux.properties 2>/dev/null; termux-reload-settings 2>/dev/null; true'
 sh_ "pm uninstall $OLD_APP" >/dev/null 2>&1 || true
-BROWSER=$(sh_ 'cmd package resolve-activity --brief -a android.intent.action.VIEW -d http://127.0.0.1/ -c android.intent.category.BROWSABLE' | tail -1 | cut -d/ -f1)
-[[ $BROWSER == *.* ]] || fail "no browser on the device"
+# The lab images' own crashes (Media Storage on a nearly full disk) put dialogs over the screen
+# that swallow the test's taps: no crash dialogs in the lab.
+sh_ 'settings put global hide_error_dialogs 1' >/dev/null 2>&1 || true
+# The browser whose Custom Tabs are the windows: the first of the CLI's list that is installed
+# (crates/lindroids-cli/src/shortcut.rs, WINDOW_BROWSERS), not the default browser.
+BROWSER=""
+pkgs=$(sh_ 'pm list packages' | tr -d '\r')
+for b in org.mozilla.firefox com.android.chrome com.microsoft.emmx com.sec.android.app.sbrowser com.brave.browser com.vivaldi.browser org.mozilla.firefox_beta org.mozilla.fenix com.chrome.beta org.chromium.chrome; do
+  grep -qx "package:$b" <<<"$pkgs" && { BROWSER=$b; break; }
+done
+[[ -n $BROWSER ]] || fail "no browser with Custom Tabs on the device"
 R[browser]=$BROWSER
-sh_ "am force-stop $BROWSER; pm clear $BROWSER" >/dev/null 2>&1 || true
+sh_ "am force-stop $BROWSER" >/dev/null 2>&1 || true
 log "browser $BROWSER"
 # Termux's `am` (app_process) is killed by seccomp where an ARM translation layer is loaded, as on
 # these x86 images; phones have none, and Termux's am socket server is not up in every Termux. Turn
@@ -151,7 +160,7 @@ log "CLI: $(cat "$OUT/cli-version.txt")"
 # Termux in front, as when the user types the command.
 sh_ "am start -n com.termux/.app.TermuxActivity" >/dev/null 2>&1
 sleep 2
-tsh 'cd ~; rm -f .lab-typed run.log; (nohup lindroids run foot >run.log 2>&1 </dev/null &) ; sleep 12; cat run.log' >"$OUT/start.txt" 2>&1
+tsh 'cd ~; rm -f .lab-typed run.log; (nohup sh -c "lindroids run foot; echo RUN-EXIT=\$?" >run.log 2>&1 </dev/null &) ; sleep 12; cat run.log' >"$OUT/start.txt" 2>&1
 tsh 'lindroids doctor' >"$OUT/doctor.txt" 2>&1
 linked() { tsh 'lindroids status' 2>/dev/null | grep -qE '^display +linked'; }
 for i in $(seq 1 20); do linked && break; sleep 0.5; done
@@ -194,21 +203,31 @@ else
 fi
 log "typing: ${R[typing]}"
 
-# --------------------------------------------------------------- reconnect without pairing
+# --------------------------------------------------------------- closing the window ends the program
 adb_ logcat -d -v threadtime >"$OUT/logcat-1.txt" 2>/dev/null
 adb_ logcat -c
-# The page retries every 2 s by itself; nothing reopens it.
-t=$(tsh 'lindroids stop >/dev/null; sleep 1; lindroids start >/dev/null; s=$(date +%s%N); for i in $(seq 1 100); do lindroids status | grep -qE "^display +linked" && { echo $(( ($(date +%s%N) - s) / 1000000 )); exit 0; }; sleep 0.1; done; echo none' | tr -d '\r')
-if [[ $t =~ ^[0-9]+$ ]]; then
-  R[reconnect]="yes ${t}ms"
+# Back leaves full screen, then closes the Custom Tab; the page says it is closing, and the relay
+# ends the run 5 s later.
+sh_ 'input keyevent 4'; sleep 1; sh_ 'input keyevent 4'
+R[close_ends_program]="no (foot still running after 15 s)"
+for i in $(seq 1 15); do
+  sleep 1
+  tsh 'pgrep -x foot >/dev/null' || { R[close_ends_program]="yes ${i}s"; break; }
+done
+tsh 'grep RUN-EXIT ~/run.log; grep -E "page for run|ending" $TMPDIR/lindroids-$(id -u)/server.log | tail -2' >"$OUT/close.txt" 2>&1
+log "closing the window: ${R[close_ends_program]}"
+
+# --------------------------------------------------------------- a second run: no pairing again
+sh_ "am start -n com.termux/.app.TermuxActivity" >/dev/null 2>&1
+sleep 2
+tsh 'cd ~; (nohup lindroids run foot >run2.log 2>&1 </dev/null &); sleep 12; lindroids status; lindroids displays' >"$OUT/status-second-run.txt" 2>&1
+shot window-second-run
+if grep -qE '^window .* [1-9][0-9]*x[1-9]' "$OUT/status-second-run.txt" && [[ $(tsh 'ls ~/.local/share/lindroids/displays | wc -l' | tr -d '\r ') == 1 ]]; then
+  R[second_run]="yes (same display)"
 else
-  R[reconnect]="no (not within ~10 s)"
+  R[second_run]=no
 fi
-log "reconnect: ${R[reconnect]}"
-tsh 'cd ~; (nohup lindroids run foot >run2.log 2>&1 </dev/null &); sleep 4; lindroids status' >"$OUT/status-after-reconnect.txt" 2>&1
-sleep 1
-shot window-after-reconnect
-grep -qE '^window .* [1-9][0-9]*x[1-9]' "$OUT/status-after-reconnect.txt" && R[window_after_reconnect]=yes || R[window_after_reconnect]=no
+log "second run: ${R[second_run]}"
 tsh 'pkill -x foot; true'
 
 # --------------------------------------------------------------- home screen shortcut
@@ -233,7 +252,9 @@ else
     R[shortcut]="no (no window within 60 s)"
     for i in $(seq 1 60); do
       top=$(sh_ 'dumpsys activity activities' | grep -E 'topResumedActivity|mResumedActivity' | head -1)
-      if [[ $top == *"$BROWSER"* ]] && sh_ 'ps -A -o NAME' | grep -qx foot; then R[shortcut]="yes $(( $(date +%s) - t0 ))s"; break; fi
+      foot=$(sh_ 'ps -A -o NAME' | grep -cx foot)
+      echo "$i top=[$(xargs <<<"$top")] foot=$foot" >>"$OUT/shortcut-poll.txt"
+      if [[ $top == *"$BROWSER"* && $foot -gt 0 ]]; then R[shortcut]="yes $(( $(date +%s) - t0 ))s"; break; fi
       sleep 1
     done
     sleep 2
@@ -253,7 +274,7 @@ fi
 log "shortcut: ${R[shortcut]}"
 tsh 'pkill -x foot; lindroids remove lab.foot >/dev/null 2>&1; true'
 
-if [[ ${R[linked]} == yes && ${R[window]} == yes && ${R[typing]} == yes && ${R[reconnect]} == yes* && ${R[shortcut]} == yes* ]]; then
+if [[ ${R[linked]} == yes && ${R[window]} == yes && ${R[typing]} == yes && ${R[close_ends_program]} == yes* && ${R[second_run]} == yes* && ${R[shortcut]} == yes* ]]; then
   R[result]=PASS
 else
   R[result]=FAIL

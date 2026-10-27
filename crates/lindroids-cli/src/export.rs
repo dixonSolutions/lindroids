@@ -10,6 +10,7 @@ use lindroids_proto::Exported;
 
 use crate::run::{self, Target};
 use crate::{sandbox, shortcut};
+use std::path::Path;
 
 fn default_id(o: &run::Opts, target: &Target, sb: &sandbox::Sandbox) -> String {
     match target {
@@ -101,7 +102,7 @@ pub fn cmd_export(args: &[String]) -> i32 {
     match shortcut::create(&sb, &rec, &icon) {
         Ok(how) => {
             println!("{name} exported as {id}. {how}");
-            println!("Tapping it starts {name} through Termux (opened if it is closed); the windows show in the browser.");
+            println!("Tapping it starts {name} through Termux (opened if it is closed), in a window of its own.");
             0
         }
         Err(e) => {
@@ -115,10 +116,22 @@ pub fn cmd_export(args: &[String]) -> i32 {
 /// `lindroids launch <id>`: what an exported program's shortcut runs (through Termux).
 pub fn cmd_launch(args: &[String]) -> i32 {
     let Some(id) = args.first() else { return crate::fail("which one? (lindroids list)") };
-    match lindroids_server::load_exported(id) {
-        Some(rec) => run::cmd_run(&rec.run),
-        None => crate::fail(&format!("nothing exported as {id:?} (lindroids list)")),
+    let Some(rec) = lindroids_server::load_exported(id) else {
+        return crate::fail(&format!("nothing exported as {id:?} (lindroids list)"));
+    };
+    // Already running (in a window of its own): bring that window back rather than start another.
+    let sb = sandbox::detect();
+    let running = std::fs::read_to_string(run::launched_marker(id)).ok().and_then(|p| p.trim().parse::<u32>().ok());
+    if let Some(pid) = running.filter(|p| Path::new(&format!("/proc/{p}")).exists()) {
+        if sandbox::on_android() {
+            if let Ok(rt) = crate::ensure_server(&sb) {
+                if crate::open_run_window(&sb, &rt, pid) {
+                    return 0;
+                }
+            }
+        }
     }
+    run::cmd_run_launched(&rec.run, Some(id))
 }
 
 pub fn cmd_list() -> i32 {

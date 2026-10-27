@@ -241,14 +241,18 @@ pub fn surface_committed(state: &mut State, sid: &ObjectId, _first: bool) {
                 state.window_mapped(win);
             } else if !has_image && mapped {
                 // Unmapped (a null buffer): the Android window goes away until it maps again.
-                if let Some(w) = state.windows.get_mut(&win) {
+                let was_announced = state.windows.get_mut(&win).map_or(false, |w| {
                     w.mapped = false;
-                    if w.announced {
+                    w.announced
+                });
+                if was_announced {
+                    state.send_win(win, &ToApp::WindowClose { win });
+                    if let Some(w) = state.windows.get_mut(&win) {
                         w.announced = false;
+                        w.link = None;
                         w.shown.clear();
                         w.shown_size = (0, 0);
                         w.in_flight = false;
-                        state.send_app(&ToApp::WindowClose { win });
                     }
                 }
             }
@@ -496,6 +500,8 @@ impl Dispatch<xdg_surface::XdgSurface, ObjectId> for State {
                         fit_offset: (0, 0),
                         decoration: None,
                         decoration_mode: None,
+                        run: None,
+                        link: None,
                     },
                 );
             }
@@ -561,7 +567,7 @@ impl Dispatch<xdg_toplevel::XdgToplevel, (ObjectId, u32)> for State {
                     w.announced && w.app_id != "org.freedesktop.Xwayland"
                 });
                 if announced == Some(true) {
-                    state.send_app(&ToApp::WindowTitle { win, title });
+                    state.send_win(win, &ToApp::WindowTitle { win, title });
                 }
             }
             xdg_toplevel::Request::SetAppId { app_id } => {

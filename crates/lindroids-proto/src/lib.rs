@@ -22,7 +22,7 @@ pub mod fdpass;
 
 /// Bumped whenever a message changes shape. The app and the server refuse to talk across
 /// versions, and the CLI says which side needs updating.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// The real uid of this process. Under proot's fake root (proot-distro, UserLAnd) getuid() says
 /// 0, but the app looks for the sandbox app's own uid; the kernel's view in /proc is not faked.
@@ -95,9 +95,14 @@ pub fn proot_distro_path(bin_dir: &str) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ToApp {
-    /// Answer to the app's Hello: proves the server knows the secret (if the app has one), and
-    /// gives the app a nonce to prove itself with.
-    Challenge { nonce: String, proof: String },
+    /// Answer to the app's Hello: the relay's public key and its signature over the app's nonce
+    /// (`auth::relay_transcript`), and a nonce for the app to sign in turn.
+    Challenge {
+        nonce: String,
+        proof: String,
+        #[serde(default)]
+        relay_key: String,
+    },
     /// The app is authenticated; windows follow.
     Hello {
         version: u32,
@@ -105,8 +110,15 @@ pub enum ToApp {
         /// Human-readable name of the sandbox, e.g. "Termux" or "Debian (proot)".
         sandbox: String,
     },
-    /// Pairing with a code worked: keep this secret for next time.
-    Paired { secret: String },
+    /// What a run's own window shows until the program's first window does (and after the
+    /// last one goes): the program's name and icon (PNG, base64).
+    Run {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        icon_png_b64: Option<String>,
+    },
+    /// Pairing worked: this display's id, which it names when it signs from now on.
+    Paired { display: String },
     /// Authentication failed. The server closes the link after this.
     AuthFailed { reason: String, pairing_open: bool },
     /// A Linux toplevel appeared and needs a window (a tab of the page).
@@ -311,13 +323,24 @@ pub enum ToServer {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         page: Option<String>,
     },
-    /// Second message: `proof` from an earlier pairing's secret, or `code`, the pairing code the
-    /// user read off the terminal.
+    /// Second message. A paired display: its id (`display`) and its signature over the relay's
+    /// nonce (`proof`, `auth::display_transcript`). Pairing: a new public key (`public_key`), the
+    /// signature made with it (`proof`: it holds the private key), and what allows pairing: a
+    /// `ticket` from the page's URL, or the `code` the user read off the terminal.
     Auth {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         proof: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        public_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         code: Option<String>,
+        /// What the display calls itself (`lindroids displays`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
     /// The frame sent last for this window is on screen (or dropped); send the next one.
     FrameDone { win: u32 },
@@ -333,6 +356,9 @@ pub enum ToServer {
     Focus { win: u32, focused: bool },
     /// The user closed the window (its tab).
     Close { win: u32 },
+    /// The page is going away: its window was closed, or it is reloading. What `lindroids run`
+    /// started ends unless a page links again within moments.
+    Closing,
     Clipboard { text: String },
     FolderPicked { request: u32, path: Option<String> },
     /// Sound flow control: the app has room for this many more bytes of a stream.
@@ -418,6 +444,16 @@ pub fn valid_export_id(id: &str) -> bool {
 pub enum CliRequest {
     Status,
     Stop,
+    /// A ticket that lets a browser pair: for a page showing the run `run` (good while it runs),
+    /// or the shared page (good for 10 minutes). It travels in the page URL's fragment.
+    Ticket {
+        #[serde(default)]
+        run: Option<u32>,
+    },
+    /// The paired displays (`lindroids displays`).
+    Displays,
+    /// Forget a display: it has to pair again (`lindroids displays forget <id>`).
+    ForgetDisplay { id: String },
     PickFolder,
     /// `lindroids open`: a URI, or an absolute path whose file Android should open.
     Open { target: String },
@@ -432,12 +468,19 @@ pub enum CliRequest {
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         icon_png_b64: Option<String>,
+        /// It gets a window of its own (a page opened for this run) rather than a place in the
+        /// shared one.
+        #[serde(default)]
+        window: bool,
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum CliReply {
+    /// A ticket, and the origin pages are served in (`http://<label>.localhost:<port>`).
+    Ticket { ticket: String, origin: String },
+    Displays { displays: Vec<DisplayInfo> },
     Status {
         version: u32,
         build: String,
@@ -452,11 +495,28 @@ pub enum CliReply {
         pairing_code: Option<String>,
         windows: Vec<WindowInfo>,
         clients: u32,
+        /// Runs whose own window (page) is linked.
+        #[serde(default)]
+        shown_runs: Vec<u32>,
+        /// The origin pages are served in.
+        #[serde(default)]
+        origin: String,
     },
     Ok { message: String },
     Folder { path: Option<String> },
     Info { system: Option<SystemState> },
     Error { message: String },
+}
+
+/// A paired display, as the relay keeps it (`<state>/displays/<id>.json`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DisplayInfo {
+    pub id: String,
+    pub name: String,
+    /// The display's public key (`auth`).
+    pub public_key: String,
+    /// When it paired, in seconds since the epoch.
+    pub paired: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

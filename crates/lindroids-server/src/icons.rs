@@ -16,16 +16,84 @@ use wayland_server::DisplayHandle;
 struct Launch {
     name: String,
     icon: Option<String>,
+    /// It has a window of its own (a page for this run), not a place in the shared one.
+    window: bool,
 }
 
 static LAUNCHES: Mutex<Option<HashMap<u32, Launch>>> = Mutex::new(None);
 
-pub fn register_launch(pid: u32, name: String, icon: Option<String>) {
+pub fn register_launch(pid: u32, name: String, icon: Option<String>, window: bool) {
     let mut g = LAUNCHES.lock().unwrap();
     let map = g.get_or_insert_with(HashMap::new);
     // Forget launches whose process is gone.
     map.retain(|p, _| std::path::Path::new(&format!("/proc/{p}")).exists());
-    map.insert(pid, Launch { name, icon });
+    map.insert(pid, Launch { name, icon, window });
+}
+
+/// The name and icon `lindroids run` gave a launch.
+pub fn launch_info(pid: u32) -> Option<(String, Option<String>)> {
+    let g = LAUNCHES.lock().unwrap();
+    g.as_ref()?.get(&pid).map(|l| (l.name.clone(), l.icon.clone()))
+}
+
+/// Whether this launch shows its windows in a window of its own.
+pub fn wants_own_window(pid: u32) -> bool {
+    let g = LAUNCHES.lock().unwrap();
+    g.as_ref().and_then(|m| m.get(&pid)).map_or(false, |l| l.window)
+}
+
+/// The launch (its pid) a process descends from, if any.
+pub fn launch_of_pid(pid: u32) -> Option<u32> {
+    let g = LAUNCHES.lock().unwrap();
+    let map = g.as_ref()?;
+    let mut pid = pid;
+    for _ in 0..64 {
+        if map.contains_key(&pid) {
+            return Some(pid);
+        }
+        pid = parent_of(pid)?;
+        if pid <= 1 {
+            break;
+        }
+    }
+    None
+}
+
+/// The launch a Wayland client belongs to.
+pub fn launch_for_window(dh: &DisplayHandle, client: &ClientId) -> Option<u32> {
+    launch_of_pid(client_pid(dh, client)?)
+}
+
+/// `pid` and every process below it, children first. A program under proot is proot's tracee:
+/// signalling proot alone (SIGKILL above all) leaves it running.
+pub fn process_tree(pid: u32) -> Vec<u32> {
+    let mut parent: HashMap<u32, u32> = HashMap::new();
+    if let Ok(rd) = std::fs::read_dir("/proc") {
+        for e in rd.flatten() {
+            if let Some(p) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) {
+                if let Some(pp) = parent_of(p) {
+                    parent.insert(p, pp);
+                }
+            }
+        }
+    }
+    let mut tree = vec![pid];
+    let mut i = 0;
+    while i < tree.len() {
+        let p = tree[i];
+        tree.extend(parent.iter().filter(|(_, pp)| **pp == p).map(|(c, _)| *c));
+        i += 1;
+    }
+    tree.reverse();
+    tree
+}
+
+/// The processes `lindroids run` and `launch` started that are still running.
+pub fn launched_pids() -> Vec<u32> {
+    let g = LAUNCHES.lock().unwrap();
+    g.as_ref()
+        .map(|m| m.keys().copied().filter(|p| std::path::Path::new(&format!("/proc/{p}")).exists()).collect())
+        .unwrap_or_default()
 }
 
 fn parent_of(pid: u32) -> Option<u32> {
@@ -35,7 +103,7 @@ fn parent_of(pid: u32) -> Option<u32> {
     after.split_whitespace().nth(1)?.parse().ok()
 }
 
-fn client_pid(dh: &DisplayHandle, client: &ClientId) -> Option<u32> {
+pub fn client_pid(dh: &DisplayHandle, client: &ClientId) -> Option<u32> {
     let c = dh.backend_handle().get_client_credentials(client.clone()).ok()?;
     Some(c.pid as u32)
 }
@@ -116,4 +184,21 @@ fn find_png(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
         }
     }
     dirs.iter().map(|d| d.join("pixmaps").join(format!("{name}.png"))).find(|p| p.exists())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn process_trees_list_children_before_their_parent() {
+        let mut child = std::process::Command::new("sh").args(["-c", "sleep 30 & sleep 30; wait"]).spawn().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let tree = super::process_tree(child.id());
+        let _ = child.kill();
+        for p in &tree {
+            unsafe { libc::kill(*p as i32, libc::SIGKILL) };
+        }
+        let _ = child.wait();
+        assert!(tree.len() >= 3, "{tree:?}");
+        assert_eq!(tree.last(), Some(&child.id()));
+    }
 }
