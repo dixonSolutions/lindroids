@@ -16,6 +16,8 @@ use sha1::{Digest, Sha1};
 const INDEX_HTML: &str = include_str!("../data/web/index.html");
 const CLIENT_JS: &str = include_str!("../data/web/lindroids.js");
 const ICON_SVG: &str = include_str!("../data/web/icon.svg");
+/// The microphone's AudioWorklet module: a file of its own, as the page's CSP allows no blob: one.
+const MIC_WORKLET_JS: &str = include_str!("../data/web/mic-worklet.js");
 
 /// The build of the page as served: the program's build and a hash of the page itself, so that
 /// it changes with every change to the page, dev builds included. The server says it in its
@@ -26,6 +28,7 @@ pub fn page_build() -> &'static str {
         let mut h = Sha1::new();
         h.update(INDEX_HTML.as_bytes());
         h.update(CLIENT_JS.as_bytes());
+        h.update(MIC_WORKLET_JS.as_bytes());
         let d = h.finalize();
         format!("{}+{:02x}{:02x}{:02x}{:02x}", crate::BUILD, d[0], d[1], d[2], d[3])
     })
@@ -147,6 +150,7 @@ pub fn answer(req: &Request, port: u16) -> Answer {
         "/" | "/index.html" => ("text/html; charset=utf-8", INDEX_HTML.as_bytes().into()),
         "/lindroids.js" => ("text/javascript; charset=utf-8", CLIENT_JS.replace("@BUILD@", page_build()).into_bytes().into()),
         "/icon.svg" => ("image/svg+xml", ICON_SVG.as_bytes().into()),
+        "/mic-worklet.js" => ("text/javascript; charset=utf-8", MIC_WORKLET_JS.as_bytes().into()),
         _ => return Answer::Close(response(404, "text/plain", b"not found\n")),
     };
     Answer::Close(response(200, ctype, &body))

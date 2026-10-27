@@ -29,7 +29,7 @@ pub mod x11;
 
 pub use lindroids_proto::fdpass;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::net::{Ipv4Addr, TcpListener};
@@ -382,6 +382,8 @@ pub struct State {
     clients: u32,
     /// Sound streams: the pid that plays each, and the page it is open on.
     sound: HashMap<u32, (Option<u32>, Option<u64>)>,
+    /// The streams in `sound` that record (the page captures the microphone for them).
+    mic: HashSet<u32>,
     /// The page each of the portal's requests went to: what follows it goes there too.
     asked: HashMap<u32, u64>,
 }
@@ -465,13 +467,19 @@ impl State {
     /// request (a picked file's contents, the rest of a save) goes where the request went.
     pub fn send_from(&mut self, pid: Option<u32>, msg: &ToApp, payload: &[u8]) {
         let to = match msg {
-            ToApp::AudioOpen { stream, .. } => {
+            ToApp::AudioOpen { stream, .. } | ToApp::RecordOpen { stream, .. } => {
                 let to = self.page_for(pid);
                 self.sound.insert(*stream, (pid, to));
+                if matches!(msg, ToApp::RecordOpen { .. }) {
+                    self.mic.insert(*stream);
+                }
                 to
             }
             ToApp::AudioData { stream, .. } | ToApp::AudioCork { stream, .. } => self.sound.get(stream).and_then(|s| s.1),
-            ToApp::AudioClose { stream } => self.sound.remove(stream).and_then(|s| s.1),
+            ToApp::AudioClose { stream } | ToApp::RecordClose { stream } => {
+                self.mic.remove(stream);
+                self.sound.remove(stream).and_then(|s| s.1)
+            }
             _ => match portal_request(msg) {
                 Some(r) => {
                     let follow_up = matches!(msg, ToApp::FetchFile { .. } | ToApp::WriteFile { offset: 1.., .. });
@@ -529,7 +537,8 @@ impl State {
             moved.push(stream);
         }
         for (l, stream) in closes {
-            self.send_to(l, &ToApp::AudioClose { stream }, &[]);
+            let close = if self.mic.contains(&stream) { ToApp::RecordClose { stream } } else { ToApp::AudioClose { stream } };
+            self.send_to(l, &close, &[]);
         }
         if !moved.is_empty() {
             audio::reopen(moved);
@@ -869,6 +878,12 @@ impl State {
             ToServer::Hello { .. } | ToServer::Auth { .. } => {}
             ToServer::Log { msg } => info!("page {from}: {}", msg.chars().take(500).collect::<String>()),
             ToServer::AudioCredit { stream, bytes } => audio::credit(stream, bytes),
+            // Only from the page the stream records on: one it moved away from may still send.
+            ToServer::RecordData { stream, .. } => {
+                if self.mic.contains(&stream) && self.sound.get(&stream).and_then(|s| s.1) == Some(from) {
+                    audio::record_data(stream, payload);
+                }
+            }
             ToServer::Resize { win, width, height, .. } => {
                 if let Some(w) = self.windows.get_mut(&win) {
                     w.phys = Some((width, height));
@@ -1220,6 +1235,7 @@ pub fn run(cfg: Config) -> i32 {
         next_request: 0,
         clients: 0,
         sound: HashMap::new(),
+        mic: HashSet::new(),
         asked: HashMap::new(),
     };
     surface::register_globals(&dh);

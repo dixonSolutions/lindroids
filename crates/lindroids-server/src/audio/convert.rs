@@ -1,9 +1,14 @@
-//! Sample conversion from what a PulseAudio client sends to what the app plays.
+//! Sample conversion from what a PulseAudio client sends to what the app plays, and from what the
+//! app's microphone captures to what a recording client asked for.
 //!
 //! The app opens one Android stream per PulseAudio stream and Android mixes them, so the only
 //! work here is to make each stream something Android takes everywhere: s16le or f32le, mono or
 //! stereo, at the client's own rate (AAudio and AudioTrack resample). Volume is applied here
 //! too, because the app has no per-stream volume of its own.
+//!
+//! The microphone comes the other way as s16le, one or two channels, already at the record
+//! stream's rate (the page resamples): [`Capture`] spreads it over the stream's channels and
+//! encodes it in its sample format.
 
 use lindroids_proto::AudioFormat;
 use pulseaudio::protocol::{ChannelMap, ChannelPosition, SampleFormat, SampleSpec};
@@ -87,6 +92,149 @@ impl Converter {
             }
         }
     }
+}
+
+/// Microphone samples (s16le, [`Capture::in_channels`] of them) into a record stream's format.
+pub struct Capture {
+    format: SampleFormat,
+    in_channels: usize,
+    /// The input channel each output channel takes; None: the average of both.
+    pick: Vec<Option<usize>>,
+}
+
+impl Capture {
+    /// None for formats that carry no PCM.
+    pub fn new(spec: &SampleSpec, map: &ChannelMap) -> Option<Capture> {
+        use ChannelPosition::*;
+        let out = spec.channels as usize;
+        if out == 0 || spec.format.bytes_per_sample() == 0 {
+            return None;
+        }
+        let in_channels = out.min(2);
+        let positions: Vec<ChannelPosition> = map.into_iter().collect();
+        let pick = (0..out)
+            .map(|c| {
+                if in_channels == 1 {
+                    return Some(0);
+                }
+                if out == 2 || positions.len() != out {
+                    return Some(c % 2);
+                }
+                match positions[c] {
+                    FrontLeft | FrontLeftOfCenter | RearLeft | SideLeft | TopFrontLeft | TopRearLeft => Some(0),
+                    FrontRight | FrontRightOfCenter | RearRight | SideRight | TopFrontRight | TopRearRight => Some(1),
+                    _ => None,
+                }
+            })
+            .collect();
+        Some(Capture { format: spec.format, in_channels, pick })
+    }
+
+    /// Channels the app is asked to capture: the stream's, at most two.
+    pub fn in_channels(&self) -> usize {
+        self.in_channels
+    }
+
+    pub fn in_frame(&self) -> usize {
+        2 * self.in_channels
+    }
+
+    pub fn out_frame(&self) -> usize {
+        self.format.bytes_per_sample() * self.pick.len()
+    }
+
+    /// Converts whole frames of `input`, scaling output channel `c` by `gains[c]`, and appends
+    /// them to `out`.
+    pub fn convert(&self, input: &[u8], gains: &[f32], out: &mut Vec<u8>) {
+        let frame = self.in_frame();
+        let input = &input[..input.len() - input.len() % frame];
+        if self.format == SampleFormat::S16Le && self.pick.len() == self.in_channels && gains.iter().all(|&g| g == 1.0) {
+            out.extend_from_slice(input);
+            return;
+        }
+        out.reserve(input.len() / frame * self.out_frame());
+        for f in input.chunks_exact(frame) {
+            let v = |c: usize| i16::from_le_bytes([f[2 * c], f[2 * c + 1]]) as f32 / 32768.0;
+            for (c, pick) in self.pick.iter().enumerate() {
+                let s = match pick {
+                    Some(i) => v(*i),
+                    None => (v(0) + v(1)) / 2.0,
+                };
+                encode(self.format, s * gains.get(c).copied().unwrap_or(1.0), out);
+            }
+        }
+    }
+
+    /// `frames` frames of silence in the stream's format.
+    pub fn silence(&self, frames: usize, out: &mut Vec<u8>) {
+        let start = out.len();
+        for _ in 0..self.pick.len() {
+            encode(self.format, 0.0, out);
+        }
+        let one = out[start..].to_vec();
+        for _ in 1..frames {
+            out.extend_from_slice(&one);
+        }
+        if frames == 0 {
+            out.truncate(start);
+        }
+    }
+}
+
+/// One sample from a float in -1.0..1.0 (clipped).
+fn encode(format: SampleFormat, v: f32, out: &mut Vec<u8>) {
+    use SampleFormat::*;
+    let v = v.clamp(-1.0, 1.0);
+    let int = |scale: f64| -> i64 { ((v as f64) * scale).round().clamp(-scale, scale - 1.0) as i64 };
+    let s16 = int(32768.0) as i16;
+    match format {
+        U8 => out.push((int(128.0) + 128) as u8),
+        Alaw => out.push(alaw_encode(s16)),
+        Ulaw => out.push(ulaw_encode(s16)),
+        S16Le => out.extend_from_slice(&s16.to_le_bytes()),
+        S16Be => out.extend_from_slice(&s16.to_be_bytes()),
+        Float32Le => out.extend_from_slice(&v.to_le_bytes()),
+        Float32Be => out.extend_from_slice(&v.to_be_bytes()),
+        S32Le => out.extend_from_slice(&(int(2_147_483_648.0) as i32).to_le_bytes()),
+        S32Be => out.extend_from_slice(&(int(2_147_483_648.0) as i32).to_be_bytes()),
+        S24Le => out.extend_from_slice(&(int(8_388_608.0) as i32).to_le_bytes()[..3]),
+        S24Be => out.extend_from_slice(&(int(8_388_608.0) as i32).to_be_bytes()[1..]),
+        S24In32Le => out.extend_from_slice(&(int(8_388_608.0) as i32).to_le_bytes()),
+        S24In32Be => out.extend_from_slice(&(int(8_388_608.0) as i32).to_be_bytes()),
+        Invalid => {}
+    }
+}
+
+/// Linear 16-bit to G.711 mu-law.
+fn ulaw_encode(s: i16) -> u8 {
+    let mut x = s as i32;
+    let sign = if x < 0 {
+        x = -x;
+        0x80
+    } else {
+        0
+    };
+    x = x.min(32635) + 0x84;
+    let mut exp = 7;
+    while exp > 0 && x & (0x80 << exp) == 0 {
+        exp -= 1;
+    }
+    let mant = (x >> (exp + 3)) & 0x0f;
+    !(sign | (exp << 4) | mant) as u8
+}
+
+/// Linear 16-bit to G.711 A-law.
+fn alaw_encode(s: i16) -> u8 {
+    let mut pcm = (s as i32) >> 3;
+    let mask = if pcm >= 0 {
+        0xD5
+    } else {
+        pcm = -pcm - 1;
+        0x55
+    };
+    let Some(seg) = (0..8).find(|&i| pcm <= (0x1F << i) | ((1 << i) - 1)) else { return (0x7F ^ mask) as u8 };
+    let mant = if seg < 2 { (pcm >> 1) & 0x0f } else { (pcm >> seg) & 0x0f };
+    (((seg << 4) | mant) ^ mask) as u8
 }
 
 /// Weights folding a surround layout into stereo: each side gets its own channels, centre
@@ -287,6 +435,58 @@ mod tests {
         let mut out = Vec::new();
         c.convert(&s16(&[100, 200, 100, 200]), &[1.0; 4], &mut out);
         assert_eq!(to_i16(&out), vec![100, 200]);
+    }
+
+    #[test]
+    fn capture_spreads_and_encodes() {
+        use ChannelPosition::*;
+        // Mono into stereo: both sides.
+        let c = Capture::new(&spec(SampleFormat::S16Le, 2), &ChannelMap::stereo()).unwrap();
+        assert_eq!((c.in_channels(), c.in_frame(), c.out_frame()), (2, 4, 4));
+        let m = Capture::new(&spec(SampleFormat::S16Le, 1), &ChannelMap::mono()).unwrap();
+        let mut out = Vec::new();
+        m.convert(&s16(&[1000, -1000, 7]), &[1.0], &mut out);
+        assert_eq!(to_i16(&out), vec![1000, -1000, 7], "s16 mono passes through");
+
+        // Stereo into 5.1: sides by position, the centre and LFE get the average.
+        let map = ChannelMap::new([FrontLeft, FrontRight, FrontCenter, Lfe, RearLeft, RearRight]);
+        let c = Capture::new(&spec(SampleFormat::S16Le, 6), &map).unwrap();
+        out.clear();
+        c.convert(&s16(&[1000, 3000]), &[1.0; 6], &mut out);
+        assert_eq!(to_i16(&out), vec![1000, 3000, 2000, 2000, 1000, 3000]);
+
+        // Float, with volume.
+        let f = Capture::new(&spec(SampleFormat::Float32Le, 1), &ChannelMap::mono()).unwrap();
+        out.clear();
+        f.convert(&s16(&[16384]), &[0.5], &mut out);
+        assert_eq!(f32::from_le_bytes(out[..4].try_into().unwrap()), 0.25);
+
+        // Every format decodes back to what went in.
+        for (fmt, _) in [(SampleFormat::U8, 0), (SampleFormat::S16Be, 0), (SampleFormat::S32Le, 0), (SampleFormat::S24Le, 0), (SampleFormat::S24Be, 0), (SampleFormat::S24In32Be, 0), (SampleFormat::Float32Be, 0), (SampleFormat::Ulaw, 0), (SampleFormat::Alaw, 0)] {
+            for v in [0.0f32, 0.5, -0.5, 0.999, -1.0] {
+                let mut b = Vec::new();
+                encode(fmt, v, &mut b);
+                assert_eq!(b.len(), fmt.bytes_per_sample());
+                let back = decode(fmt, &b);
+                let tol = match fmt {
+                    SampleFormat::U8 => 0.01,
+                    SampleFormat::Ulaw | SampleFormat::Alaw => 0.04,
+                    _ => 0.0001,
+                };
+                assert!((back - v).abs() <= tol, "{fmt:?} {v} -> {back}");
+            }
+        }
+    }
+
+    #[test]
+    fn capture_silence_is_silent_in_every_format() {
+        for fmt in [SampleFormat::U8, SampleFormat::Ulaw, SampleFormat::Alaw, SampleFormat::S16Le, SampleFormat::Float32Le] {
+            let c = Capture::new(&spec(fmt, 2), &ChannelMap::stereo()).unwrap();
+            let mut out = Vec::new();
+            c.silence(3, &mut out);
+            assert_eq!(out.len(), 3 * c.out_frame());
+            assert!(out.chunks_exact(fmt.bytes_per_sample()).all(|b| decode(fmt, b).abs() < 0.001), "{fmt:?}: {out:?}");
+        }
     }
 
     #[test]

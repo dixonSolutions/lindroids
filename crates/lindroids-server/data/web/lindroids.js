@@ -144,6 +144,7 @@ function connect() {
     const was = ready;
     ready = false;
     for (const w of [...windows.keys()]) removeWindow(w);
+    for (const s of [...mics.keys()]) recordClose(s);
     if (replaced) return;
     // A program's own window: the program cannot outlive the server (its display went with it;
     // a run from a home screen icon ends with Termux's session, server and all). That is its end.
@@ -271,6 +272,8 @@ async function handle(m, payload) {
     case 'audio_data': return audioData(m, payload);
     case 'audio_cork': return;
     case 'audio_close': return streams.delete(m.stream);
+    case 'record_open': return recordOpen(m);
+    case 'record_close': return recordClose(m.stream);
     case 'open_uri': return openUri(m);
     case 'open_file': return openFile(m, payload);
     case 'notify': return notify(m);
@@ -839,6 +842,7 @@ const streams = new Map();
 
 function resumeAudio() {
   if (audio && audio.state === 'suspended') audio.resume();
+  for (const r of mics.values()) if (r.ctx && r.ctx.state === 'suspended') r.ctx.resume();
 }
 
 function audioOpen(m) {
@@ -871,6 +875,153 @@ function audioData(m, payload) {
   src.start(at);
   s.next = at + buf.duration;
   src.onended = credit;
+}
+
+// ------------------------------------------------------------------ microphone
+
+// A program records (a PulseAudio record stream): the page captures the microphone, the browser
+// asking the first time, and sends interleaved s16le at the stream's rate and channel count,
+// about 20 ms at a time. Without the microphone (refused, none) the server records silence.
+const mics = new Map(); // stream -> {rate, channels, media, ctx, node, closed}
+let micToastShown = false;
+
+async function recordOpen(m) {
+  recordClose(m.stream);
+  const r = { stream: m.stream, rate: m.rate, channels: m.channels, closed: false };
+  mics.set(m.stream, r);
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    return micFailed(r, 'this browser gives no microphone here (getUserMedia is missing)');
+  }
+  try {
+    r.media = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: { ideal: m.channels } },
+    });
+  } catch (e) {
+    return micFailed(r, `the browser refused it (${e.name}: ${e.message})`);
+  }
+  if (r.closed) return micStop(r);
+  try {
+    await micCapture(r);
+  } catch (e) {
+    micFailed(r, `capture failed: ${e}`);
+  }
+}
+
+function micFailed(r, why) {
+  plog(`microphone for stream ${r.stream}: ${why}`);
+  micStop(r);
+  if (micToastShown || r.closed) return;
+  micToastShown = true;
+  toast({ title: 'No microphone', body: 'The program records silence. To record, allow the microphone for this page in the browser\'s site settings, then start recording again.' }, 8000);
+}
+
+// Capture into r.ctx: at the stream's rate if the browser resamples the microphone itself (Chrome
+// does), else at the context's own rate, resampled here.
+async function micCapture(r) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) throw new Error('no Web Audio');
+  let src = null;
+  try {
+    r.ctx = new AC({ sampleRate: r.rate, latencyHint: 'interactive' });
+    src = r.ctx.createMediaStreamSource(r.media);
+  } catch (e) {
+    if (r.ctx) r.ctx.close().catch(() => {});
+    r.ctx = new AC({ latencyHint: 'interactive' });
+    src = r.ctx.createMediaStreamSource(r.media);
+  }
+  const ctx = r.ctx;
+  const resample = micResampler(ctx.sampleRate, r.rate, r.channels);
+  const onSamples = (chans) => {
+    if (r.closed) return;
+    const pcm = resample(chans);
+    if (pcm.length) send({ t: 'record_data', stream: r.stream, len: pcm.byteLength }, new Uint8Array(pcm.buffer));
+  };
+  if (ctx.audioWorklet && window.AudioWorkletNode) {
+    await ctx.audioWorklet.addModule('/mic-worklet.js');
+    if (r.closed) return micStop(r);
+    r.node = new AudioWorkletNode(ctx, 'lindroids-mic', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+    r.node.port.onmessage = (e) => onSamples(e.data);
+  } else {
+    // Older browsers: the main thread gets the samples.
+    const size = ctx.sampleRate > 24000 ? 1024 : 512;
+    r.node = ctx.createScriptProcessor(size, 2, 1);
+    r.node.onaudioprocess = (e) => {
+      const b = e.inputBuffer;
+      const chans = [];
+      for (let c = 0; c < b.numberOfChannels; c++) chans.push(b.getChannelData(c).slice());
+      onSamples(chans);
+    };
+  }
+  src.connect(r.node);
+  // Its output is silence: connected only so the browser keeps running it.
+  r.node.connect(ctx.destination);
+  if (ctx.state !== 'running') {
+    ctx.resume().catch(() => {});
+    // The browser starts sound only after a tap on the page: say so if it holds this back.
+    setTimeout(() => {
+      if (!r.closed && ctx.state !== 'running') {
+        plog(`microphone for stream ${r.stream}: waiting for a tap to start (${ctx.state})`);
+        toast({ title: 'Tap the window to start the microphone', body: 'The browser starts sound only after a tap.' }, 5000);
+      }
+    }, 500);
+  }
+}
+
+// From the capture's channels at rate `from` to interleaved s16 with `channels` channels at
+// `to`: linear interpolation, carried across chunks.
+function micResampler(from, to, channels) {
+  const step = from / to;
+  let pos = 0;
+  const last = new Float32Array(channels);
+  return (chans) => {
+    if (!chans.length || !chans[0].length) return new Int16Array(0);
+    const n = chans[0].length;
+    const ch = [];
+    for (let c = 0; c < channels; c++) {
+      if (chans.length >= channels) ch.push(chans[c]);
+      else if (channels === 2) ch.push(chans[0]);
+    }
+    if (channels === 1 && chans.length > 1) {
+      const mix = new Float32Array(n);
+      for (let i = 0; i < n; i++) mix[i] = (chans[0][i] + chans[1][i]) / 2;
+      ch[0] = mix;
+    }
+    const s16 = (v) => Math.max(-32768, Math.min(32767, Math.round(v * 32768)));
+    if (step === 1) {
+      const out = new Int16Array(n * channels);
+      for (let i = 0; i < n; i++) for (let c = 0; c < channels; c++) out[i * channels + c] = s16(ch[c][i]);
+      return out;
+    }
+    const frames = [];
+    while (pos < n - 1) {
+      const i = Math.floor(pos), f = pos - i;
+      for (let c = 0; c < channels; c++) {
+        const a = i < 0 ? last[c] : ch[c][i];
+        frames.push(s16(a + (ch[c][i + 1] - a) * f));
+      }
+      pos += step;
+    }
+    pos -= n;
+    for (let c = 0; c < channels; c++) last[c] = ch[c][n - 1];
+    return Int16Array.from(frames);
+  };
+}
+
+function recordClose(stream) {
+  const r = mics.get(stream);
+  if (!r) return;
+  r.closed = true;
+  mics.delete(stream);
+  micStop(r);
+}
+
+function micStop(r) {
+  if (r.node) {
+    try { if (r.node.port) r.node.port.postMessage('stop'); r.node.disconnect(); } catch (e) { /* gone */ }
+    r.node = null;
+  }
+  if (r.media) { for (const t of r.media.getTracks()) t.stop(); r.media = null; }
+  if (r.ctx) { r.ctx.close().catch(() => {}); r.ctx = null; }
 }
 
 // ------------------------------------------------------------------ Android's side of the desktop

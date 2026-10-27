@@ -12,6 +12,12 @@
 //! compositor's link (`Inbox::From`, with the client's pid: the page showing its run plays it);
 //! the app's credits come back through [`credit`].
 //!
+//! Recording: there is one real source, the phone's microphone ("android-mic", the default
+//! source). Each record stream asks the page of its program's run to capture (RecordOpen); the
+//! page's samples come back through [`record_data`] and go to the client as memblocks on the
+//! stream's channel. While no samples come (no page, the browser refused the microphone, the page
+//! went), the stream gets silence at real time, so a recording program never stalls.
+//!
 //! Stream data travels in protocol packets on the socket. Shared memory and memfd transport are
 //! refused at the handshake: libpulse then sends everything on the socket by itself, and nothing
 //! here has to map a client's memory.
@@ -34,7 +40,7 @@ use log::{debug, info, warn};
 use pulseaudio::protocol::{self as pa, props::PropsUpdateMode, Command, PulseError};
 
 use crate::{shared, Inbox};
-use convert::Converter;
+use convert::{Capture, Converter};
 use pace::Pacer;
 
 /// How far ahead of real time the app is kept: enough to ride out a late wakeup on either side.
@@ -62,12 +68,23 @@ const SINK_DESCRIPTION: &CStr = c"Android speaker";
 const MONITOR_INDEX: u32 = 0;
 const MONITOR_NAME: &CStr = c"lindroids.monitor";
 const MONITOR_DESCRIPTION: &CStr = c"Monitor of Android speaker";
+const MIC_INDEX: u32 = 1;
+const MIC_NAME: &CStr = c"android-mic";
+const MIC_DESCRIPTION: &CStr = c"Android microphone";
+/// Record data kept for a client that does not read; older data is dropped.
+const RECORD_KEEP_MS: u32 = 1000;
+/// Most a record stream's client is sent in one memblock unless it asks otherwise. Data goes as
+/// soon as the page sends it, in whatever it amounts to up to this.
+const DEFAULT_FRAGSIZE_MS: u32 = 20;
+/// With no microphone data for this long, a record stream gets silence at real time.
+const SILENT_AFTER: Duration = Duration::from_millis(300);
 
 // ------------------------------------------------------------------ cross-thread handoff
 
 enum Event {
     Credit(u32, u32),
     Reopen(Vec<u32>),
+    RecordData(u32, Vec<u8>),
 }
 
 struct Wake {
@@ -94,6 +111,12 @@ pub fn credit(stream: u32, bytes: u32) {
 /// there again.
 pub fn reopen(streams: Vec<u32>) {
     post_event(Event::Reopen(streams));
+}
+
+/// Microphone samples from the app for a record stream (called from the compositor thread):
+/// interleaved s16le at the rate and channel count of its RecordOpen.
+pub fn record_data(stream: u32, pcm: Vec<u8>) {
+    post_event(Event::RecordData(stream, pcm));
 }
 
 /// To the page that plays this client's sound.
@@ -390,6 +413,207 @@ impl Stream {
     }
 }
 
+/// A record stream: microphone data from the app on its way to the client.
+struct Record {
+    id: u32,
+    /// The client's process: its run's page captures for the stream.
+    pid: Option<u32>,
+    spec: pa::SampleSpec,
+    map: pa::ChannelMap,
+    attr: pa::stream::BufferAttr,
+    props: pa::Props,
+    conv: Capture,
+    volume: pa::ChannelVolume,
+    muted: bool,
+    corked: bool,
+    /// Data in the client's format not sent yet.
+    queue: VecDeque<u8>,
+    /// Bytes put in the queue since the stream opened.
+    written: u64,
+    /// When microphone data last came (or the stream started or uncorked).
+    last_data: Instant,
+    /// Silence covers real time from `fill_from` on while no data comes: `filled` frames so far.
+    fill_from: Instant,
+    filled: u64,
+    /// Recording silence now (for the log).
+    silent: bool,
+    /// Some data came from the app (for the log).
+    heard: bool,
+}
+
+impl Record {
+    fn open_msg(&self) -> ToApp {
+        ToApp::RecordOpen { stream: self.id, rate: self.spec.sample_rate, channels: self.conv.in_channels() as u32 }
+    }
+
+    fn name(&self) -> CString {
+        prop_string(&self.props, pa::Prop::MediaName).unwrap_or_else(|| c"Record".to_owned())
+    }
+
+    fn gains(&self, source: f32) -> Vec<f32> {
+        let n = self.spec.channels as usize;
+        if self.muted || source == 0.0 {
+            return vec![0.0; n];
+        }
+        let v = self.volume.channels();
+        (0..n).map(|c| v.get(c).map_or(1.0, |v| v.to_linear()) * source).collect()
+    }
+
+    fn frame(&self) -> usize {
+        self.conv.out_frame()
+    }
+
+    /// Most kept for the client: a second, or a fragment if that is more, within its maxlength.
+    fn keep(&self) -> usize {
+        let second = self.spec.sample_rate as usize * RECORD_KEEP_MS as usize / 1000 * self.frame();
+        second.max(self.attr.fragment_size as usize).min(self.attr.max_length as usize).max(self.frame())
+    }
+
+    fn push(&mut self, data: &[u8]) {
+        self.queue.extend(data);
+        self.written += data.len() as u64;
+        let keep = self.keep();
+        if self.queue.len() > keep {
+            let drop = (self.queue.len() - keep).div_ceil(self.frame()) * self.frame();
+            self.queue.drain(..drop.min(self.queue.len()));
+        }
+    }
+
+    /// Microphone samples from the app.
+    fn data(&mut self, now: Instant, pcm: &[u8], source: f32) {
+        if self.corked {
+            return;
+        }
+        if !self.heard || self.silent {
+            info!("sound record {}: the microphone is on", self.id);
+        }
+        self.heard = true;
+        self.silent = false;
+        self.last_data = now;
+        self.fill_from = now;
+        self.filled = 0;
+        let mut out = Vec::with_capacity(pcm.len() / self.conv.in_frame() * self.frame());
+        self.conv.convert(pcm, &self.gains(source), &mut out);
+        self.push(&out);
+    }
+
+    /// Silence for real time no data covered, and what is queued to the client while it reads.
+    fn pump(&mut self, now: Instant, out: &mut Vec<u8>) {
+        if self.corked {
+            return;
+        }
+        if now.saturating_duration_since(self.last_data) > SILENT_AFTER {
+            if !self.silent {
+                info!("sound record {}: no microphone data, recording silence", self.id);
+                self.silent = true;
+            }
+            let due = now.saturating_duration_since(self.fill_from).as_micros() as u64 * self.spec.sample_rate as u64 / 1_000_000;
+            let n = due.saturating_sub(self.filled);
+            if n > 0 {
+                self.filled += n;
+                let mut pcm = Vec::with_capacity(n as usize * self.frame());
+                self.conv.silence(n as usize, &mut pcm);
+                self.push(&pcm);
+            }
+        }
+        let keep = self.keep();
+        let frag = (self.attr.fragment_size as usize).max(self.frame());
+        while !self.queue.is_empty() && out.len() < keep {
+            let n = self.queue.len().min(frag);
+            let chunk: Vec<u8> = self.queue.drain(..n).collect();
+            if let Err(e) = pa::write_memblock(out, self.id, &chunk, 0) {
+                warn!("sound record {}: cannot encode data: {e}", self.id);
+            }
+        }
+    }
+
+    fn busy(&self) -> bool {
+        !self.corked
+    }
+
+    fn cork(&mut self, now: Instant, cork: bool) {
+        if self.corked == cork {
+            return;
+        }
+        self.corked = cork;
+        if cork {
+            post(self.pid, ToApp::RecordClose { stream: self.id }, Vec::new());
+        } else {
+            self.restart(now);
+            post(self.pid, self.open_msg(), Vec::new());
+        }
+    }
+
+    /// The clock for silence starts over: data is expected from now on.
+    fn restart(&mut self, now: Instant) {
+        self.last_data = now;
+        self.fill_from = now;
+        self.filled = 0;
+    }
+
+    /// Another page captures for it now.
+    fn reannounce(&mut self) {
+        if !self.corked {
+            post(self.pid, self.open_msg(), Vec::new());
+        }
+    }
+
+    fn latency(&self, client_time: SystemTime) -> pa::RecordLatency {
+        pa::RecordLatency {
+            sink_usec: 0,
+            source_usec: 0,
+            playing: !self.corked,
+            local_time: client_time,
+            remote_time: SystemTime::now(),
+            write_offset: self.written as i64,
+            read_offset: (self.written - self.queue.len() as u64) as i64,
+        }
+    }
+
+    fn usec(&self, bytes: usize) -> u64 {
+        (bytes / self.frame()) as u64 * 1_000_000 / self.spec.sample_rate.max(1) as u64
+    }
+
+    fn info(&self, client: u32) -> pa::SourceOutputInfo {
+        pa::SourceOutputInfo {
+            index: self.id,
+            name: self.name(),
+            owner_module_index: None,
+            client_index: Some(client),
+            source_index: MIC_INDEX,
+            sample_spec: self.spec,
+            channel_map: self.map,
+            cvolume: self.volume,
+            buffer_latency: self.usec(self.queue.len()),
+            source_latency: 0,
+            resample_method: None,
+            driver: Some(c"lindroids".to_owned()),
+            props: self.props.clone(),
+            muted: self.muted,
+            corked: self.corked,
+            has_volume: true,
+            volume_writable: true,
+            format: format::info(&self.spec, &self.map),
+        }
+    }
+}
+
+/// Fill in a record stream's buffer attributes the client left to the server: only maxlength
+/// and fragsize mean anything for recording.
+fn fix_record_attr(a: &mut pa::stream::BufferAttr, spec: &pa::SampleSpec) {
+    let frame = (spec.format.bytes_per_sample() * spec.channels as usize).max(1) as u32;
+    let align = |v: u32| (v / frame).max(1) * frame;
+    let max = pa::MAX_MEMBLOCKQ_LENGTH as u32;
+    if a.max_length == u32::MAX || a.max_length > max {
+        a.max_length = max;
+    }
+    a.max_length = align(a.max_length);
+    if a.fragment_size == u32::MAX || a.fragment_size == 0 {
+        a.fragment_size = (spec.sample_rate as u64 * DEFAULT_FRAGSIZE_MS as u64 / 1000) as u32 * frame;
+    }
+    a.fragment_size = align(a.fragment_size.min(a.max_length));
+}
+
 /// Fill in buffer attributes the client left to the server, the way PulseAudio does.
 fn fix_buffer_attr(a: &mut pa::stream::BufferAttr, spec: &pa::SampleSpec) {
     let frame = (spec.format.bytes_per_sample() * spec.channels as usize).max(1) as u32;
@@ -430,6 +654,7 @@ struct Client {
     props: pa::Props,
     mask: pa::SubscriptionMask,
     streams: BTreeMap<u32, Stream>,
+    records: BTreeMap<u32, Record>,
     dead: bool,
 }
 
@@ -447,6 +672,21 @@ impl Client {
 
     fn error(&mut self, seq: u32, e: PulseError) {
         let _ = pa::write_error(&mut self.wbuf, seq, &e);
+    }
+
+    /// The process a new stream of this client belongs to.
+    fn stream_pid(&self) -> Option<u32> {
+        self.pid.or_else(|| prop_string(&self.props, pa::Prop::ApplicationProcessId).and_then(|p| p.to_str().ok()?.parse().ok()))
+    }
+
+    /// A new stream's properties, with the client's name where the stream has none.
+    fn stream_props(&self, mut props: pa::Props) -> pa::Props {
+        if prop_string(&props, pa::Prop::ApplicationName).is_none() {
+            if let Some(app) = self.props.get(pa::Prop::ApplicationName) {
+                props.set_bytes(pa::Prop::ApplicationName.to_c_str(), app);
+            }
+        }
+        props
     }
 
     fn name(&self) -> String {
@@ -544,6 +784,8 @@ struct Server {
     next_stream: u32,
     sink_volume: pa::ChannelVolume,
     sink_muted: bool,
+    mic_volume: pa::ChannelVolume,
+    mic_muted: bool,
     cookie: u32,
     /// Subscription events to fan out once the current work is done.
     events: Vec<(pa::SubscriptionEventFacility, pa::SubscriptionEventType, u32)>,
@@ -560,6 +802,8 @@ impl Server {
             next_stream: 0,
             sink_volume: pa::ChannelVolume::norm(2),
             sink_muted: false,
+            mic_volume: pa::ChannelVolume::norm(1),
+            mic_muted: false,
             cookie: u32::from_ne_bytes(cookie),
             events: Vec::new(),
         }
@@ -576,7 +820,7 @@ impl Server {
                 let events = if c.wbuf.is_empty() { libc::POLLIN } else { libc::POLLIN | libc::POLLOUT };
                 fds.push(libc::pollfd { fd: c.sock.as_raw_fd(), events, revents: 0 });
             }
-            let busy = self.clients.iter().any(|c| c.streams.values().any(Stream::busy));
+            let busy = self.clients.iter().any(|c| c.streams.values().any(Stream::busy) || c.records.values().any(Record::busy));
             let timeout = if busy { next_tick.saturating_duration_since(Instant::now()).as_millis() as i32 } else { 1000 };
             unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
 
@@ -610,6 +854,9 @@ impl Server {
                 for s in c.streams.values_mut() {
                     s.pump(now, sink_gain, &mut c.wbuf, version);
                 }
+                for r in c.records.values_mut() {
+                    r.pump(now, &mut c.wbuf);
+                }
             }
             self.fan_out();
             for c in &mut self.clients {
@@ -629,14 +876,11 @@ impl Server {
     }
 
     fn sink_gain(&self) -> f32 {
-        if self.sink_muted {
-            return 0.0;
-        }
-        let v = self.sink_volume.channels();
-        if v.is_empty() {
-            return 1.0;
-        }
-        v.iter().map(|v| v.to_linear()).sum::<f32>() / v.len() as f32
+        gain(&self.sink_volume, self.sink_muted)
+    }
+
+    fn mic_gain(&self) -> f32 {
+        gain(&self.mic_volume, self.mic_muted)
     }
 
     fn event(&mut self, e: Event) {
@@ -649,6 +893,15 @@ impl Server {
             Event::Reopen(ids) => {
                 for s in self.clients.iter_mut().flat_map(|c| c.streams.values_mut()).filter(|s| ids.contains(&s.id)) {
                     s.reannounce();
+                }
+                for r in self.clients.iter_mut().flat_map(|c| c.records.values_mut()).filter(|r| ids.contains(&r.id)) {
+                    r.reannounce();
+                }
+            }
+            Event::RecordData(id, pcm) => {
+                let gain = self.mic_gain();
+                if let Some(r) = self.clients.iter_mut().find_map(|c| c.records.get_mut(&id)) {
+                    r.data(Instant::now(), &pcm, gain);
                 }
             }
         }
@@ -673,6 +926,7 @@ impl Server {
                 props: pa::Props::new(),
                 mask: pa::SubscriptionMask::empty(),
                 streams: BTreeMap::new(),
+                records: BTreeMap::new(),
                 dead: false,
             });
         }
@@ -687,6 +941,12 @@ impl Server {
             post(s.pid, ToApp::AudioClose { stream: s.id }, Vec::new());
             self.events.push((pa::SubscriptionEventFacility::SinkInput, pa::SubscriptionEventType::Removed, s.id));
         }
+        for r in c.records.values() {
+            if !r.corked {
+                post(r.pid, ToApp::RecordClose { stream: r.id }, Vec::new());
+            }
+            self.events.push((pa::SubscriptionEventFacility::SourceOutput, pa::SubscriptionEventType::Removed, r.id));
+        }
     }
 
     fn fan_out(&mut self) {
@@ -696,6 +956,7 @@ impl Server {
                 F::Sink => pa::SubscriptionMask::SINK,
                 F::Source => pa::SubscriptionMask::SOURCE,
                 F::SinkInput => pa::SubscriptionMask::SINK_INPUT,
+                F::SourceOutput => pa::SubscriptionMask::SOURCE_OUTPUT,
                 F::Client => pa::SubscriptionMask::CLIENT,
                 F::Server => pa::SubscriptionMask::SERVER,
                 _ => continue,
@@ -821,15 +1082,18 @@ impl Server {
                 let info = vec![self.sink_info()];
                 self.clients[ci].reply(seq, &info);
             }
-            Command::GetSourceInfo(q) => {
-                if is_source(q.index, q.name.as_deref()) {
-                    let info = monitor_info();
-                    c.reply(seq, &info);
-                } else {
-                    c.error(seq, PulseError::NoEntity);
+            Command::GetSourceInfo(q) => match source(q.index, q.name.as_deref()) {
+                Some(Source::Monitor) => c.reply(seq, &monitor_info()),
+                Some(Source::Mic) => {
+                    let info = self.mic_info();
+                    self.clients[ci].reply(seq, &info);
                 }
+                None => c.error(seq, PulseError::NoEntity),
+            },
+            Command::GetSourceInfoList => {
+                let list = vec![monitor_info(), self.mic_info()];
+                self.clients[ci].reply(seq, &list);
             }
-            Command::GetSourceInfoList => c.reply(seq, &vec![monitor_info()]),
             Command::LookupSink(name) => {
                 if is_sink(None, Some(&name)) {
                     c.reply(seq, &pa::LookupReply(SINK_INDEX));
@@ -837,13 +1101,11 @@ impl Server {
                     c.error(seq, PulseError::NoEntity);
                 }
             }
-            Command::LookupSource(name) => {
-                if is_source(None, Some(&name)) {
-                    c.reply(seq, &pa::LookupReply(MONITOR_INDEX));
-                } else {
-                    c.error(seq, PulseError::NoEntity);
-                }
-            }
+            Command::LookupSource(name) => match source(None, Some(&name)) {
+                Some(Source::Monitor) => c.reply(seq, &pa::LookupReply(MONITOR_INDEX)),
+                Some(Source::Mic) => c.reply(seq, &pa::LookupReply(MIC_INDEX)),
+                None => c.error(seq, PulseError::NoEntity),
+            },
             Command::GetClientInfo(index) => match self.clients.iter().find(|c| c.authed && c.index == index).map(client_info) {
                 Some(info) => self.clients[ci].reply(seq, &info),
                 None => self.clients[ci].error(seq, PulseError::NoEntity),
@@ -867,10 +1129,18 @@ impl Server {
             Command::GetModuleInfoList => c.reply(seq, &Vec::<pa::ModuleInfo>::new()),
             Command::GetCardInfoList => c.reply(seq, &Vec::<pa::CardInfo>::new()),
             Command::GetSampleInfoList => c.reply(seq, &Vec::<pa::SampleInfo>::new()),
-            Command::GetSourceOutputInfoList => c.reply(seq, &Vec::<pa::SourceOutputInfo>::new()),
-            Command::GetModuleInfo(_) | Command::GetCardInfo(_) | Command::GetSampleInfo(_) | Command::GetSourceOutputInfo(_) => {
-                c.error(seq, PulseError::NoEntity)
+            Command::GetSourceOutputInfo(index) => {
+                let info = self.clients.iter().find_map(|c| c.records.get(&index).map(|r| r.info(c.index)));
+                match info {
+                    Some(info) => self.clients[ci].reply(seq, &info),
+                    None => self.clients[ci].error(seq, PulseError::NoEntity),
+                }
             }
+            Command::GetSourceOutputInfoList => {
+                let list: Vec<pa::SourceOutputInfo> = self.clients.iter().flat_map(|c| c.records.values().map(|r| r.info(c.index))).collect();
+                self.clients[ci].reply(seq, &list);
+            }
+            Command::GetModuleInfo(_) | Command::GetCardInfo(_) | Command::GetSampleInfo(_) => c.error(seq, PulseError::NoEntity),
             Command::Subscribe(mask) => {
                 c.mask = mask;
                 c.ack(seq);
@@ -919,9 +1189,133 @@ impl Server {
                 }
                 None => c.error(seq, PulseError::NoEntity),
             },
-            Command::CreateRecordStream(_) => {
-                info!("sound: {} wants to record; there is no microphone", c.name());
-                c.error(seq, PulseError::NotSupported);
+            Command::CreateRecordStream(p) => self.create_record(ci, seq, p),
+            Command::DeleteRecordStream(id) => match c.records.remove(&id) {
+                Some(r) => {
+                    debug!("sound record {}: closed, {} bytes recorded", r.id, r.written);
+                    post(r.pid, ToApp::RecordClose { stream: r.id }, Vec::new());
+                    c.ack(seq);
+                    self.events.push((F::SourceOutput, T::Removed, id));
+                }
+                None => c.error(seq, PulseError::NoEntity),
+            },
+            Command::CorkRecordStream(p) => match c.records.get_mut(&p.channel) {
+                Some(r) => {
+                    if r.corked != p.cork {
+                        r.cork(now, p.cork);
+                        self.events.push((F::SourceOutput, T::Changed, p.channel));
+                    }
+                    c.ack(seq);
+                }
+                None => c.error(seq, PulseError::NoEntity),
+            },
+            Command::FlushRecordStream(id) => match c.records.get_mut(&id) {
+                Some(r) => {
+                    r.queue.clear();
+                    c.ack(seq);
+                }
+                None => c.error(seq, PulseError::NoEntity),
+            },
+            Command::GetRecordLatency(p) => match c.records.get(&p.channel) {
+                Some(r) => {
+                    let l = r.latency(p.now);
+                    c.reply(seq, &l);
+                }
+                None => c.error(seq, PulseError::NoEntity),
+            },
+            Command::SetRecordStreamBufferAttr(p) => match c.records.get_mut(&p.index) {
+                Some(r) => {
+                    let mut attr = p.buffer_attr;
+                    fix_record_attr(&mut attr, &r.spec);
+                    r.attr = attr;
+                    let reply = pa::SetRecordStreamBufferAttrReply { buffer_attr: attr, configured_source_latency: DEFAULT_FRAGSIZE_MS as u64 * 1000 };
+                    c.reply(seq, &reply);
+                }
+                None => c.error(seq, PulseError::NoEntity),
+            },
+            Command::UpdateRecordStreamSampleRate(p) => match c.records.get_mut(&p.index) {
+                Some(r) if (1..=pa::sample_spec::MAX_RATE).contains(&p.sample_rate) => {
+                    // The page captures at one rate: it starts over at the new one.
+                    r.spec.sample_rate = p.sample_rate;
+                    if !r.corked {
+                        r.restart(now);
+                        post(r.pid, ToApp::RecordClose { stream: r.id }, Vec::new());
+                        post(r.pid, r.open_msg(), Vec::new());
+                    }
+                    c.ack(seq);
+                }
+                Some(_) => c.error(seq, PulseError::Invalid),
+                None => c.error(seq, PulseError::NoEntity),
+            },
+            Command::UpdateRecordStreamProplist(p) => match c.records.get_mut(&p.index) {
+                Some(r) => {
+                    update_props(&mut r.props, p.mode, p.props);
+                    c.ack(seq);
+                    self.events.push((F::SourceOutput, T::Changed, p.index));
+                }
+                None => c.error(seq, PulseError::NoEntity),
+            },
+            Command::SetRecordStreamName(p) => match c.records.get_mut(&p.index) {
+                Some(r) => {
+                    r.props.set(pa::Prop::MediaName, p.name);
+                    c.ack(seq);
+                    self.events.push((F::SourceOutput, T::Changed, p.index));
+                }
+                None => c.error(seq, PulseError::NoEntity),
+            },
+            Command::RemoveRecordStreamProplist(_) => c.ack(seq),
+            Command::SetSourceOutputVolume(p) => match self.clients.iter_mut().find_map(|c| c.records.get_mut(&p.index)) {
+                Some(r) => {
+                    r.volume = p.volume;
+                    self.clients[ci].ack(seq);
+                    self.events.push((F::SourceOutput, T::Changed, p.index));
+                }
+                None => self.clients[ci].error(seq, PulseError::NoEntity),
+            },
+            Command::SetSourceOutputMute(p) => match self.clients.iter_mut().find_map(|c| c.records.get_mut(&p.index)) {
+                Some(r) => {
+                    r.muted = p.mute;
+                    self.clients[ci].ack(seq);
+                    self.events.push((F::SourceOutput, T::Changed, p.index));
+                }
+                None => self.clients[ci].error(seq, PulseError::NoEntity),
+            },
+            Command::SetSourceVolume(p) => match source(p.device_index, p.device_name.as_deref()) {
+                Some(Source::Mic) => {
+                    self.mic_volume = p.volume;
+                    c.ack(seq);
+                    self.events.push((F::Source, T::Changed, MIC_INDEX));
+                }
+                Some(Source::Monitor) => c.error(seq, PulseError::NotSupported),
+                None => c.error(seq, PulseError::NoEntity),
+            },
+            Command::SetSourceMute(p) => match source(p.device_index, p.device_name.as_deref()) {
+                Some(Source::Mic) => {
+                    self.mic_muted = p.mute;
+                    c.ack(seq);
+                    self.events.push((F::Source, T::Changed, MIC_INDEX));
+                }
+                Some(Source::Monitor) => c.error(seq, PulseError::NotSupported),
+                None => c.error(seq, PulseError::NoEntity),
+            },
+            Command::KillSourceOutput(id) => match self.clients.iter().position(|c| c.records.contains_key(&id)) {
+                Some(o) => {
+                    let owner = &mut self.clients[o];
+                    let pid = owner.records.remove(&id).and_then(|r| r.pid);
+                    let v = owner.version;
+                    send_command(&mut owner.wbuf, v, &Command::RecordStreamKilled(id));
+                    post(pid, ToApp::RecordClose { stream: id }, Vec::new());
+                    self.clients[ci].ack(seq);
+                    self.events.push((F::SourceOutput, T::Removed, id));
+                }
+                None => self.clients[ci].error(seq, PulseError::NoEntity),
+            },
+            Command::MoveSourceOutput(p) => {
+                if source(p.device_index, p.device_name.as_deref()) == Some(Source::Mic) {
+                    c.ack(seq);
+                } else {
+                    c.error(seq, PulseError::NotSupported);
+                }
             }
             Command::CreateUploadStream(_) => c.error(seq, PulseError::NotSupported),
             Command::PlaySample(_) | Command::RemoveSample(_) => c.error(seq, PulseError::NoEntity),
@@ -1089,13 +1483,8 @@ impl Server {
         };
         let id = self.next_stream;
         self.next_stream += 1;
-        let mut props = p.props;
-        if prop_string(&props, pa::Prop::ApplicationName).is_none() {
-            if let Some(app) = c.props.get(pa::Prop::ApplicationName) {
-                props.set_bytes(pa::Prop::ApplicationName.to_c_str(), app);
-            }
-        }
-        let pid = c.pid.or_else(|| prop_string(&c.props, pa::Prop::ApplicationProcessId).and_then(|p| p.to_str().ok()?.parse().ok()));
+        let props = c.stream_props(p.props);
+        let pid = c.stream_pid();
         let s = Stream {
             id,
             pid,
@@ -1152,6 +1541,126 @@ impl Server {
         self.events.push((F::SinkInput, T::New, id));
     }
 
+    fn create_record(&mut self, ci: usize, seq: u32, p: pa::RecordStreamParams) {
+        use pa::SubscriptionEventFacility as F;
+        use pa::SubscriptionEventType as T;
+        let c = &mut self.clients[ci];
+        match source(p.source_index, p.source_name.as_deref()) {
+            Some(Source::Mic) if p.direct_on_input_index.is_none() => {}
+            Some(_) => {
+                info!("sound: {} wants to record what plays; only the microphone can be recorded", c.name());
+                c.error(seq, PulseError::NotSupported);
+                return;
+            }
+            None => {
+                c.error(seq, PulseError::NoEntity);
+                return;
+            }
+        }
+        let Some((spec, map)) = format::negotiate(&p.sample_spec, &p.channel_map, &p.formats) else {
+            c.error(seq, PulseError::NotSupported);
+            return;
+        };
+        let Some(conv) = Capture::new(&spec, &map) else {
+            c.error(seq, PulseError::NotSupported);
+            return;
+        };
+        let mut attr = p.buffer_attr;
+        fix_record_attr(&mut attr, &spec);
+        let volume = match p.cvolume {
+            Some(v) if v.channels().len() == spec.channels as usize => v,
+            _ => pa::ChannelVolume::norm(spec.channels),
+        };
+        let id = self.next_stream;
+        self.next_stream += 1;
+        let now = Instant::now();
+        let r = Record {
+            id,
+            pid: c.stream_pid(),
+            spec,
+            map,
+            attr,
+            props: c.stream_props(p.props),
+            conv,
+            volume,
+            muted: p.flags.start_muted.unwrap_or(false),
+            corked: p.flags.start_corked,
+            queue: VecDeque::new(),
+            written: 0,
+            last_data: now,
+            fill_from: now,
+            filled: 0,
+            silent: false,
+            heard: false,
+        };
+        info!(
+            "sound record {id}: {} records {:?} {} Hz {} ch (fragsize {} maxlength {}){}",
+            c.name(),
+            spec.format,
+            spec.sample_rate,
+            spec.channels,
+            attr.fragment_size,
+            attr.max_length,
+            if r.corked { ", corked" } else { "" }
+        );
+        if !r.corked {
+            post(r.pid, r.open_msg(), Vec::new());
+        }
+        let reply = pa::CreateRecordStreamReply {
+            channel: id,
+            stream_index: id,
+            buffer_attr: attr,
+            sample_spec: spec,
+            channel_map: map,
+            stream_latency: DEFAULT_FRAGSIZE_MS as u64 * 1000,
+            sink_index: MIC_INDEX,
+            sink_name: Some(MIC_NAME.to_owned()),
+            suspended: false,
+            format: format::info(&spec, &map),
+        };
+        c.records.insert(id, r);
+        c.reply(seq, &reply);
+        self.events.push((F::SourceOutput, T::New, id));
+    }
+
+    fn mic_info(&self) -> pa::SourceInfo {
+        let running = self.clients.iter().any(|c| c.records.values().any(|r| !r.corked));
+        let mut props = pa::Props::new();
+        props.set(pa::Prop::DeviceDescription, MIC_DESCRIPTION);
+        props.set_bytes(c"device.class", c"sound".to_bytes_with_nul());
+        props.set_bytes(c"device.api", c"lindroids".to_bytes_with_nul());
+        props.set_bytes(c"device.icon_name", c"audio-input-microphone".to_bytes_with_nul());
+        let mut ports = pa::SinkInfo::new_dummy(MIC_INDEX).ports;
+        if let Some(p) = ports.first_mut() {
+            p.name = c"mic".to_owned();
+            p.description = Some(c"Microphone".to_owned());
+        }
+        pa::SourceInfo {
+            index: MIC_INDEX,
+            name: MIC_NAME.to_owned(),
+            description: Some(MIC_DESCRIPTION.to_owned()),
+            props,
+            state: if running { pa::SourceState::Running } else { pa::SourceState::Suspended },
+            sample_spec: mic_spec(),
+            channel_map: pa::ChannelMap::mono(),
+            owner_module_index: None,
+            cvolume: self.mic_volume,
+            base_volume: pa::Volume::NORM,
+            volume_steps: None,
+            muted: self.mic_muted,
+            monitor_of_sink_index: None,
+            monitor_of_sink_name: None,
+            flags: pa::SourceFlags::HARDWARE | pa::SourceFlags::DECIBEL_VOLUME | pa::SourceFlags::LATENCY,
+            actual_latency: DEFAULT_FRAGSIZE_MS as u64 * 1000,
+            configured_latency: DEFAULT_FRAGSIZE_MS as u64 * 1000,
+            driver: Some(c"lindroids".to_owned()),
+            card_index: None,
+            ports,
+            active_port: 0,
+            formats: vec![pa::FormatInfo::new(pa::FormatEncoding::Pcm)],
+        }
+    }
+
     fn server_info(&self) -> pa::ServerInfo {
         let user = std::env::var("USER").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| "lindroids".into());
         pa::ServerInfo {
@@ -1162,7 +1671,7 @@ impl Server {
             sample_spec: sink_spec(),
             cookie: self.cookie,
             default_sink_name: Some(SINK_NAME.to_owned()),
-            default_source_name: Some(MONITOR_NAME.to_owned()),
+            default_source_name: Some(MIC_NAME.to_owned()),
             channel_map: pa::ChannelMap::stereo(),
         }
     }
@@ -1206,8 +1715,7 @@ impl Server {
     }
 }
 
-/// A monitor source, so programs that look for a default source find one. Recording from it is
-/// refused.
+/// The speaker's monitor source, as PulseAudio has one. Recording from it is refused.
 fn monitor_info() -> pa::SourceInfo {
     let mut props = pa::Props::new();
     props.set(pa::Prop::DeviceDescription, MONITOR_DESCRIPTION);
@@ -1256,12 +1764,39 @@ fn is_sink(index: Option<u32>, name: Option<&CStr>) -> bool {
     }
 }
 
-fn is_source(index: Option<u32>, name: Option<&CStr>) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    Monitor,
+    Mic,
+}
+
+/// The source a client names: by index, else by name; the default one is the microphone.
+fn source(index: Option<u32>, name: Option<&CStr>) -> Option<Source> {
     match (index, name) {
-        (Some(i), _) => i == MONITOR_INDEX,
-        (None, Some(n)) => n == MONITOR_NAME || n == pa::DEFAULT_SOURCE || n.is_empty(),
-        (None, None) => true,
+        (Some(MONITOR_INDEX), _) => Some(Source::Monitor),
+        (Some(MIC_INDEX), _) => Some(Source::Mic),
+        (Some(_), _) => None,
+        (None, Some(n)) if n == MONITOR_NAME || n == c"@DEFAULT_MONITOR@" => Some(Source::Monitor),
+        (None, Some(n)) if n == MIC_NAME || n == pa::DEFAULT_SOURCE || n.is_empty() => Some(Source::Mic),
+        (None, Some(_)) => None,
+        (None, None) => Some(Source::Mic),
     }
+}
+
+/// A device's volume as one gain.
+fn gain(volume: &pa::ChannelVolume, muted: bool) -> f32 {
+    if muted {
+        return 0.0;
+    }
+    let v = volume.channels();
+    if v.is_empty() {
+        return 1.0;
+    }
+    v.iter().map(|v| v.to_linear()).sum::<f32>() / v.len() as f32
+}
+
+fn mic_spec() -> pa::SampleSpec {
+    pa::SampleSpec { format: pa::SampleFormat::S16Le, channels: 1, sample_rate: 48000 }
 }
 
 fn sink_spec() -> pa::SampleSpec {
@@ -1439,6 +1974,150 @@ mod tests {
         assert!(s.queue.is_empty());
         assert_eq!(s.written, s.read_index());
         assert_eq!(s.latency(t0, SystemTime::now()).write_offset, 200);
+    }
+
+    /// 1000 Hz mono s16 record stream: two bytes a millisecond, 20-byte fragments.
+    fn record(corked: bool) -> Record {
+        let s = spec(1000, 1);
+        let mut attr = pa::stream::BufferAttr { max_length: u32::MAX, fragment_size: 20, ..Default::default() };
+        fix_record_attr(&mut attr, &s);
+        let now = Instant::now();
+        Record {
+            id: 4,
+            pid: None,
+            spec: s,
+            map: pa::ChannelMap::mono(),
+            attr,
+            props: pa::Props::new(),
+            conv: Capture::new(&s, &pa::ChannelMap::mono()).unwrap(),
+            volume: pa::ChannelVolume::norm(1),
+            muted: false,
+            corked,
+            queue: VecDeque::new(),
+            written: 0,
+            last_data: now,
+            fill_from: now,
+            filled: 0,
+            silent: false,
+            heard: false,
+        }
+    }
+
+    /// The memblocks in a client's output: (channel, data).
+    fn memblocks(buf: &[u8]) -> Vec<(u32, Vec<u8>)> {
+        let mut v = Vec::new();
+        let mut pos = 0;
+        while pos < buf.len() {
+            let d = pa::read_descriptor(&mut Cursor::new(&buf[pos..pos + pa::DESCRIPTOR_SIZE])).unwrap();
+            pos += pa::DESCRIPTOR_SIZE;
+            v.push((d.channel, buf[pos..pos + d.length as usize].to_vec()));
+            pos += d.length as usize;
+        }
+        v
+    }
+
+    #[test]
+    fn record_attr_defaults() {
+        let mut a = pa::stream::BufferAttr { max_length: u32::MAX, fragment_size: u32::MAX, ..Default::default() };
+        fix_record_attr(&mut a, &spec(48000, 2));
+        assert_eq!((a.max_length, a.fragment_size), (pa::MAX_MEMBLOCKQ_LENGTH as u32, 3840), "20 ms fragments");
+        let mut b = pa::stream::BufferAttr { max_length: 1001, fragment_size: 5003, ..Default::default() };
+        fix_record_attr(&mut b, &spec(44100, 1));
+        assert_eq!((b.max_length, b.fragment_size), (1000, 1000));
+    }
+
+    #[test]
+    fn microphone_data_goes_out_in_fragments() {
+        let t0 = Instant::now();
+        let mut r = record(false);
+        let mut out = Vec::new();
+        let pcm: Vec<u8> = (0..25i16).flat_map(|v| (v * 100).to_le_bytes()).collect();
+        r.data(t0, &pcm, 1.0);
+        r.pump(t0, &mut out);
+        let blocks = memblocks(&out);
+        assert_eq!(blocks.iter().map(|b| b.1.len()).collect::<Vec<_>>(), vec![20, 20, 10]);
+        assert!(blocks.iter().all(|b| b.0 == 4), "on the stream's channel");
+        assert_eq!(blocks.concat_data(), pcm);
+        assert!(r.queue.is_empty());
+        let l = r.latency(SystemTime::now());
+        assert_eq!((l.write_offset, l.read_offset), (50, 50));
+
+        // A muted source records silence.
+        out.clear();
+        r.data(t0, &pcm, 0.0);
+        r.pump(t0, &mut out);
+        assert!(memblocks(&out).concat_data().iter().all(|&b| b == 0));
+    }
+
+    trait Concat {
+        fn concat_data(&self) -> Vec<u8>;
+    }
+    impl Concat for Vec<(u32, Vec<u8>)> {
+        fn concat_data(&self) -> Vec<u8> {
+            self.iter().flat_map(|b| b.1.iter().copied()).collect()
+        }
+    }
+
+    #[test]
+    fn no_microphone_data_is_silence_at_real_time() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis(1);
+        let mut r = record(false);
+        r.attr.fragment_size = 200;
+        r.restart(t0);
+        let mut out = Vec::new();
+        r.pump(t0 + 200 * ms, &mut out);
+        assert!(out.is_empty(), "the page has a moment to start");
+        r.pump(t0 + 400 * ms, &mut out);
+        assert_eq!(memblocks(&out).concat_data().len(), 800, "then silence covers the time since the start");
+        out.clear();
+        r.pump(t0 + 1000 * ms, &mut out);
+        assert_eq!(memblocks(&out).concat_data().len(), 1200, "and keeps up with real time");
+        assert!(r.silent);
+        // Data again: the silence stops.
+        r.data(t0 + 1000 * ms, &[1, 0, 2, 0], 1.0);
+        out.clear();
+        r.pump(t0 + 1100 * ms, &mut out);
+        assert_eq!(memblocks(&out).concat_data(), vec![1, 0, 2, 0]);
+        assert!(!r.silent);
+    }
+
+    #[test]
+    fn a_client_that_does_not_read_keeps_the_last_second() {
+        let t0 = Instant::now();
+        let mut r = record(false);
+        // Its socket already holds more than a second.
+        let mut out = vec![0u8; 4000];
+        for i in 0..30u8 {
+            r.data(t0, &[i; 200], 1.0);
+            r.pump(t0, &mut out);
+        }
+        assert_eq!(out.len(), 4000, "nothing more is queued on the socket");
+        assert_eq!(r.queue.len(), 2000, "a second at 1000 Hz s16 mono");
+        assert_eq!(r.queue.back(), Some(&29));
+        assert_eq!(r.queue.front(), Some(&20), "the oldest went");
+    }
+
+    #[test]
+    fn corked_record_streams_take_nothing() {
+        let t0 = Instant::now();
+        let mut r = record(true);
+        let mut out = Vec::new();
+        r.data(t0, &[1, 0, 2, 0], 1.0);
+        r.pump(t0 + Duration::from_secs(2), &mut out);
+        assert!(out.is_empty() && r.queue.is_empty());
+        assert!(!r.busy());
+    }
+
+    #[test]
+    fn sources_by_name_and_index() {
+        assert_eq!(source(None, None), Some(Source::Mic));
+        assert_eq!(source(None, Some(pa::DEFAULT_SOURCE)), Some(Source::Mic));
+        assert_eq!(source(None, Some(MIC_NAME)), Some(Source::Mic));
+        assert_eq!(source(None, Some(MONITOR_NAME)), Some(Source::Monitor));
+        assert_eq!(source(Some(MIC_INDEX), Some(MONITOR_NAME)), Some(Source::Mic), "the index wins");
+        assert_eq!(source(Some(7), None), None);
+        assert_eq!(source(None, Some(c"alsa_input.usb")), None);
     }
 
     #[test]

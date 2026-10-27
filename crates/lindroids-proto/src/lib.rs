@@ -155,6 +155,11 @@ pub enum ToApp {
     AudioData { stream: u32, len: u32 },
     AudioCork { stream: u32, corked: bool },
     AudioClose { stream: u32 },
+    /// Microphone: capture for a PulseAudio record stream, `channels` (1 or 2) at `rate` Hz.
+    /// The app answers with RecordData until RecordClose (which also comes when the stream is
+    /// corked; it opens again with RecordOpen).
+    RecordOpen { stream: u32, rate: u32, channels: u32 },
+    RecordClose { stream: u32 },
     Log { level: String, msg: String },
     /// The server is closing this link: another display linked, or the server stops.
     Bye { reason: String },
@@ -370,6 +375,9 @@ pub enum ToServer {
     FolderPicked { request: u32, path: Option<String> },
     /// Sound flow control: the app has room for this many more bytes of a stream.
     AudioCredit { stream: u32, bytes: u32 },
+    /// Microphone samples for a stream RecordOpen opened: the payload is interleaved s16le PCM
+    /// at the rate and channel count it asked for, whole frames, sent as captured (~20-40 ms).
+    RecordData { stream: u32, len: u32 },
 
     // --- Android integration ---
     /// Android's state (theme, accent, network, memory, battery...): after Auth, and on changes.
@@ -566,7 +574,7 @@ impl Payload for ToApp {
 impl Payload for ToServer {
     fn payload_len(&self) -> usize {
         match self {
-            ToServer::FileChunk { len, .. } => *len as usize,
+            ToServer::FileChunk { len, .. } | ToServer::RecordData { len, .. } => *len as usize,
             _ => 0,
         }
     }
@@ -671,6 +679,16 @@ mod tests {
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].1, b"hello");
         assert_eq!(got[1].0, ToApp::WindowClose { win: 2 });
+    }
+
+    #[test]
+    fn record_messages_have_their_shape() {
+        let line = encode(&ToApp::RecordOpen { stream: 3, rate: 48000, channels: 1 });
+        assert_eq!(std::str::from_utf8(&line).unwrap(), "{\"t\":\"record_open\",\"stream\":3,\"rate\":48000,\"channels\":1}\n");
+        let mut f = Framer::default();
+        f.push(b"{\"t\":\"record_data\",\"stream\":3,\"len\":4}\n\x01\x00\xff\x7f{\"t\":\"closing\"}\n");
+        assert_eq!(f.next::<ToServer>().unwrap().unwrap(), (ToServer::RecordData { stream: 3, len: 4 }, vec![1, 0, 0xff, 0x7f]));
+        assert_eq!(f.next::<ToServer>().unwrap().unwrap().0, ToServer::Closing);
     }
 
     #[test]
