@@ -115,8 +115,16 @@ pub fn cmd_export(args: &[String]) -> i32 {
 /// `lindroids launch <id>`: what an exported program's shortcut runs (through Termux).
 pub fn cmd_launch(args: &[String]) -> i32 {
     let Some(id) = args.first() else { return crate::fail("which one? (lindroids list)") };
+    // The server says so when the program's page asked; the program itself should not inherit it.
+    if std::env::var_os("LINDROIDS_LAUNCHED").is_some() {
+        crate::LAUNCHED_BY_PAGE.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::env::remove_var("LINDROIDS_LAUNCHED");
+    }
     match lindroids_server::load_exported(id) {
-        Some(rec) => run::cmd_run(&rec.run),
+        Some(rec) => {
+            let _ = crate::DISPLAY_PAGE.set(format!("/app/{id}"));
+            run::cmd_run(&rec.run)
+        }
         None => crate::fail(&format!("nothing exported as {id:?} (lindroids list)")),
     }
 }

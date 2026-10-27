@@ -46,6 +46,9 @@ lindroids export xournalpp        # a home screen icon that starts it, Termux op
   on the programs' own session bus: dark mode, opening links (`xdg-open`, `lindroids open`),
   files to open or save through the browser, notifications shown in the page, network state. The
   clipboard goes both ways.
+- **Apps of their own.** Every exported program has its own page (`/app/<id>`), named and
+  iconed after it, with an **Install** button: installed, it opens standalone — no address bar,
+  no tabs, its own icon and Recents entry — and starts its program while Lindroids runs.
 - **Home screen icons.** `lindroids export <command>` pins a shortcut with the program's own
   name and icon (Android asks first). It belongs to Termux, not to an app of ours: tapping it
   has Termux run the program — Termux is started if it is closed — and its windows show in the
@@ -59,7 +62,7 @@ lindroids export xournalpp        # a home screen icon that starts it, Termux op
 In **Termux** (from F-Droid or GitHub):
 
 ```sh
-curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh | sh
+curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh -o install.sh && sh install.sh
 lindroids run mousepad
 ```
 

@@ -335,6 +335,8 @@ pub enum ToServer {
     Close { win: u32 },
     Clipboard { text: String },
     FolderPicked { request: u32, path: Option<String> },
+    /// Start an exported program: its page (`/app/<id>`, maybe installed as an app) was opened.
+    Launch { id: String },
     /// Sound flow control: the app has room for this many more bytes of a stream.
     AudioCredit { stream: u32, bytes: u32 },
 

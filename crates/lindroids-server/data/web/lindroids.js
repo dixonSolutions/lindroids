@@ -24,10 +24,16 @@ let t0 = performance.now();
 const windows = new Map(); // win -> {win, title, appId, icon, canvas, ctx, tab, pendingAck}
 let active = null; // win
 const order = []; // most recently active last
+// An exported program's page (/app/<id>), maybe installed as an app of its own: it starts its
+// program once linked — unless `lindroids launch` opened it with run=0, starting it itself.
+const launchId = (/^\/app\/([A-Za-z0-9._-]+)$/.exec(location.pathname) || [])[1] || null;
+let launched = /[#&]run=0/.test(location.hash);
+const standalone = matchMedia('(display-mode: standalone), (display-mode: fullscreen)').matches;
 
 // ------------------------------------------------------------------ secret and auth
 
 function takeSecretFromUrl() {
+  if (/[#&]run=0/.test(location.hash)) launched = true;
   const m = /[#&]k=([^&]+)/.exec(location.hash);
   if (!m) return false;
   localStorage.setItem(SECRET_KEY, decodeURIComponent(m[1]));
@@ -109,8 +115,11 @@ function connect() {
 function waitForServer() {
   const termux = /Android/.test(navigator.userAgent)
     ? `<p><a href="intent:#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;package=com.termux;end"><button>Open Termux</button></a></p>` : '';
-  showPanel(`<p>Waiting for the Lindroids server…</p>
-    <p>In Termux, run <code>lindroids run &lt;program&gt;</code>; this page connects by itself.</p>${termux}`);
+  showPanel(launchId
+    ? `<p>${esc(document.title)} starts when Lindroids is running.</p>
+       <p>Tap its Termux shortcut, or run <code>lindroids start</code> in Termux; this window connects by itself.</p>${termux}`
+    : `<p>Waiting for the Lindroids server…</p>
+       <p>In Termux, run <code>lindroids run &lt;program&gt;</code>; this page connects by itself.</p>${termux}`);
   retry = setTimeout(connect, 2000);
 }
 
@@ -156,6 +165,11 @@ async function handle(m, payload) {
       ready = true;
       hidePanelIfWindows();
       sendSystem();
+      if (launchId && !launched) {
+        launched = true;
+        send({ t: 'launch', id: launchId });
+        if (!windows.size) showPanel(`<p>Starting ${esc(document.title)}…</p>`);
+      }
       return;
     case 'bye':
       replaced = true;
@@ -635,6 +649,23 @@ async function clipboardOnReturn() {
 }
 window.addEventListener('focus', clipboardOnReturn);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) clipboardOnReturn(); });
+
+// Install: the browser offers it (Chrome, Edge, Samsung Internet) once the page qualifies; the
+// installed app opens standalone from its own icon. Firefox installs from its menu instead.
+let installEvent = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installEvent = e;
+  if (!standalone) $('install').hidden = false;
+});
+window.addEventListener('appinstalled', () => { $('install').hidden = true; installEvent = null; });
+$('install').onclick = async () => {
+  if (!installEvent) return;
+  installEvent.prompt();
+  await installEvent.userChoice.catch(() => {});
+  installEvent = null;
+  $('install').hidden = true;
+};
 
 // 📋: paste on a phone, which has no Ctrl+V. The tap lets the browser read the clipboard.
 $('paste').onclick = async () => {
