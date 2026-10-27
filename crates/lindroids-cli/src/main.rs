@@ -61,7 +61,8 @@ X11 programs need no option: every program gets DISPLAY as well as WAYLAND_DISPL
 window becomes its own Android window (xwayland-satellite, started on the first X11 connection).
 `lindroids doctor` shows whether X11 is ready; `lindroids setup x11` installs what is missing.
 
-The first time, the Lindroids app asks for the pairing code that `lindroids pair` shows.
+The first time, the Lindroids app pairs itself with Termux (Android asks to let it run commands
+in Termux); elsewhere it asks for the pairing code that `lindroids pair` shows.
 ";
 
 fn main() {
@@ -99,6 +100,11 @@ fn main() {
         Some("list") => export::cmd_list(),
         Some("remove") => export::cmd_remove(&args[1..]),
         Some("pick-folder") => cmd_pick_folder(),
+        // For the app, through Termux's RUN_COMMAND (TermuxPairing.java): the pairing secret.
+        Some("app-secret") => {
+            println!("{}", lindroids_server::load_or_create_secret());
+            0
+        }
         Some("debug-app") => debug::cmd_debug_app(&args[1..]),
         Some(other) => {
             eprintln!("lindroids: unknown command {other:?}\n");
@@ -201,7 +207,8 @@ pub fn ensure_app(sb: &sandbox::Sandbox, rt: &Path, quiet: bool) -> bool {
             eprintln!("  Could not wake it from here (Termux 0.118.1+ with termux-am-socket can), so open the");
             eprintln!("  Lindroids app yourself: it finds this server on its own.");
         } else {
-            eprintln!("  It was woken up; if it asks, approve it.");
+            eprintln!("  It was woken up. If Android asks to let it run commands in Termux, allow it: that pairs");
+            eprintln!("  it with this server. Otherwise it asks for the pairing code below.");
         }
         eprintln!("  Pairing code: {code}");
         eprintln!("  Windows appear as soon as the app is connected.");

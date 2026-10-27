@@ -56,6 +56,11 @@ Optional packages: `pkg install proot-distro` to run programs from a Debian/Ubun
 (from Termux's x11-repo); xwayland-satellite, which gives every X11 window its own Android window,
 comes with Lindroids. Anywhere else, `lindroids setup x11` uses that system's package manager.
 
+**Pairing** happens once. If Termux lets other apps run commands in it
+(`allow-external-apps = true` in `~/.termux/termux.properties`, Termux's own setting), the app pairs
+itself: Android asks once to let Lindroids run commands in Termux, and no code is needed. Otherwise
+the app asks for the 6-digit code that `lindroids` prints.
+
 Programs installed inside a proot-distro distro (`proot-distro login debian`, then `apt install
 xournalpp`) run from Termux as they are: `lindroids run xournalpp` finds that `xournalpp` is not in
 Termux but in `debian`, and runs it there, as `lindroids run --distro debian xournalpp` would.

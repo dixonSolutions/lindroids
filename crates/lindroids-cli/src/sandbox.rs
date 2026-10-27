@@ -192,8 +192,10 @@ pub fn wake_app(sb: &Sandbox, secret: &str) -> Option<&'static str> {
     let socket = proto::server_socket_name(sb.uid);
     let uid = sb.uid.to_string();
     let component = format!("{}/.HelloReceiver", proto::APP_PACKAGE);
+    // -f 32 (FLAG_INCLUDE_STOPPED_PACKAGES): an app that was installed and never opened is
+    // "stopped", and Android drops broadcasts to it without this.
     let args: Vec<&str> = vec![
-        "broadcast", "-n", &component, "-a", proto::ACTION_SERVER_HELLO,
+        "broadcast", "-f", "32", "-n", &component, "-a", proto::ACTION_SERVER_HELLO,
         "--es", "socket", &socket, "--es", "uid", &uid, "--es", "sandbox", &sb.name, "--es", "secret", secret,
     ];
     // Termux's am socket server (fast), Termux's app_process am, Android's own am, then cmd.

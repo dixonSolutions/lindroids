@@ -27,6 +27,17 @@ public final class ApproveActivity extends Activity {
     static void ask(Context ctx, int uid, String sandbox, boolean needCode, boolean interactive) {
         Intent i = new Intent(ctx, ApproveActivity.class).putExtra("uid", uid).putExtra("sandbox", sandbox)
                 .putExtra("needCode", needCode);
+        show(ctx, i, uid, sandbox, needCode ? "Tap to pair with the code shown by lindroids" : "Tap to allow", interactive);
+    }
+
+    /** Termux's server: only Android's "Run commands in Termux" permission is asked for. */
+    static void askTermux(Context ctx, int uid, String sandbox, boolean interactive) {
+        Intent i = new Intent(ctx, ApproveActivity.class).putExtra("uid", uid).putExtra("sandbox", sandbox)
+                .putExtra("termux", true);
+        show(ctx, i, uid, sandbox, "Tap to pair with Termux", interactive);
+    }
+
+    private static void show(Context ctx, Intent i, int uid, String sandbox, String text, boolean interactive) {
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         if (interactive) {
             try { ctx.startActivity(i); return; } catch (Throwable ignored) {}
@@ -40,7 +51,7 @@ public final class ApproveActivity extends Activity {
                 .setGroup("pairing")
                 .setPriority(Notification.PRIORITY_HIGH)
                 .setContentTitle(sandbox + " wants to show Linux apps")
-                .setContentText(needCode ? "Tap to pair with the code shown by lindroids" : "Tap to allow")
+                .setContentText(text)
                 .setContentIntent(pi).setAutoCancel(true).build();
         ((NotificationManager) ctx.getSystemService(NOTIFICATION_SERVICE)).notify(LinkService.NOTE_PAIR + uid, n);
     }
@@ -69,6 +80,39 @@ public final class ApproveActivity extends Activity {
         if (showing != null && showing != this) showing.finish();
         showing = this;
         LinkService.app = getApplicationContext();
+        if (getIntent().getBooleanExtra("termux", false) && Build.VERSION.SDK_INT >= 23) {
+            if (TermuxPairing.permitted(this)) {
+                termuxGranted();
+            } else {
+                // Android's own dialog: "Allow Lindroids to run commands in Termux environment?"
+                requestPermissions(new String[] {TermuxPairing.PERMISSION}, 1);
+            }
+            return;
+        }
+        showDialog();
+    }
+
+    private void termuxGranted() {
+        int uid = getIntent().getIntExtra("uid", -1);
+        LinkService.announcedPairing.remove(uid);
+        TermuxPairing.reset(uid);
+        LinkService.ensureRunning(this);
+        if (!TermuxPairing.request(this, uid)) TermuxPairing.refused.add(uid);
+        finish();
+    }
+
+    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+        if (results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            termuxGranted();
+        } else {
+            // Denied: pair the old way, with the code.
+            TermuxPairing.refused.add(getIntent().getIntExtra("uid", -1));
+            getIntent().putExtra("needCode", true).putExtra("termux", false);
+            showDialog();
+        }
+    }
+
+    private void showDialog() {
         final int uid = getIntent().getIntExtra("uid", -1);
         final String sandbox = getIntent().getStringExtra("sandbox");
         // A code is needed unless this is only about allowing a server we already share a secret

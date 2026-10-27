@@ -188,6 +188,7 @@ public final class LinkService extends Service {
         if (secret != null && !secret.isEmpty()) addSecret(uid, secret);
         if (sandbox != null) prefs().edit().putString("sandbox." + uid, sandbox).apply();
         announcedPairing.remove(uid);
+        TermuxPairing.reset(uid);
         connect(uid, socket, null, true);
     }
 
@@ -206,6 +207,7 @@ public final class LinkService extends Service {
                 // Anything listening there? A handshake without credentials costs nothing.
                 String probe = Native.linkConnect(-1, socket, uid, null, null);
                 if (!probe.startsWith("denied")) return;
+                if (pairWithTermux(uid, sandbox, interactive)) return;
                 if (interactive || !announcedPairing.contains(uid)) {
                     announcedPairing.add(uid);
                     final boolean needCode = secret == null;
@@ -256,7 +258,24 @@ public final class LinkService extends Service {
         });
     }
 
+    /**
+     * Termux's server: get the secret from Termux itself, no code (see TermuxPairing). True if
+     * that is under way, including asking for the permission it needs.
+     */
+    static boolean pairWithTermux(int uid, String sandbox, boolean interactive) {
+        if (!TermuxPairing.isTermux(app, uid) || !TermuxPairing.available(app) || TermuxPairing.refused.contains(uid)) return false;
+        if (TermuxPairing.permitted(app)) return TermuxPairing.request(app, uid);
+        if (interactive || !announcedPairing.contains(uid)) {
+            announcedPairing.add(uid);
+            main.post(() -> ApproveActivity.askTermux(app, uid, sandbox, interactive));
+        }
+        return true;
+    }
+
     static void needPairingAgain(int uid, String sandbox, boolean interactive) {
+        // Termux's own secret did not fit this server (one in a proot distro has its own): the code.
+        if (TermuxPairing.gave.contains(uid)) TermuxPairing.refused.add(uid);
+        else if (pairWithTermux(uid, sandbox, interactive)) return;
         // Keep the old secrets: the server they belong to may come back (Termux vs a distro).
         if (!announcedPairing.contains(uid) || interactive) {
             announcedPairing.add(uid);

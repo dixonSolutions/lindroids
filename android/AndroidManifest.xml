@@ -103,6 +103,9 @@
             android:grantUriPermissions="true" />
 
         <!-- Taps, buttons and dismissals of notifications from Linux programs. -->
+        <!-- Termux's answer to TermuxPairing (RUN_COMMAND's PendingIntent): only Termux holds it. -->
+        <receiver android:name=".PairResultReceiver" android:exported="false" />
+
         <receiver android:name=".NoteReceiver" android:exported="false" />
 
         <receiver android:name=".HelloReceiver" android:exported="true">

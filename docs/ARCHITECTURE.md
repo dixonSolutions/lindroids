@@ -45,7 +45,13 @@ app    → Auth { HMAC(secret, "lindroids-app" | nonce_s) }      or  Auth { code
 server → Hello            (or AuthFailed; Paired { secret } after a code)
 ```
 
-The first time, the user types the 6-digit code the CLI shows; five wrong codes close pairing until
+With Termux the first pairing can do without the code: the app asks Termux, through Termux's
+RUN_COMMAND API, to run `lindroids app-secret`, and Termux returns the output through a
+PendingIntent to a receiver that is not exported (`TermuxPairing`, `PairResultReceiver`), so only
+Termux can have answered. That needs Android's "run commands in Termux" permission for the app
+(asked for once) and `allow-external-apps = true` in `~/.termux/termux.properties`; when either is
+missing, or Termux's secret does not fit the server (one inside a proot distro has its own), the app
+asks for the code. Otherwise, the first time, the user types the 6-digit code the CLI shows; five wrong codes close pairing until
 the server restarts. The secret lives in `~/.local/share/lindroids/secret` on the sandbox side and
 in the app's private preferences. When the CLI can send intents (`termux-am`, `am`, `cmd`) it also
 wakes the app with the secret, so pairing is not needed again; otherwise the app finds servers on its
