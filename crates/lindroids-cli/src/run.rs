@@ -22,6 +22,23 @@ pub struct Opts {
 
 pub fn parse(args: &[String]) -> Result<Opts, String> {
     let mut o = Opts::default();
+    // `--opt=value` is `--opt value`; `--prootdistro` is `--distro`.
+    let mut split = Vec::with_capacity(args.len());
+    for (k, a) in args.iter().enumerate() {
+        match a.split_once('=') {
+            Some((opt, v)) if opt.starts_with("--") && takes_value(opt) || opt == "--prootdistro" => {
+                split.push(opt.to_string());
+                split.push(v.to_string());
+            }
+            // Everything from the command on is the command's.
+            _ if !a.starts_with('-') => {
+                split.extend(args[k..].iter().cloned());
+                break;
+            }
+            _ => split.push(a.clone()),
+        }
+    }
+    let args = &split[..];
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -34,7 +51,7 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
                 o.command = args[i + 1..].to_vec();
                 break;
             }
-            "--distro" => o.distro = Some(value()?),
+            "--distro" | "--prootdistro" => o.distro = Some(value()?),
             "--x11" => o.x11 = true,
             "--name" => o.name = Some(value()?),
             "--icon" => o.icon = Some(PathBuf::from(value()?)),
@@ -60,7 +77,7 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
 
 /// Options of `run` (and `export`) followed by a value.
 pub fn takes_value(opt: &str) -> bool {
-    matches!(opt, "--distro" | "--name" | "--icon" | "--id" | "-e" | "--env")
+    matches!(opt, "--distro" | "--prootdistro" | "--name" | "--icon" | "--id" | "-e" | "--env")
 }
 
 /// `lindroids run "foo --bar"` (one argument with spaces) is a shell command line.
@@ -477,6 +494,15 @@ mod tests {
         assert_eq!(proot_signal("some program output"), None);
         let found = forward_and_find_signal(&b"x\nproot info: vpid 1: terminated with signal 11\n"[..]);
         assert_eq!(found, Some(11));
+    }
+
+    #[test]
+    fn prootdistro_and_equals_forms() {
+        for a in [s(&["--prootdistro=debian", "gedit", "--x=1"]), s(&["--prootdistro", "debian", "gedit", "--x=1"]), s(&["--distro=debian", "gedit", "--x=1"])] {
+            let o = parse(&a).unwrap();
+            assert_eq!(o.distro.as_deref(), Some("debian"));
+            assert_eq!(o.command, s(&["gedit", "--x=1"]));
+        }
     }
 
     #[test]

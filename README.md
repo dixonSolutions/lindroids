@@ -87,7 +87,7 @@ part, which never leaves the browser. A page opened by hand asks once for the co
 ```sh
 lindroids run <command> [args]          # run a program; its windows show in the browser
 lindroids run "foot -e htop"            # a whole command line
-lindroids run --distro debian gedit     # from a proot-distro distro (found without it, too)
+lindroids run --prootdistro=debian gedit   # from a proot-distro distro (found without it, too)
 lindroids run org.gnome.Calculator      # an installed Flatpak (in Termux or any distro)
 lindroids run xterm                     # X11 programs too
 lindroids run --x11 gedit               # a toolkit app on X11 instead of Wayland
@@ -102,6 +102,7 @@ lindroids open <file|URI>               # open a link or a file through the brow
 lindroids notify <title> [body]         # a notification in the page
 lindroids info                          # dark mode, network, memory, battery, as the browser says
 lindroids setup x11                     # install Xwayland (and satellite where needed)
+lindroids setup flatpak                 # Flatpak: native in Termux (no root), or in a proot distro
 lindroids status | doctor | pair | setup | start | stop | version
 ```
 

@@ -42,12 +42,20 @@ and `LINDROIDS_REPO_URL` (a mirror or a local test repository).
 
 It also checks for Flatpak and, when it is missing, asks whether to install it with Flathub, with
 the package manager it found: apt, pacman, dnf, yum, zypper, apk or xbps. Termux has no flatpak
-package, so there it offers to build Flatpak natively for Termux, once (about 20 minutes and
-600 MB of build tools): ostree and Flatpak from their release sources with Lindroids' Android
-patches (`packaging/termux-flatpak`). No root and no Linux distro are needed: apps install per user,
-`flatpak --user install flathub <app-id>`, and run with `lindroids run <app-id>`. With root
-(`tsu`), `flatpak install` and `flatpak run` work too, sandboxed by bubblewrap from Termux's
-root-repo. A Flatpak already installed in a proot-distro distro is used as it is.
+package, so there it shows a menu:
+
+1. **build it natively for Termux** (the default): ostree and Flatpak from their release sources
+   with Lindroids' Android patches (`packaging/termux-flatpak`), once, about 20 minutes and 600 MB
+   of build tools. No root and no Linux distro: apps install per user,
+   `flatpak --user install flathub <app-id>`, and run with `lindroids run <app-id>`. With root
+   (`tsu`), `flatpak run` works too, sandboxed by bubblewrap from Termux's root-repo;
+2. **install it in a proot-distro distro you have** (one entry per distro), with its own package
+   manager;
+3. **set up a new Debian proot-distro container** with it;
+4. **skip it** — `lindroids setup flatpak` shows the same menu later.
+
+A Flatpak already there (in Termux or in a distro) is used as it is. `LINDROIDS_FLATPAK=native`,
+`debian`, `distro:<name>` or `no` answers the menu in advance.
 `LINDROIDS_FLATPAK=yes` or `no` answers the questions in advance; with no terminal they are skipped.
 
 ## Termux

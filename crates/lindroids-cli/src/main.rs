@@ -33,6 +33,8 @@ USAGE
   lindroids list | remove <id> | launch <id>
   lindroids setup                    start the server and open the windows page in the browser
   lindroids setup x11 [--yes]        install what X11 programs need (Xwayland), restart the server
+  lindroids setup flatpak            install Flatpak: natively in Termux (no root), in a proot-distro
+                                     distro (yours or a new Debian), or the system's package
   lindroids update [--check]         update lindroids to the latest release
   lindroids open <file|URI>          open with Android (what xdg-open does for Linux programs)
   lindroids notify <title> [body]    an Android notification
@@ -40,7 +42,7 @@ USAGE
   lindroids status | start | stop | pair | doctor | version
 
 RUN OPTIONS
-  --distro <name>     run inside a proot-distro distribution (Termux)
+  --distro <name>     run inside a proot-distro distribution (Termux); also --prootdistro=<name>
   --x11               prefer X11 over Wayland for this program (GTK, Qt and SDL)
   --name <name>       window and shortcut name
   --icon <file>       icon (PNG or SVG)
@@ -89,6 +91,7 @@ fn main() {
         Some("status") => cmd_status(),
         Some("pair") => cmd_pair(),
         Some("setup") if args.get(1).map(String::as_str) == Some("x11") => setup_x11::cmd_setup_x11(&args[2..]),
+        Some("setup") if args.get(1).map(String::as_str) == Some("flatpak") => cmd_setup_flatpak(),
         Some("setup") => cmd_setup(),
         Some("doctor") => cmd_doctor(),
         // Older releases run `<new binary> update --app-only` after upgrading; there is no app now.
@@ -318,6 +321,19 @@ pub fn cmd_setup() -> i32 {
     } else {
         1
     }
+}
+
+/// `lindroids setup flatpak`: the installer's Flatpak step (its menu in Termux), from the site.
+fn cmd_setup_flatpak() -> i32 {
+    let url = format!("{}/install.sh", option_env!("LINDROIDS_SITE").unwrap_or("https://dixonsolutions.github.io/lindroids"));
+    let tmp = std::env::temp_dir().join(format!("lindroids-install-{}.sh", std::process::id()));
+    let ok = Command::new("curl").args(["-fsSL", "-o"]).arg(&tmp).arg(&url).status().map_or(false, |s| s.success());
+    if !ok {
+        return fail(&format!("cannot download {url}"));
+    }
+    let code = Command::new("sh").arg(&tmp).arg("--flatpak-only").status().map_or(1, |s| s.code().unwrap_or(1));
+    let _ = std::fs::remove_file(&tmp);
+    code
 }
 
 fn cmd_pick_folder() -> i32 {
