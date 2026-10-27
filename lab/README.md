@@ -26,7 +26,7 @@ lab/fetch-images.sh [a7 a9 b15 b16]   # resumable, md5-checked (SourceForge), + 
 lab/vm.sh b16 start                   # headless, KVM, 3 GB / 4 vCPU; max 2 lab VMs; checks MemAvailable
 lab/vm.sh b16 wait-boot
 lab/provision.sh b16                  # setup wizard off, Termux + openssh + foot + lab key, sshd
-lab/test-lindroids.sh b16             # CLI + browser page + window + typing + relink -> lab/results/b16/<mode>/
+lab/test-lindroids.sh b16             # CLI + page + window + typing + relink + shortcut -> lab/results/b16/<mode>/
 lab/vm.sh b16 stop                    # adb `reboot -p`, then QMP quit
 ```
 
@@ -68,9 +68,9 @@ running in the init domain). For a7/a9, `late` also switches to software renderi
 No Lindroids app on the device, `allow-external-apps` removed from Termux's settings, Termux
 0.118.3 (F-Droid), the image's own browser (Jellyfish, WebView-based):
 
-| Android | Image | SELinux | Linked | Window | Typing | Relink after server restart |
-|---------|-------|---------|--------|--------|--------|-----------------------------|
-| 13 | BlissOS 16.9.7 | permissive | yes | yes | yes | 1.0 s |
+| Android | Image | SELinux | Linked | Window | Typing | Relink after server restart | Shortcut, Termux stopped |
+|---------|-------|---------|--------|--------|--------|-----------------------------|--------------------------|
+| 13 | BlissOS 16.9.7 | permissive | yes | yes | yes | 1.0 s | yes |
 
 `lindroids run` opens the page with Termux's `am`; on these x86 images that needs the ARM
 translation layer off (`resetprop ro.dalvik.vm.native.bridge 0`, which the test does when

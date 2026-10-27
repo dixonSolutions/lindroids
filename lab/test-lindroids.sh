@@ -3,7 +3,8 @@
 # in Termux and nothing else — no app, no Termux setting (allow-external-apps is removed), the
 # browser that is on the device as the display:
 #   push the CLI, `lindroids run foot` (which opens the page in the browser), check the page linked
-#   and shows the window, type into it, then stop+start the server and check the page relinks.
+#   and shows the window, type into it, stop+start the server and check the page relinks, then
+#   export foot, add its shortcut, stop Termux and tap the shortcut.
 #
 #   lab/test-lindroids.sh <name>
 #
@@ -83,7 +84,7 @@ finish() {
   R[avc_denied]=$(wc -l <"$OUT/avc-denied.txt")
   {
     for k in vm android image kernel selinux cmdline_selinux gpu cli browser cli_push opened_by linked \
-      window window_size typing reconnect window_after_reconnect avc_denied result notes; do
+      window window_size typing reconnect window_after_reconnect shortcut avc_denied result notes; do
       printf '%-24s %s\n' "$k" "${R[$k]:-}"
     done
   } | tee "$OUT/result.txt"
@@ -210,7 +211,49 @@ shot window-after-reconnect
 grep -qE '^window .* [1-9][0-9]*x[1-9]' "$OUT/status-after-reconnect.txt" && R[window_after_reconnect]=yes || R[window_after_reconnect]=no
 tsh 'pkill -x foot; true'
 
-if [[ ${R[linked]} == yes && ${R[window]} == yes && ${R[typing]} == yes && ${R[reconnect]} == yes* ]]; then
+# --------------------------------------------------------------- home screen shortcut
+# `lindroids export` pins a shortcut owned by Termux; tapping it with Termux stopped must bring
+# Termux, the server, the program and the browser back.
+tsh 'lindroids remove lab.foot >/dev/null 2>&1; lindroids export --id lab.foot --name LabFoot foot 2>&1' >"$OUT/export.txt"
+xy=""
+for i in $(seq 1 10); do xy=$(ui_find '(?i)^add( to home screen)?$') && break; sleep 1; done
+shot pin-dialog
+if [[ -z $xy ]]; then
+  R[shortcut]="no pin dialog ($(tr '\n' ' ' <"$OUT/export.txt"))"
+else
+  sh_ "input tap $xy"
+  sleep 2
+  sh_ 'am force-stop com.termux'
+  sh_ 'input keyevent KEYCODE_HOME'
+  sleep 2
+  shot home-shortcut
+  if xy=$(ui_find '^LabFoot$'); then
+    t0=$(date +%s)
+    sh_ "input tap $xy"
+    R[shortcut]="no (no window within 60 s)"
+    for i in $(seq 1 60); do
+      top=$(sh_ 'dumpsys activity activities' | grep -E 'topResumedActivity|mResumedActivity' | head -1)
+      if [[ $top == *"$BROWSER"* ]] && sh_ 'ps -A -o NAME' | grep -qx foot; then R[shortcut]="yes $(( $(date +%s) - t0 ))s"; break; fi
+      sleep 1
+    done
+    sleep 2
+    shot shortcut-window
+  else
+    R[shortcut]="no (not on the home screen)"
+  fi
+  # ssh again: a new Termux session (Ctrl+Alt+C) running sshd.
+  sh_ 'am start -n com.termux/.app.TermuxActivity' >/dev/null 2>&1
+  sleep 2
+  sh_ 'input keycombination KEYCODE_CTRL_LEFT KEYCODE_ALT_LEFT KEYCODE_C'
+  sleep 2
+  sh_ 'input text sshd'
+  sh_ 'input keyevent 66'
+  sleep 3
+fi
+log "shortcut: ${R[shortcut]}"
+tsh 'pkill -x foot; lindroids remove lab.foot >/dev/null 2>&1; true'
+
+if [[ ${R[linked]} == yes && ${R[window]} == yes && ${R[typing]} == yes && ${R[reconnect]} == yes* && ${R[shortcut]} == yes* ]]; then
   R[result]=PASS
 else
   R[result]=FAIL
