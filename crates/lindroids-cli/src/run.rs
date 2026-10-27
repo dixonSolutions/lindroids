@@ -104,6 +104,40 @@ pub fn distro_rootfses() -> Vec<PathBuf> {
     names.iter().map(|n| distro_rootfs(n)).filter(|p| p.is_dir()).collect()
 }
 
+/// Where a distro keeps programs, relative to its root.
+const DISTRO_BIN_DIRS: &[&str] = &["usr/local/bin", "usr/bin", "bin", "usr/local/sbin", "usr/sbin", "sbin", "usr/games"];
+
+/// The distro whose root filesystem is `root` (`.../containers/<name>/rootfs` or
+/// `.../installed-rootfs/<name>`).
+fn distro_name(root: &Path) -> Option<String> {
+    let dir = if root.file_name()? == "rootfs" { root.parent()? } else { root };
+    Some(dir.file_name()?.to_string_lossy().into_owned())
+}
+
+/// The first of `roots` that has the program `prog` (a name, not a path).
+fn distro_with(roots: &[PathBuf], prog: &str) -> Option<String> {
+    roots
+        .iter()
+        .find(|root| DISTRO_BIN_DIRS.iter().any(|d| root.join(d).join(prog).symlink_metadata().is_ok()))
+        .and_then(|root| distro_name(root))
+}
+
+/// In Termux, a program that is not installed in Termux but in a proot-distro distro (installed
+/// with `apt` after `proot-distro login`) runs in that distro, as with `--distro <name>`.
+pub fn pick_distro(o: &mut Opts) {
+    if o.distro.is_some() || is_shell_line(&o.command) || sandbox::detect().kind != sandbox::Kind::Termux {
+        return;
+    }
+    let first = &o.command[0];
+    if first.contains('/') || flatpak::looks_like_id(first) || sandbox::have(first) {
+        return;
+    }
+    if let Some(name) = distro_with(&distro_rootfses(), first) {
+        eprintln!("lindroids: {first} is not in Termux but in the proot-distro distro {name}: running it there (--distro {name})");
+        o.distro = Some(name);
+    }
+}
+
 /// What the user wants to run, resolved.
 pub enum Target {
     /// argv in the current sandbox (or a distro).
@@ -252,10 +286,11 @@ exit $rc
 "#;
 
 pub fn cmd_run(args: &[String]) -> i32 {
-    let o = match parse(args) {
+    let mut o = match parse(args) {
         Ok(o) => o,
         Err(e) => return crate::fail(&e),
     };
+    pick_distro(&mut o);
     let sb = sandbox::detect();
     let target = match resolve(&o) {
         Ok(t) => t,
@@ -323,6 +358,23 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn finds_the_distro_that_has_a_program() {
+        let base = std::env::temp_dir().join(format!("lindroids-distro-with-{}", std::process::id()));
+        let new = base.join("containers/debian/rootfs");
+        let old = base.join("installed-rootfs/alpine");
+        std::fs::create_dir_all(new.join("usr/bin")).unwrap();
+        std::fs::create_dir_all(old.join("usr/bin")).unwrap();
+        std::fs::write(new.join("usr/bin/xournalpp"), "").unwrap();
+        // A dangling absolute symlink (it points into the distro) still counts.
+        std::os::unix::fs::symlink("/usr/lib/foo/foo", old.join("usr/bin/foo")).unwrap();
+        let roots = vec![old.clone(), new.clone()];
+        assert_eq!(distro_with(&roots, "xournalpp").as_deref(), Some("debian"));
+        assert_eq!(distro_with(&roots, "foo").as_deref(), Some("alpine"));
+        assert_eq!(distro_with(&roots, "gimp"), None);
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

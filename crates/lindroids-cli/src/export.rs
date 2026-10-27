@@ -385,10 +385,11 @@ fn human(n: u64) -> String {
 }
 
 pub fn cmd_export(args: &[String]) -> i32 {
-    let o = match run::parse(args) {
+    let mut o = match run::parse(args) {
         Ok(o) => o,
         Err(e) => return crate::fail(&e),
     };
+    run::pick_distro(&mut o);
     let sb = sandbox::detect();
     let target = match run::resolve(&o) {
         Ok(t) => t,
