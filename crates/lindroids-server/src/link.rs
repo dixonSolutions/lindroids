@@ -230,6 +230,13 @@ impl Link {
                     self.flush();
                 }
                 if u.closed {
+                    // 1001, going away: the browser closes the socket of a page it takes down (its
+                    // window closed, a reload), also when the page had no time to say so itself
+                    // (Chrome: no pagehide on closing a Custom Tab). A browser that dies sends
+                    // nothing.
+                    if u.close_code == Some(1001) {
+                        self.closing = true;
+                    }
                     return false;
                 }
             }

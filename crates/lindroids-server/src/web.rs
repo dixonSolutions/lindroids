@@ -249,6 +249,8 @@ pub struct Unframed {
     /// Frames to send back (pongs, the close answer).
     pub reply: Vec<u8>,
     pub closed: bool,
+    /// The close frame's status code, if it had one (1001: the page is going away).
+    pub close_code: Option<u16>,
 }
 
 /// Take every complete frame off the front of `buf`.
@@ -284,6 +286,7 @@ pub fn unframe(buf: &mut Vec<u8>) -> Unframed {
             0 | 1 | 2 => out.data.extend_from_slice(&payload),
             OP_CLOSE => {
                 out.reply.extend_from_slice(&frame(OP_CLOSE, &payload[..payload.len().min(2)]));
+                out.close_code = (payload.len() >= 2).then(|| u16::from_be_bytes([payload[0], payload[1]]));
                 out.closed = true;
                 break;
             }
@@ -298,6 +301,18 @@ pub fn unframe(buf: &mut Vec<u8>) -> Unframed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn close_codes() {
+        let mut buf = masked(8, &1001u16.to_be_bytes());
+        let u = unframe(&mut buf);
+        assert!(u.closed);
+        assert_eq!(u.close_code, Some(1001));
+        let mut buf = masked(8, &[]);
+        let u = unframe(&mut buf);
+        assert!(u.closed);
+        assert_eq!(u.close_code, None);
+    }
 
     fn masked(opcode: u8, data: &[u8]) -> Vec<u8> {
         let mask = [1u8, 2, 3, 4];

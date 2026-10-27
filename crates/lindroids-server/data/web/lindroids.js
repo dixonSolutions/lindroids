@@ -382,7 +382,12 @@ function showEnded() {
     icon && `data:image/png;base64,${icon}`);
   // Out of full screen, so the browser's own close button shows where the page cannot close.
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-  endTimer = setTimeout(() => { if (!windows.size) window.close(); }, 1500);
+  endTimer = setTimeout(() => {
+    if (windows.size) return;
+    window.close();
+    // Still here a second later: the browser kept the window (Firefox's Custom Tabs always do).
+    setTimeout(() => plog(`window.close() refused (history ${history.length}, ${navigator.userAgent.match(/(Firefox|Chrome)\/[\d.]+/)?.[0] || 'browser'})`), 1000);
+  }, 1500);
 }
 
 // Full screen that arrives after the end (the tap that closed the program asked for it too).
