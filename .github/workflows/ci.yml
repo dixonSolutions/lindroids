@@ -16,7 +16,10 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Android NDK r27c, for cargo-ndk (the Termux builds of xwayland-satellite).
   NDK_VERSION: 27.2.12479018
+  NDK_RELEASE: r27c
+  NDK_SHA256: 59c2f6dc96743b5daf5d1626684640b20a6bd2b1d85b13156b90333741bad5cc
 
 jobs:
   # scripts/build-xwayland-satellite.sh: 4 Termux builds (cargo-ndk) and 4 Debian builds (in a
@@ -52,24 +55,45 @@ jobs:
         with:
           tool: cargo-ndk
 
-      - name: JDK (for sdkmanager)
+      # The NDK (no Android SDK, sdkmanager or Java): the runner image's copy when it is this
+      # version, else Google's zip (checked, and cached). As in release.yml.
+      - name: Android NDK (on the runner?)
+        id: ndk
         if: steps.xwls-cache.outputs.cache-hit != 'true'
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
+        run: |
+          for d in "${ANDROID_NDK_ROOT:-}" "/usr/local/lib/android/sdk/ndk/$NDK_VERSION"; do
+            rev=$(sed -n 's/^Pkg.Revision *= *//p' "$d/source.properties" 2>/dev/null | tr -d '\r ')
+            if [ "$rev" = "$NDK_VERSION" ]; then
+              echo "ANDROID_NDK_HOME=$d" >> "$GITHUB_ENV"
+              echo "found=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "found=false" >> "$GITHUB_OUTPUT"
 
-      - name: Android NDK
-        if: steps.xwls-cache.outputs.cache-hit != 'true'
-        uses: android-actions/setup-android@v3
+      - name: Cache the Android NDK
+        if: steps.xwls-cache.outputs.cache-hit != 'true' && steps.ndk.outputs.found != 'true'
+        uses: actions/cache@v4
         with:
-          packages: "ndk;${{ env.NDK_VERSION }}"
+          path: ~/android-ndk-${{ env.NDK_RELEASE }}
+          key: android-ndk-${{ env.NDK_VERSION }}
+
+      - name: Download the Android NDK
+        if: steps.xwls-cache.outputs.cache-hit != 'true' && steps.ndk.outputs.found != 'true'
+        run: |
+          dir=$HOME/android-ndk-$NDK_RELEASE
+          if [ ! -f "$dir/source.properties" ]; then
+            curl -fsSL --retry 3 -o "$RUNNER_TEMP/ndk.zip" "https://dl.google.com/android/repository/android-ndk-$NDK_RELEASE-linux.zip"
+            echo "$NDK_SHA256  $RUNNER_TEMP/ndk.zip" | sha256sum -c -
+            unzip -q "$RUNNER_TEMP/ndk.zip" -d "$HOME"
+            rm "$RUNNER_TEMP/ndk.zip"
+          fi
+          grep -q "^Pkg.Revision *= *$NDK_VERSION" "$dir/source.properties"
+          echo "ANDROID_NDK_HOME=$dir" >> "$GITHUB_ENV"
 
       - name: Build tools
         if: steps.xwls-cache.outputs.cache-hit != 'true'
         run: |
-          test -d "$ANDROID_HOME/ndk/$NDK_VERSION"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
           # libclang for bindgen (xcb-util-cursor-sys); patch for the Android crate patches.
           sudo apt-get update -q && sudo apt-get install -y -q libclang-dev pkg-config patch
 
@@ -104,9 +128,9 @@ jobs:
       - name: Shell scripts
         run: |
           shellcheck -S warning scripts/build-release.sh scripts/version.sh \
-            scripts/set-github-secrets.sh scripts/build-xwayland-satellite.sh \
+            scripts/set-github-secrets.sh scripts/publish-local.sh scripts/build-xwayland-satellite.sh \
             packaging/*.sh packaging/repo/*.sh tests/*.sh
-          sh -n install.sh
+          shellcheck -S warning -s sh install.sh
 
       - name: Tests
         run: cargo test --workspace
@@ -122,14 +146,17 @@ jobs:
           path: target/host-integration-last.png
           if-no-files-found: ignore
 
-  # The Debian and Arch flavours end to end with a throwaway signing key: static build,
-  # build-debs.sh (with the xwayland-satellite job's binaries), build-pacman.sh, build-repo.sh, then
-  # install.sh against that repository in a Debian container, which must resolve the satellite's
-  # libraries through Recommends, and in an Arch container (pacman, signed packages).
+  # Every repository end to end with throwaway keys (tests/install-repos.sh): static build, the
+  # .deb, pacman, rpm, apk and xbps packages (with the xwayland-satellite job's binaries), the
+  # repositories (build-repo.sh), then install.sh against them in containers of Debian, Ubuntu,
+  # Kali, Arch, Fedora, Rocky, openSUSE Tumbleweed and Leap, Alpine (stable and edge), Chimera and
+  # Void (glibc and musl): each must pick its package manager and install from its repository.
   package:
     needs: xwayland-satellite
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
+    env:
+      LINDROIDS_CONTAINER_ENGINE: docker
     steps:
       - uses: actions/checkout@v4
         with:
@@ -148,38 +175,18 @@ jobs:
           name: xwayland-satellite
           path: target/xwls/out
 
-      - name: Package smoke test
+      - name: Repositories and install.sh
         run: |
           command -v bsdtar >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q libarchive-tools; }
           eval "$(scripts/version.sh)"
           export LINDROIDS_BUILD_ID
           cargo build -p lindroids --release --target x86_64-unknown-linux-musl
-          stage=target/ci-pkg
-          rm -rf "$stage" && mkdir -p "$stage/dist/bin/x86_64-unknown-linux-musl"
-          cp target/x86_64-unknown-linux-musl/release/lindroids "$stage/dist/bin/x86_64-unknown-linux-musl/"
-          packaging/build-debs.sh --version "$LINDROIDS_VERSION" --dist "$stage/dist" \
-            --out "$stage/debs" --arches amd64 --xwls target/xwls/out
-          packaging/build-pacman.sh --debs "$stage/debs" --out "$stage/pacman"
-          GNUPGHOME=$(mktemp -d)
-          export GNUPGHOME
-          gpg --batch --pinentry-mode loopback --passphrase '' --quick-generate-key "ci <ci@example.invalid>" ed25519 sign never
-          gpg --export > "$stage/ci.gpg"
-          packaging/repo/build-repo.sh "$stage/site" --debs "$stage/debs" --pacman "$stage/pacman" --public-key "$stage/ci.gpg" \
-            --base-url http://127.0.0.1:8790
-          python3 -m http.server 8790 --bind 127.0.0.1 --directory "$stage/site" >/dev/null 2>&1 &
-          server=$!
-          sleep 1
-          docker run --rm --network host debian:stable sh -ec '
-            apt-get update -q >/dev/null && apt-get install -y -q curl >/dev/null
-            curl -fsSL http://127.0.0.1:8790/install.sh | sh
-            lindroids version
-            xwls=/usr/libexec/lindroids/xwayland-satellite
-            if ldd "$xwls" | grep "not found"; then exit 1; fi
-            "$xwls" -help >/dev/null
-            command -v Xwayland'
-          docker run --rm --network host archlinux:latest sh -ec '
-            curl -fsSL http://127.0.0.1:8790/install.sh | LINDROIDS_FLATPAK=no sh
-            lindroids version
-            pacman -Qi lindroids >/dev/null
-            /usr/libexec/lindroids/xwayland-satellite -help >/dev/null 2>&1 || test -x /usr/libexec/lindroids/xwayland-satellite'
-          kill "$server" || true
+          tests/install-repos.sh --bin target/x86_64-unknown-linux-musl/release/lindroids --xwls target/xwls/out
+
+      - name: Upload the install logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-repos-logs
+          path: target/install-repos/logs
+          if-no-files-found: ignore

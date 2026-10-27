@@ -119,6 +119,10 @@ pub enum ToApp {
         icon_png_b64: Option<String>,
     },
     WindowTitle { win: u32, title: String },
+    /// A program asked to bring this window forward (xdg-activation): show it.
+    WindowActivate { win: u32 },
+    /// The pointer's shape over Linux windows, as a CSS cursor name ("none": hidden).
+    Cursor { css: String },
     WindowClose { win: u32 },
     /// Part of a new frame: `rects` changed (x, y, w, h); the payload is their RGBA pixels, row
     /// by row, one rect after another, LZ4-compressed (lz4_flex block format with prepended

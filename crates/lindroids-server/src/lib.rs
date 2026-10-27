@@ -11,6 +11,7 @@
 pub mod applink;
 pub mod audio;
 mod data;
+mod extras;
 pub mod frames;
 pub mod link;
 pub mod icons;
@@ -268,6 +269,7 @@ pub struct State {
     pub seat: seat::Seat,
     pub outputs: output::Outputs,
     pub data: data::DataState,
+    pub extras: extras::ExtrasState,
     /// Popup bookkeeping, by the popup's wl_surface id.
     pub popups: HashMap<ObjectId, shell::Popup>,
     /// Surfaces not shown anywhere whose frame callbacks are due.
@@ -809,6 +811,7 @@ pub fn run(cfg: Config) -> i32 {
         seat: seat::Seat::default(),
         outputs: output::Outputs::default(),
         data: data::DataState::default(),
+        extras: extras::ExtrasState::default(),
         popups: HashMap::new(),
         frame_due: Vec::new(),
         running: true,
@@ -821,6 +824,7 @@ pub fn run(cfg: Config) -> i32 {
     seat::register_globals(&dh);
     output::register_globals(&dh);
     data::register_globals(&dh);
+    extras::register_globals(&dh);
 
     let _ = std::fs::remove_file(cfg.runtime_dir.join("x11-display"));
     let mut x11 = match x11::X11::start(&cfg.runtime_dir, &wl_path) {

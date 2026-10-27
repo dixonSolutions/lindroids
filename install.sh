@@ -3,24 +3,32 @@
 #
 #   curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh | sh
 #
-# It uses the package manager it finds:
+# It looks at what the system really has (the package managers that are present and run, with
+# /etc/os-release as the tie-breaker) and installs the way that fits:
 #   Termux with apt (the default)   -> APT repository, suite `termux` (bionic build)
 #   Termux with pacman              -> pacman repository pacman/termux (bionic build)
-#   Debian/Ubuntu (also proot)      -> APT repository, suite `stable` (static build)
-#   Arch Linux and derivatives      -> pacman repository pacman/arch (static build)
-#   anything else (Fedora, Alpine, openSUSE, Void, ...)
-#                                   -> static binary from the latest GitHub release into ~/.local/bin
-# and offers to install Flatpak (with Flathub) with it: apt, pacman, dnf, yum, zypper, apk or xbps.
+#   Debian, Ubuntu, Kali, Mint, ... -> APT repository, suite `stable` (static build)
+#   Arch, Manjaro, Artix, EndeavourOS -> pacman repository pacman/arch (static build)
+#   Fedora, RHEL 8+, Rocky, Alma, CentOS Stream, Oracle, Amazon 2023 -> RPM repository rpm/ (dnf)
+#   openSUSE, SLE                   -> RPM repository rpm/ with zypper
+#   Alpine, postmarketOS, Adélie, Chimera -> apk repository apk/ (static build, no glibc parts)
+#   Void (glibc and musl)           -> xbps repository xbps/
+#   anything else, or a repository that is not there -> static binary from the latest GitHub
+#                                      release into ~/.local/bin
+# The same works under proot (proot-distro, UserLAnd, Andronix), where the shell is root. Outside
+# Termux, system changes need root: it runs them directly as root, else with sudo or doas.
+# It also offers to install Flatpak (with Flathub) with the same package manager.
 #
 # Safe to run again: it rewrites the same source and key files and upgrades the package.
 #
 # Environment (all optional):
-#   LINDROIDS_REPO_URL      APT repository / site base URL
+#   LINDROIDS_REPO_URL      repository / site base URL (a mirror, or a local test repository)
 #   LINDROIDS_GITHUB_REPO   owner/repo for release downloads
 #   LINDROIDS_RELEASE_URL   base for release assets (default https://github.com/<repo>/releases/download)
 #   LINDROIDS_VERSION       version for the static install (default: <repo url>/VERSION)
 #   LINDROIDS_INSTALL_DIR   static install target (default ~/.local/bin)
-#   LINDROIDS_METHOD        force apt-termux | pacman-termux | apt-debian | pacman-arch | static
+#   LINDROIDS_METHOD        force apt-termux | pacman-termux | apt-debian | pacman-arch | dnf | yum |
+#                           zypper | apk | xbps | static
 #   LINDROIDS_FLATPAK       yes | no: install Flatpak (with Flathub) without asking, or skip it
 #   LINDROIDS_DISTRO        proot-distro distro for Flatpak in Termux (default: the first one installed;
 #                           the installer never installs a distro)
@@ -59,8 +67,47 @@ case "${PREFIX:-}" in
   *com.termux*) TERMUX=1 ;;
 esac
 
+# /etc/os-release, as a hint: which package manager this distribution is built around.
+OS_ID='' OS_LIKE='' OS_NAME=''
+if [ -z "$TERMUX" ] && [ -r /etc/os-release ]; then
+  # shellcheck disable=SC1091
+  OS_ID=$(. /etc/os-release && echo "${ID:-}")
+  # shellcheck disable=SC1091
+  OS_LIKE=$(. /etc/os-release && echo "${ID_LIKE:-}")
+  # shellcheck disable=SC1091
+  OS_NAME=$(. /etc/os-release && echo "${PRETTY_NAME:-${NAME:-}}")
+fi
+os_family() {
+  for id in $OS_ID $OS_LIKE; do
+    case "$id" in
+      debian|ubuntu|kali|linuxmint|raspbian|pop|elementary|zorin|neon|deepin|openkylin|pardus|trisquel|devuan|parrot|mx) echo apt; return ;;
+      arch|archarm|archlinux|manjaro|manjaro-arm|artix|endeavouros|garuda|cachyos|arcolinux) echo pacman; return ;;
+      alpine|postmarketos|adelie|chimera|wolfi) echo apk; return ;;
+      fedora|rhel|centos|rocky|almalinux|ol|amzn|nobara|ultramarine|circle|eurolinux|virtuozzo) echo dnf; return ;;
+      opensuse|opensuse-*|suse|sles|sled|sle-micro) echo zypper; return ;;
+      void) echo xbps; return ;;
+    esac
+  done
+}
+
+# pm_works <pm>: the package manager is installed and runs (not just a stray file of that name).
+pm_works() {
+  case "$1" in
+    apt) have apt-get && have dpkg && apt-get --version >/dev/null 2>&1 ;;
+    pacman) have pacman && pacman --version >/dev/null 2>&1 ;;
+    dnf) have dnf && dnf --version >/dev/null 2>&1 ;;
+    yum) have yum && yum --version >/dev/null 2>&1 ;;
+    zypper) have zypper && zypper --version >/dev/null 2>&1 ;;
+    apk) have apk && apk --version 2>/dev/null | grep -q apk-tools ;;
+    xbps) have xbps-install && xbps-install --version >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
 # The package manager in use: apt, pacman, dnf, yum, zypper, apk, xbps or none. Termux has apt or,
 # with the pacman bootstrap, pacman; Termux itself says which in TERMUX_MAIN_PACKAGE_FORMAT.
+# Elsewhere the one /etc/os-release points to, if it works (Debian can have pacman installed, Arch
+# can have apt), else the first that works.
 detect_pm() {
   if [ -n "$TERMUX" ]; then
     case "${TERMUX_MAIN_PACKAGE_FORMAT:-}" in
@@ -70,15 +117,13 @@ detect_pm() {
     if have apt; then echo apt; elif have pacman; then echo pacman; else echo none; fi
     return
   fi
-  if have apt-get && have dpkg; then echo apt
-  elif have pacman; then echo pacman
-  elif have dnf; then echo dnf
-  elif have yum; then echo yum
-  elif have zypper; then echo zypper
-  elif have apk; then echo apk
-  elif have xbps-install; then echo xbps
-  else echo none
-  fi
+  hint=$(os_family)
+  if [ "$hint" = dnf ] && ! pm_works dnf && pm_works yum; then hint=yum; fi
+  if [ -n "$hint" ] && pm_works "$hint"; then echo "$hint"; return; fi
+  for m in apt pacman dnf yum zypper apk xbps; do
+    pm_works "$m" && { echo "$m"; return; }
+  done
+  echo none
 }
 
 # SUDO: what runs a command as root. Empty in Termux (no root there; its package managers run as
@@ -90,6 +135,27 @@ find_sudo() {
   if have sudo; then SUDO=sudo
   elif have doas; then SUDO=doas
   else return 1
+  fi
+}
+
+# How system changes are made, for the messages: "as root", "with sudo" or "with doas".
+as_who() {
+  if [ -n "$TERMUX" ]; then echo "as the Termux user"; elif [ -z "${SUDO:-}" ]; then echo "as root"; else echo "with $SUDO"; fi
+}
+
+# need_root <what it writes>: set SUDO, or stop with what to do.
+need_root() {
+  find_sudo || die "this writes to $1, which needs root: run it as root, or install sudo (or doas)"
+}
+
+# repo_has <path>: the repository at $REPO_URL has that file (it is published).
+repo_has() {
+  if have curl; then
+    curl -fsSL -o /dev/null "$REPO_URL/$1" 2>/dev/null
+  elif have wget; then
+    wget -q -O /dev/null "$REPO_URL/$1" 2>/dev/null
+  else
+    return 1
   fi
 }
 
@@ -106,11 +172,12 @@ pm_install() {
       fi
       ;;
     pacman) $SUDO pacman -S --needed --noconfirm "$@" ;;
-    dnf) $SUDO dnf install -y "$@" ;;
-    yum) $SUDO yum install -y "$@" ;;
-    zypper) $SUDO zypper --non-interactive install "$@" ;;
-    apk) $SUDO apk add "$@" ;;
-    xbps) $SUDO xbps-install -Sy "$@" ;;
+    dnf) $SUDO dnf install -y "$@" < /dev/null ;;
+    yum) $SUDO yum install -y "$@" < /dev/null ;;
+    zypper) $SUDO zypper --non-interactive install "$@" < /dev/null ;;
+    # stdin is this script under `curl | sh`: nothing may read it (apk and xbps can ask).
+    apk) $SUDO apk add "$@" < /dev/null ;;
+    xbps) $SUDO xbps-install -Sy "$@" < /dev/null ;;
     *) return 1 ;;
   esac
 }
@@ -387,6 +454,120 @@ install_debian() {
   next_steps "apt update && apt upgrade (or run this installer again)"
 }
 
+# The rpm architecture: aarch64, armv7hl, x86_64 or i686, or empty if there is no package for it.
+rpm_arch() {
+  a=$(rpm --eval '%{_arch}' 2>/dev/null || uname -m)
+  case "$a" in
+    x86_64|aarch64|i686) echo "$a" ;;
+    armv7hl|armv7l|armv7hnl|armv8l) echo armv7hl ;;
+  esac
+}
+
+# dnf / yum (Fedora and the RHEL family) and zypper (openSUSE, SLE): one RPM repository. Its
+# metadata is signed (repo_gpgcheck), and lists the checksum of every package.
+install_rpm() {
+  PM=$1
+  case "$PM" in
+    zypper) repofile=/etc/zypp/repos.d/lindroids.repo ;;
+    *) repofile=/etc/yum.repos.d/lindroids.repo ;;
+  esac
+  need_root "$repofile"
+  say "${OS_NAME:-RPM system} ($PM, $(rpm_arch)): adding the Lindroids RPM repository $REPO_URL/rpm"
+  say "  as $repofile, and installing lindroids $(as_who)"
+  tmp=$(mktemp)
+  {
+    echo "# Written by the Lindroids installer."
+    echo "[lindroids]"
+    echo "name=Lindroids"
+    echo "baseurl=$REPO_URL/rpm"
+    echo "enabled=1"
+    echo "gpgcheck=0"
+    echo "repo_gpgcheck=1"
+    echo "gpgkey=$REPO_URL/lindroids.asc"
+    if [ "$PM" = zypper ]; then
+      echo "type=rpm-md"
+      echo "autorefresh=1"
+      echo "pkg_gpgcheck=0"
+    fi
+  } > "$tmp"
+  $SUDO mkdir -p "$(dirname "$repofile")"
+  $SUDO install -m 644 "$tmp" "$repofile"
+  rm -f "$tmp"
+  case "$PM" in
+    dnf)
+      say "dnf install lindroids"
+      $SUDO dnf -y --refresh install lindroids < /dev/null || die "dnf install lindroids failed"
+      update="dnf upgrade lindroids (or run this installer again)"
+      ;;
+    yum)
+      say "yum install lindroids"
+      $SUDO yum -y makecache < /dev/null >/dev/null 2>&1 || true
+      $SUDO yum -y install lindroids < /dev/null || die "yum install lindroids failed"
+      update="yum update lindroids (or run this installer again)"
+      ;;
+    zypper)
+      # zypper trusts the repository key on first use only when told to; it is the key published
+      # next to the repository (as apt and pacman get it), fetched over the same connection.
+      say "zypper refresh lindroids && zypper install lindroids"
+      $SUDO zypper --non-interactive --gpg-auto-import-keys refresh lindroids < /dev/null \
+        || die "zypper refresh lindroids failed"
+      $SUDO zypper --non-interactive install lindroids < /dev/null || die "zypper install lindroids failed"
+      update="zypper update lindroids (or run this installer again)"
+      ;;
+  esac
+  flatpak_system
+  next_steps "$update"
+}
+
+# Alpine and the other apk systems: the signing key into /etc/apk/keys, the repository into
+# /etc/apk/repositories.d/lindroids.list where apk-tools 3 reads that directory (Chimera), else a
+# line in /etc/apk/repositories.
+install_apk() {
+  PM=apk
+  arch=$(apk --print-arch)
+  need_root /etc/apk
+  if [ -d /etc/apk/repositories.d ]; then where=/etc/apk/repositories.d/lindroids.list; else where=/etc/apk/repositories; fi
+  say "${OS_NAME:-apk system} (apk, $arch): adding the Lindroids apk repository $REPO_URL/apk"
+  say "  to $where, its key as /etc/apk/keys/lindroids.rsa.pub, and installing lindroids $(as_who)"
+  tmp=$(mktemp)
+  download "$REPO_URL/lindroids.rsa.pub" "$tmp"
+  $SUDO mkdir -p /etc/apk/keys
+  $SUDO install -m 644 "$tmp" /etc/apk/keys/lindroids.rsa.pub
+  if [ "$where" = /etc/apk/repositories ]; then
+    if ! grep -qxF "$REPO_URL/apk" /etc/apk/repositories 2>/dev/null; then
+      echo "$REPO_URL/apk" | $SUDO tee -a /etc/apk/repositories >/dev/null
+    fi
+  else
+    echo "$REPO_URL/apk" > "$tmp"
+    $SUDO install -m 644 "$tmp" "$where"
+  fi
+  rm -f "$tmp"
+  say "apk update && apk add lindroids"
+  $SUDO apk update < /dev/null >/dev/null || die "apk update failed"
+  $SUDO apk add lindroids < /dev/null || die "apk add lindroids failed"
+  flatpak_system
+  next_steps "apk upgrade (or run this installer again)"
+}
+
+# Void: /etc/xbps.d/lindroids.conf. xbps asks whether to trust a repository's key on its first
+# sync; the answer is yes for this repository only (-i: no other repository is synced).
+install_xbps() {
+  PM=xbps
+  need_root /etc/xbps.d
+  say "${OS_NAME:-Void} (xbps, $(xbps-uhelper arch 2>/dev/null)): adding the Lindroids xbps repository $REPO_URL/xbps"
+  say "  as /etc/xbps.d/lindroids.conf, trusting its key, and installing lindroids $(as_who)"
+  tmp=$(mktemp)
+  echo "repository=$REPO_URL/xbps" > "$tmp"
+  $SUDO mkdir -p /etc/xbps.d
+  $SUDO install -m 644 "$tmp" /etc/xbps.d/lindroids.conf
+  rm -f "$tmp"
+  yes | $SUDO xbps-install -S -i -R "$REPO_URL/xbps" >/dev/null 2>&1 || true
+  say "xbps-install -S lindroids"
+  $SUDO xbps-install -Sy lindroids < /dev/null || die "xbps-install lindroids failed"
+  flatpak_system
+  next_steps "xbps-install -Su (or run this installer again)"
+}
+
 install_static() {
   case "$(uname -m)" in
     x86_64|amd64) arch=x86_64 ;;
@@ -395,6 +576,15 @@ install_static() {
     i386|i486|i586|i686|x86) arch=i686 ;;
     *) die "no Lindroids build for $(uname -m)" ;;
   esac
+  # Minimal images (Amazon Linux, some proot rootfs) lack tar or gzip; the package manager has them.
+  need=
+  have tar || need=" tar"
+  have gzip || need="$need gzip"
+  if [ -n "$need" ] && [ "$PM" != none ] && find_sudo; then
+    say "$PM: installing$need"
+    # shellcheck disable=SC2086
+    pm_install $need || warn "installing$need failed"
+  fi
   have tar || die "tar is required"
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' EXIT
@@ -451,6 +641,12 @@ install_static() {
   next_steps "run this installer again"
 }
 
+# fallback <why>: the static build instead of a repository.
+fallback() {
+  say "$1: installing the static build instead"
+  method=static
+}
+
 PM=$(detect_pm)
 method=${LINDROIDS_METHOD:-}
 if [ -z "$method" ]; then
@@ -476,17 +672,59 @@ if [ -z "$method" ]; then
           *) method=static ;;
         esac
         ;;
+      dnf|yum|zypper)
+        method=$PM
+        if [ "$PM" = yum ]; then
+          # yum without dnf is yum 3 (RHEL/CentOS 7, Amazon Linux 2): its GnuPG 2.0 cannot check
+          # the repository's ed25519 signature.
+          fallback "yum without dnf cannot check the Lindroids repository's signature"
+        elif [ -z "$(rpm_arch)" ]; then
+          fallback "no Lindroids RPM for $(uname -m)"
+        elif ! repo_has rpm/repodata/repomd.xml; then
+          fallback "the Lindroids RPM repository is not at $REPO_URL/rpm"
+        fi
+        ;;
+      apk)
+        method=apk
+        arch=$(apk --print-arch)
+        case "$arch" in
+          aarch64|armv7|x86_64|x86)
+            repo_has "apk/$arch/APKINDEX.tar.gz" || fallback "the Lindroids apk repository is not at $REPO_URL/apk"
+            ;;
+          *) fallback "no Lindroids apk for $arch" ;;
+        esac
+        ;;
+      xbps)
+        method=xbps
+        arch=$(xbps-uhelper arch 2>/dev/null || true)
+        case "$arch" in
+          aarch64|aarch64-musl|armv7l|armv7l-musl|x86_64|x86_64-musl|i686)
+            repo_has "xbps/$arch-repodata" || fallback "the Lindroids xbps repository is not at $REPO_URL/xbps"
+            ;;
+          *) fallback "no Lindroids xbps package for ${arch:-this architecture}" ;;
+        esac
+        ;;
       *) method=static ;;
     esac
   fi
 fi
-say "package manager: $PM; installing with: $method"
+# A repository needs root (or sudo/doas); a user without either still gets the static build.
+if [ -z "${LINDROIDS_METHOD:-}" ] && [ -z "$TERMUX" ] && [ "$method" != static ] && ! find_sudo; then
+  fallback "not root, and neither sudo nor doas is installed"
+fi
+say "${OS_NAME:+$OS_NAME; }package manager: $PM; installing with: $method"
 
 case "$method" in
   apt-termux) install_termux_apt ;;
   pacman-termux) install_termux_pacman ;;
   apt-debian) install_debian ;;
   pacman-arch) install_arch ;;
+  dnf|yum|zypper)
+    pm_works "$method" || die "LINDROIDS_METHOD=$method, but $method does not work here"
+    install_rpm "$method"
+    ;;
+  apk) install_apk ;;
+  xbps) install_xbps ;;
   static) install_static ;;
   *) die "unknown LINDROIDS_METHOD $method" ;;
 esac

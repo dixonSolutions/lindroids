@@ -105,7 +105,7 @@ flatpak: Flatpak apps"
     mkdir -p "$dir"
     pkg=$dir/$name-$pkgver-$pkgrel-$arch.pkg.tar.xz
     # shellcheck disable=SC2086
-    LANG=C bsdtar -cf - --uid 0 --gid 0 --uname root --gname root .PKGINFO .MTREE $files \
+    LANG=C bsdtar -cf - --no-xattrs --no-acls --uid 0 --gid 0 --uname root --gname root .PKGINFO .MTREE $files \
       | xz -T0 -c -z - > "$pkg"
     echo "    $flavour/$arch/$(basename "$pkg") ($(du -h "$pkg" | cut -f1))"
   )

@@ -1,7 +1,7 @@
 # Every push to main is a release: v<major>.<minor>.<commit count> (scripts/version.sh).
 # Builds the CLI for 8 targets, xwayland-satellite (8 builds, cached by its pin), the .debs,
-# pacman packages and tarballs (scripts/build-release.sh), publishes the signed APT and pacman
-# repositories to gh-pages and a GitHub Release with the artifacts.
+# pacman, rpm, apk and xbps packages and tarballs (scripts/build-release.sh), publishes the signed
+# APT, pacman, RPM, apk and xbps repositories to gh-pages and a GitHub Release with the artifacts.
 # Commits whose message contains "[skip ci]" do not release. See docs/PACKAGING.md.
 name: release
 
@@ -20,8 +20,12 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Android NDK r27c, for cargo-ndk (the Termux builds).
   NDK_VERSION: 27.2.12479018
-  # scripts/build-xwayland-satellite.sh builds its Debian half in debian:bookworm.
+  NDK_RELEASE: r27c
+  NDK_SHA256: 59c2f6dc96743b5daf5d1626684640b20a6bd2b1d85b13156b90333741bad5cc
+  # scripts/build-xwayland-satellite.sh builds its Debian half in debian:bookworm; the rpm, apk and
+  # xbps packages and repositories are made in fedora, alpine and void containers.
   LINDROIDS_CONTAINER_ENGINE: docker
 
 jobs:
@@ -68,23 +72,40 @@ jobs:
         with:
           tool: cargo-ndk
 
-      - name: JDK (for sdkmanager)
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      # The NDK for the Termux builds (cargo-ndk). The runner image usually ships it;
-      # setup-android installs it if it is missing and is a no-op otherwise.
-      - name: Android NDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: "ndk;${{ env.NDK_VERSION }}"
-
-      - name: Select the NDK
+      # The NDK for the Termux builds (cargo-ndk); no Android SDK, sdkmanager or Java. The runner
+      # image's copy when it is this version, else Google's zip (checked, and cached).
+      - name: Android NDK (on the runner?)
+        id: ndk
         run: |
-          test -d "$ANDROID_HOME/ndk/$NDK_VERSION"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          for d in "${ANDROID_NDK_ROOT:-}" "/usr/local/lib/android/sdk/ndk/$NDK_VERSION"; do
+            rev=$(sed -n 's/^Pkg.Revision *= *//p' "$d/source.properties" 2>/dev/null | tr -d '\r ')
+            if [ "$rev" = "$NDK_VERSION" ]; then
+              echo "ANDROID_NDK_HOME=$d" >> "$GITHUB_ENV"
+              echo "found=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "found=false" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Android NDK
+        if: steps.ndk.outputs.found != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/android-ndk-${{ env.NDK_RELEASE }}
+          key: android-ndk-${{ env.NDK_VERSION }}
+
+      - name: Download the Android NDK
+        if: steps.ndk.outputs.found != 'true'
+        run: |
+          dir=$HOME/android-ndk-$NDK_RELEASE
+          if [ ! -f "$dir/source.properties" ]; then
+            curl -fsSL --retry 3 -o "$RUNNER_TEMP/ndk.zip" "https://dl.google.com/android/repository/android-ndk-$NDK_RELEASE-linux.zip"
+            echo "$NDK_SHA256  $RUNNER_TEMP/ndk.zip" | sha256sum -c -
+            unzip -q "$RUNNER_TEMP/ndk.zip" -d "$HOME"
+            rm "$RUNNER_TEMP/ndk.zip"
+          fi
+          grep -q "^Pkg.Revision *= *$NDK_VERSION" "$dir/source.properties"
+          echo "ANDROID_NDK_HOME=$dir" >> "$GITHUB_ENV"
 
       # libclang (bindgen), pkg-config and patch: xwayland-satellite's Termux build.
       - name: Packaging tools
@@ -109,6 +130,7 @@ jobs:
         id: build
         env:
           HAVE_GPG_KEY: ${{ secrets.LINDROIDS_GPG_PRIVATE_KEY != '' && 'yes' || '' }}
+          HAVE_RSA_KEY: ${{ secrets.LINDROIDS_APK_RSA_KEY != '' && 'yes' || '' }}
           LINDROIDS_GITHUB_REPO: ${{ github.repository }}
         run: |
           # Without the signing key (a fork, or before scripts/set-github-secrets.sh) everything
@@ -119,6 +141,10 @@ jobs:
             echo "publish=false" >> "$GITHUB_OUTPUT"
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
+            # The apk and xbps repositories are signed with their own (RSA) key.
+            if [ -z "$HAVE_RSA_KEY" ]; then
+              echo "::warning::LINDROIDS_APK_RSA_KEY is not set (scripts/set-github-secrets.sh): the apk and xbps repositories are not updated"
+            fi
           fi
           scripts/build-release.sh
 
@@ -132,10 +158,11 @@ jobs:
             echo "no gh-pages branch yet: starting an empty repository"
           fi
 
-      - name: Build the APT and pacman repositories
+      - name: Build the repositories
         if: steps.build.outputs.publish == 'true'
         env:
           LINDROIDS_GPG_PRIVATE_KEY: ${{ secrets.LINDROIDS_GPG_PRIVATE_KEY }}
+          LINDROIDS_APK_RSA_KEY: ${{ secrets.LINDROIDS_APK_RSA_KEY }}
         run: |
           if [ -z "$LINDROIDS_GPG_PRIVATE_KEY" ]; then
             echo "::error::LINDROIDS_GPG_PRIVATE_KEY is not set (scripts/set-github-secrets.sh)"
@@ -143,7 +170,8 @@ jobs:
           fi
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           repo="${GITHUB_REPOSITORY#*/}"
-          packaging/repo/build-repo.sh site --debs dist/debs --pacman dist/pacman --keep 3 \
+          packaging/repo/build-repo.sh site --debs dist/debs --pacman dist/pacman \
+            --rpm dist/rpm --apk dist/apk --xbps dist/xbps --keep 3 \
             --base-url "https://$owner.github.io/$repo" --github-repo "$GITHUB_REPOSITORY"
 
       - name: GitHub Release

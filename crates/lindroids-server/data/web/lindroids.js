@@ -170,6 +170,8 @@ async function handle(m, payload) {
       return;
     }
     case 'window_close': return removeWindow(m.win);
+    case 'window_activate': return activate(m.win);
+    case 'cursor': return stage.style.setProperty('--cursor', m.css);
     case 'tiles': return tiles(m, payload);
     case 'keyboard':
       if (m.win !== active) return;
@@ -497,8 +499,25 @@ function onKey(e, down) {
   }
   if (!down && code === 50 && pasteWait) return;
   e.preventDefault();
+  // Some keyboards (virtual ones, Android's injected keys) say Shift only as a flag on the
+  // letter, with no Shift key of its own: press one around it, or "A" arrives as "a".
+  const shiftHeld = held.has(59) || held.has(60);
+  if (down && needsShift(e) && !shiftHeld && code !== 59 && code !== 60) {
+    key(59, true);
+    synthShift.add(code);
+  }
   if (down) held.add(code); else held.delete(code);
   key(code, down);
+  if (!down && synthShift.delete(code)) key(59, false);
+}
+const synthShift = new Set();
+
+/// Whether the character typed needs Shift on a US keyboard (the keymap the Linux side has).
+function needsShift(e) {
+  if (e.shiftKey) return true;
+  if (e.key.length !== 1 || e.ctrlKey || e.altKey || e.metaKey) return false;
+  if (/^[A-Z]$/.test(e.key)) return !e.getModifierState('CapsLock');
+  return '~!@#$%^&*()_+{}|:"<>?'.includes(e.key);
 }
 
 function key(code, down) {
@@ -514,7 +533,7 @@ window.addEventListener('blur', () => {
 });
 document.addEventListener('paste', (e) => {
   const text = e.clipboardData && e.clipboardData.getData('text/plain');
-  if (text) send({ t: 'clipboard', text });
+  if (text) { lastClipboard = text; send({ t: 'clipboard', text }); }
   if (pasteWait) {
     clearTimeout(pasteWait);
     pasteWait = null;
@@ -581,9 +600,48 @@ $('fs').onclick = () => {
 
 // ------------------------------------------------------------------ clipboard
 
+let lastClipboard = null;
+
 function clipboardFromLinux(text) {
+  lastClipboard = text;
   if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(() => {});
 }
+
+/// Hand the browser's clipboard to the Linux side, if it changed. Reading it needs the browser's
+/// permission (asked once, on a tap) or a tap right now.
+async function clipboardToLinux() {
+  if (!ready || !navigator.clipboard || !navigator.clipboard.readText) return false;
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text && text !== lastClipboard) {
+      lastClipboard = text;
+      send({ t: 'clipboard', text });
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Coming back to the page (from another Android app, where something may have been copied):
+// sync without asking, when the browser already allows it.
+async function clipboardOnReturn() {
+  try {
+    const p = await navigator.permissions.query({ name: 'clipboard-read' });
+    if (p.state === 'granted') clipboardToLinux();
+  } catch (e) {
+    // Firefox and others do not say: they only allow it on a tap.
+  }
+}
+window.addEventListener('focus', clipboardOnReturn);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) clipboardOnReturn(); });
+
+// 📋: paste on a phone, which has no Ctrl+V. The tap lets the browser read the clipboard.
+$('paste').onclick = async () => {
+  if (active === null) return;
+  if (!(await clipboardToLinux())) return toast({ title: 'The browser did not share its clipboard', body: 'Allow it when asked, or use Ctrl+V.' }, 5000);
+  key(113, true); key(50, true); key(50, false); key(113, false);
+};
 
 // ------------------------------------------------------------------ sound
 

@@ -8,7 +8,8 @@
 # 1. Checks that HEAD is clean and pushed (the release tag points at it).
 # 2. scripts/build-release.sh.
 # 3. Fetches the published site (gh-pages), adds the new packages with packaging/repo/build-repo.sh,
-#    signed with the APT key in ~/.local/share/lindroids/gnupg.
+#    signed with the APT key in ~/.local/share/lindroids/gnupg and (apk, xbps) the RSA key
+#    ~/.local/share/lindroids/lindroids.rsa; without the RSA key those two are left as they are.
 # 4. Creates the GitHub release v<version> with the tarballs, debs and SHA256SUMS.
 # 5. Pushes the site to gh-pages as a single commit, and turns GitHub Pages on for it if needed.
 #    The release comes first, so the site's VERSION never names a release that does not exist.
@@ -28,6 +29,7 @@ BASE_URL="https://${OWNER,,}.github.io/$NAME"
 
 die() { echo "publish-local: $*" >&2; exit 1; }
 [ -d "$KEYS/gnupg" ] || die "no APT signing key in $KEYS/gnupg"
+[ -f "$KEYS/lindroids.rsa" ] || echo "publish-local: warning: no $KEYS/lindroids.rsa: the apk and xbps repositories are not updated" >&2
 # Inside a distrobox (where the toolchains are), the host's gh will do (LINDROIDS_HOST_GH, else
 # the usual places; Homebrew's is not on the PATH distrobox-host-exec uses).
 if ! command -v gh >/dev/null && command -v distrobox-host-exec >/dev/null; then
@@ -62,7 +64,9 @@ if git fetch -q --depth 1 origin gh-pages 2>/dev/null; then
 else
   echo "no gh-pages branch yet: starting an empty repository"
 fi
-LINDROIDS_GNUPGHOME="$KEYS/gnupg" packaging/repo/build-repo.sh "$SITE" --debs dist/debs --pacman dist/pacman --keep 3 \
+LINDROIDS_GNUPGHOME="$KEYS/gnupg" LINDROIDS_APK_RSA_KEY_FILE="$KEYS/lindroids.rsa" \
+  packaging/repo/build-repo.sh "$SITE" --debs dist/debs --pacman dist/pacman \
+  --rpm dist/rpm --apk dist/apk --xbps dist/xbps --keep 3 \
   --base-url "$BASE_URL" --github-repo "$REPO"
 
 if [ $DRY = 1 ]; then

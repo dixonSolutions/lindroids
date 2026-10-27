@@ -9,8 +9,10 @@
 //! The installation is read straight from disk (no `flatpak` binary, no D-Bus), under any root
 //! filesystem: `/`, a proot-distro rootfs, or a toolbox's `/run/host`.
 //!
-//! Not reproduced: portals and the D-Bus proxy (there is no session bus), seccomp, and
-//! `/.flatpak-info` — without it GLib and Qt do not try portals that are not there.
+//! The session bus is the server's (with its desktop portal and notification service), handed
+//! to the app like to every other program (`sandbox::integration_env`). Not reproduced: the D-Bus
+//! proxy (the app sees the whole session bus), seccomp, `/.flatpak-info`, and `filesystems=`
+//! beyond absolute paths (the home directory is always bound).
 
 mod install;
 mod keyfile;
@@ -304,7 +306,28 @@ fn ensure_symlink(target: &str, link: &Path) -> Result<(), String> {
 /// The `proot` command line that runs `app` like `flatpak run` would, with its windows going to
 /// the server whose runtime dir is `rt`.
 pub fn command(app: &App, args: &[String], o: &Opts, rt: &Path) -> Result<Command, String> {
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+        if let Some(pid) = running_instance(&Path::new(&dir).join(".flatpak"), &app.id) {
+            // Its single-instance check (a socket in its /tmp) cannot see this one, whose /tmp is
+            // private: both would write the same ~/.var/app data at once.
+            return Err(format!("{} is already running under flatpak (pid {pid}); close it first: two instances would share its data", app.id));
+        }
+    }
     command_in(app, args, o, rt, &state_dir())
+}
+
+/// A live `flatpak run` instance of `id` (desktop Linux, a toolbox): Flatpak keeps one record per
+/// instance in `$XDG_RUNTIME_DIR/.flatpak/<instance>/` with its `info` and the sandbox's `pid`.
+fn running_instance(records: &Path, id: &str) -> Option<u32> {
+    std::fs::read_dir(records).ok()?.flatten().find_map(|e| {
+        let info = std::fs::read_to_string(e.path().join("info")).ok()?;
+        let name = info.lines().skip_while(|l| l.trim() != "[Application]").find_map(|l| l.trim().strip_prefix("name="))?;
+        if name != id {
+            return None;
+        }
+        let pid: u32 = std::fs::read_to_string(e.path().join("pid")).ok()?.trim().parse().ok()?;
+        Path::new(&format!("/proc/{pid}")).exists().then_some(pid)
+    })
 }
 
 fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> Result<Command, String> {
@@ -752,6 +775,22 @@ mod tests {
                 std::fs::write(d.join(format!("{id}.png")), &icon).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn finds_a_running_instance() {
+        let root = std::env::temp_dir().join(format!("lindroids-flatpak-inst-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        write(&root.join("123/info"), "[Application]\nname=org.example.App\n\n[Instance]\ninstance-id=123\n");
+        std::fs::write(root.join("123/pid"), std::process::id().to_string()).unwrap();
+        write(&root.join("456/info"), "[Application]\nname=org.example.Other\n");
+        std::fs::write(root.join("456/pid"), std::process::id().to_string()).unwrap();
+        assert_eq!(running_instance(&root, "org.example.App"), Some(std::process::id()));
+        // A record whose process is gone is not an instance.
+        std::fs::write(root.join("123/pid"), "999999999").unwrap();
+        assert_eq!(running_instance(&root, "org.example.App"), None);
+        assert_eq!(running_instance(&root.join("missing"), "org.example.App"), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

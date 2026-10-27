@@ -62,11 +62,13 @@ fn manager(sb: &sandbox::Sandbox) -> Option<Manager> {
         return Some(Manager { name: "apt", steps: vec![as_root(words("apt-get update")), as_root(install)] });
     }
     // (manager, install command without weak/recommended extras, Xwayland, satellite)
-    let table: [(&str, &str, &str, &str, &str); 4] = [
+    let table: [(&str, &str, &str, &str, &str); 6] = [
         ("dnf", "dnf install -y --setopt=install_weak_deps=False", "xorg-x11-server-Xwayland", "dbus-daemon", "xwayland-satellite"),
+        ("yum", "yum install -y", "xorg-x11-server-Xwayland", "dbus-daemon", "xwayland-satellite"),
         ("pacman", "pacman -S --needed --noconfirm", "xorg-xwayland", "dbus", "xwayland-satellite"),
         ("apk", "apk add", "xwayland", "dbus", "xwayland-satellite"),
         ("zypper", "zypper --non-interactive install --no-recommends", "xwayland", "dbus-1", "xwayland-satellite"),
+        ("xbps-install", "xbps-install -Sy", "xorg-server-xwayland", "dbus", "xwayland-satellite"),
     ];
     for (bin, cmd, xwayland, dbus, satellite) in table {
         if sandbox::have(bin) {

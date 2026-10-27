@@ -27,7 +27,7 @@ pub struct Seat {
     /// The Linux window whose Android window has focus.
     pub focus_win: Option<u32>,
     pub(crate) kb_focus: Option<wl_surface::WlSurface>,
-    ptr_focus: Option<wl_surface::WlSurface>,
+    pub ptr_focus: Option<wl_surface::WlSurface>,
     /// Touch point -> (surface, surface origin in window logical coordinates).
     touch_targets: HashMap<i32, (wl_surface::WlSurface, f64, f64)>,
     /// Touch point driving the emulated pointer, for clients without wl_touch.
@@ -133,13 +133,24 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
 }
 
 impl Dispatch<wl_pointer::WlPointer, ()> for State {
-    fn request(state: &mut State, _: &Client, _: &wl_pointer::WlPointer, request: wl_pointer::Request, _: &(), _: &DisplayHandle, _: &mut DataInit<'_, State>) {
-        if let wl_pointer::Request::SetCursor { surface: Some(s), .. } = request {
-            // Android draws its own pointer; cursor surfaces are accepted and never shown.
-            if let Some(cs) = state.surfaces.get_mut(&s.id()) {
-                if cs.role == Role::None {
-                    cs.role = Role::Cursor;
+    fn request(state: &mut State, _: &Client, p: &wl_pointer::WlPointer, request: wl_pointer::Request, _: &(), _: &DisplayHandle, _: &mut DataInit<'_, State>) {
+        if let wl_pointer::Request::SetCursor { surface, .. } = request {
+            // Only the client the pointer is over may set it.
+            if !state.seat.ptr_focus.as_ref().map_or(false, |s| same_client(p, s)) {
+                return;
+            }
+            match surface {
+                // A picture of its own: the page shows its default arrow (cursor surfaces are
+                // accepted and never drawn).
+                Some(s) => {
+                    if let Some(cs) = state.surfaces.get_mut(&s.id()) {
+                        if cs.role == Role::None {
+                            cs.role = Role::Cursor;
+                        }
+                    }
+                    super::extras::set_cursor(state, "default");
                 }
+                None => super::extras::set_cursor(state, "none"),
             }
         }
     }
@@ -259,6 +270,7 @@ fn set_keyboard_focus(state: &mut State, surface: Option<wl_surface::WlSurface>)
     }
     if let Some(new) = &surface {
         super::data::focus_entering(state, new);
+        super::extras::focus_entering(state, new);
         let serial = state.next_serial();
         for k in state.seat.keyboards.iter().filter(|k| same_client(*k, new)) {
             k.enter(serial, new, Vec::new());

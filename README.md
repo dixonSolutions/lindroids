@@ -65,10 +65,12 @@ lindroids run mousepad
 
 The installer is [`install.sh`](install.sh) in this repository (the same file is served from the
 site above and from `https://raw.githubusercontent.com/dixonSolutions/lindroids/main/install.sh`).
-It adds the Lindroids repository to the package manager that is there — APT, or pacman with
-Termux's pacman bootstrap — and installs into Termux itself, so `pkg upgrade` keeps it current.
-The same line works in **Debian/Ubuntu and Arch under proot** (proot-distro, UserLAnd, Andronix)
-and on desktop Linux; anywhere else (Fedora, Alpine, openSUSE, …) it installs a static binary.
+It adds the Lindroids repository to the package manager that is there and installs with it, so
+the usual upgrade keeps it current: in **Termux** (APT, or pacman with Termux's pacman bootstrap —
+into Termux itself, no extra distro), and in the distros of proot-distro, UserLAnd, Andronix and
+desktop Linux — **Debian/Ubuntu/Kali** (APT), **Arch/Manjaro/Artix** (pacman),
+**Fedora/RHEL/Rocky/Alma** (dnf), **openSUSE** (zypper), **Alpine/postmarketOS/Chimera** (apk) and
+**Void** (xbps). Anywhere else it installs a static binary.
 Details: [docs/INSTALL.md](docs/INSTALL.md).
 
 Nothing else to set up: the page `lindroids run` opens carries the pairing secret in its `#`

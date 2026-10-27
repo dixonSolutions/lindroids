@@ -13,9 +13,12 @@ Every push to `main` (unless the head commit message contains `[skip ci]`) is a 
 | `lindroids_<v>_{aarch64,arm,x86_64,i686}.deb`   | APT suite `termux`; GitHub Release       |
 | `lindroids_<v>_{arm64,armhf,amd64,i386}.deb`    | APT suite `stable`; GitHub Release       |
 | `lindroids-<v>-1-<arch>.pkg.tar.xz` (from the `.deb`s) | pacman repositories `pacman/termux` (aarch64, arm, x86_64, i686) and `pacman/arch` (aarch64, armv7h, x86_64, i686) |
+| `lindroids-<v>-1.{aarch64,armv7hl,x86_64,i686}.rpm` | RPM repository `rpm/` (dnf, yum, zypper) |
+| `lindroids-<v>-r0.apk` for aarch64, armv7, x86_64, x86 | apk repository `apk/<arch>/` (Alpine, postmarketOS, Chimera) |
+| `lindroids-<v>_1.<arch>.xbps` for aarch64, armv7l, x86_64, i686 and the `-musl` ones (not i686) | xbps repository `xbps/` (Void) |
 | `lindroids-<v>-<arch>-linux-musl.tar.gz`        | GitHub Release (static installs): `bin/lindroids` + `libexec/lindroids/xwayland-satellite` |
 | `SHA256SUMS`                                    | GitHub Release                           |
-| APT and pacman repositories + `install.sh`      | `gh-pages` → https://dixonsolutions.github.io/lindroids/ |
+| the repositories + `install.sh`                 | `gh-pages` → https://dixonsolutions.github.io/lindroids/ |
 
 ### Two builds of the CLI
 
@@ -23,8 +26,13 @@ Every push to `main` (unless the head commit message contains `[skip ci]`) is a 
   `aarch64-linux-android`, `armv7-linux-androideabi`, `x86_64-linux-android`,
   `i686-linux-android`). A static musl binary does not work there: Android's app seccomp filter
   kills processes that use legacy syscalls musl still issues on x86_64, x86 and arm32.
-- **Everything else** (glibc distros under proot, plain Linux) gets a static musl binary
-  (`*-unknown-linux-musl`, linked with `rust-lld`, see `.cargo/config.toml`).
+- **Everything else** (every distro under proot, plain Linux) gets a static musl binary
+  (`*-unknown-linux-musl`, linked with `rust-lld`, see `.cargo/config.toml`): the same binary in
+  the Debian `.deb`, the Arch package, the `.rpm`, the `.apk`, the `.xbps` and the tarball.
+
+The NDK is the only Android tooling the build uses (cargo-ndk): no Android SDK, no sdkmanager, no
+Java. CI takes NDK r27c (`27.2.12479018`) from the runner image when it has that version, else
+downloads `android-ndk-r27c-linux.zip` from Google, checks its sha256 and caches it.
 
 There is no Android app: the display is a web page the server itself serves (embedded in the
 binary), so a release is only the CLI and its packages.
@@ -103,10 +111,14 @@ so it shows the patch number from `Cargo.toml`, not N. The commit hash identifie
 
 Toolchain: Rust stable with the 8 targets above plus `aarch64-unknown-linux-gnu`,
 `armv7-unknown-linux-gnueabihf` and `i686-unknown-linux-gnu` (and the host's
-`x86_64-unknown-linux-gnu`) for xwayland-satellite, `cargo-ndk` with the Android NDK
-(`ndk;27.2.12479018`; `ANDROID_HOME`/`ANDROID_NDK_HOME`), `dpkg-deb`, `bsdtar`, `gpg`, `git`; for xwayland-satellite also libclang (Fedora `clang-libs`, Debian
+`x86_64-unknown-linux-gnu`) for xwayland-satellite, `cargo-ndk` with the Android NDK r27c
+(`ANDROID_NDK_HOME`: `android-ndk-r27c-linux.zip` unpacked; default the newest
+`~/Android/Sdk/ndk/*`), `dpkg-deb`, `bsdtar`, `gpg`, `openssl`, `git`; for xwayland-satellite also libclang (Fedora `clang-libs`, Debian
 `libclang-dev`), `pkg-config`, `patch`, and podman or docker (inside a distrobox the script uses
-the host's podman through `distrobox-host-exec`; `LINDROIDS_CONTAINER_ENGINE` overrides).
+the host's podman through `distrobox-host-exec`; `LINDROIDS_CONTAINER_ENGINE` overrides). The
+rpm, apk and xbps packages and repositories are made with those distributions' own tools
+(`rpmbuild`, `createrepo_c`, `abuild-tar`, `apk index`, `abuild-sign`, `xbps-create`,
+`xbps-rindex`) in `fedora`, `alpine` and `void` containers ([`packaging/container.sh`](../packaging/container.sh)).
 
 ```sh
 # Everything into dist/
@@ -118,37 +130,38 @@ packaging/repo/build-repo.sh .scratch/repo --debs dist/debs
 
 Pieces can be run on their own: `scripts/build-xwayland-satellite.sh`,
 `packaging/build-debs.sh --version <v> [--arches "x86_64 amd64"] [--xwls target/xwls/out]`,
-`packaging/build-pacman.sh [--debs dist/debs] [--out dist/pacman]` (needs `bsdtar`).
+`packaging/build-pacman.sh [--debs dist/debs] [--out dist/pacman]` (needs `bsdtar`),
+`packaging/build-rpm.sh`, `packaging/build-apk.sh`, `packaging/build-xbps.sh`
+(`--version <v> [--dist dist] [--arches ...]`).
 
 ### Testing a repository before publishing
 
 ```sh
-packaging/repo/build-repo.sh .scratch/repo --debs dist/debs
-python3 -m http.server 8790 --bind 0.0.0.0 --directory .scratch/repo &
+tests/install-repos.sh                 # all distros, or e.g.: tests/install-repos.sh alpine fedora
+```
 
-# Debian/Ubuntu
-podman run --rm --network host docker.io/library/debian:stable sh -ec '
-  apt-get update -q && apt-get install -y -q curl
-  curl -fsSL http://127.0.0.1:8790/install.sh | LINDROIDS_REPO_URL=http://127.0.0.1:8790 sh
-  lindroids version'
+[`tests/install-repos.sh`](../tests/install-repos.sh) makes the x86_64 package of every kind from
+one static CLI, a repository signed with throwaway GPG and RSA keys, serves it on
+`127.0.0.1:8790`, and runs `curl …/install.sh | sh` twice in containers of Debian, Ubuntu, Kali,
+Arch, Fedora, Rocky 9, openSUSE Tumbleweed and Leap 15.6, Alpine (stable and edge), Chimera, Void
+(glibc and musl), and Amazon Linux 2 and busybox (which must fall back to the static tarball,
+served there too): each must pick the expected method and install a working `lindroids`. CI runs
+it on every pull request (logs uploaded as `install-repos-logs`).
 
-# Arch Linux (pacman repository)
-podman run --rm --network host docker.io/library/archlinux:latest sh -ec '
-  curl -fsSL http://127.0.0.1:8790/install.sh | LINDROIDS_REPO_URL=http://127.0.0.1:8790 sh
-  lindroids version'
+In Termux (the Android emulator reaches the host as 10.0.2.2), against a repository from
+`packaging/repo/build-repo.sh .scratch/repo` served with `python3 -m http.server 8790`:
 
-# Termux in the Android emulator (the host is 10.0.2.2 there)
+```sh
 curl -fsSL http://10.0.2.2:8790/install.sh | LINDROIDS_REPO_URL=http://10.0.2.2:8790 sh
 ```
 
 `tests/host-integration.sh` runs the server, `lindroids debug-app` (a stand-in for the browser
 page) and `foot` through `lindroids run`, types into it, and checks the window's frames; CI runs it
 on every pull request and before every release. On pull requests CI also builds (or restores and
-re-checks) the 8 xwayland-satellite binaries, and the package smoke test installs the amd64
-`.deb` in `debian:stable` and checks that the satellite's libraries resolve and Xwayland comes
-with it.
+re-checks) the 8 xwayland-satellite binaries, and runs `tests/install-repos.sh` (which also checks,
+in Debian, that the satellite's libraries resolve and Xwayland comes with it).
 
-## The APT repository
+## The repositories
 
 Static files on GitHub Pages, built by
 [`packaging/repo/build-repo.sh`](../packaging/repo/build-repo.sh):
@@ -162,8 +175,34 @@ pool/termux/main/l/lindroids/lindroids_<v>_<arch>.deb
 pool/stable/main/l/lindroids/lindroids_<v>_<arch>.deb
 pacman/{termux,arch}/<arch>/lindroids.db{,.tar.gz}{,.sig}
 pacman/{termux,arch}/<arch>/lindroids-<v>-1-<arch>.pkg.tar.xz{,.sig}
-lindroids.gpg   lindroids.asc   install.sh   VERSION   index.html   .nojekyll
+rpm/lindroids-<v>-1.<arch>.rpm   rpm/repodata/repomd.xml{,.asc,.key} (+ its files)   rpm/lindroids.repo
+apk/{aarch64,armv7,x86_64,x86}/APKINDEX.tar.gz   apk/<arch>/lindroids-<v>-r0.apk
+xbps/<arch>-repodata   xbps/lindroids-<v>_1.<arch>.xbps{,.sig2}
+lindroids.gpg   lindroids.asc   lindroids.rsa.pub   install.sh   VERSION   index.html   .nojekyll
 ```
+
+- **RPM** ([`packaging/build-rpm.sh`](../packaging/build-rpm.sh), rpmbuild in `fedora`): one
+  repository for dnf, yum and zypper, every architecture in one `repodata/` (createrepo_c, gzip
+  so older zypper and yum read it). v4 packages with an xz payload, `AutoReqProv: no` (the CLI is
+  static), and the satellite's needs as Recommends by file and soname (`/usr/bin/Xwayland`,
+  `libxcb.so.1`, `libxcb-cursor.so.0`) so Fedora's and openSUSE's package names both match.
+  `repomd.xml` is signed with the APT key (`repomd.xml.asc`; the key also as `repomd.xml.key`);
+  clients check it (`repo_gpgcheck=1`) and the packages through the checksums it signs
+  (`gpgcheck=0`: the packages themselves are unsigned; the signed metadata covers them). yum 3
+  (RHEL/CentOS 7, Amazon Linux 2) has GnuPG 2.0, which cannot check ed25519 signatures, so
+  install.sh uses the static tarball there.
+- **apk** ([`packaging/build-apk.sh`](../packaging/build-apk.sh), abuild-tar in `alpine`): v2
+  packages (apk-tools 2 and 3, Alpine, postmarketOS, Adélie, Chimera), made as abuild makes
+  them; static CLI only. `APKINDEX.tar.gz` per architecture is signed with the RSA key by
+  `abuild-sign` (`.SIGN.RSA.lindroids.rsa.pub`, so clients need `/etc/apk/keys/lindroids.rsa.pub`)
+  and checked with `apk verify` against `lindroids.rsa.pub` alone. Packages are unsigned: apk
+  checks them against the checksum in the signed index.
+- **xbps** ([`packaging/build-xbps.sh`](../packaging/build-xbps.sh), xbps-create in `void`): the
+  glibc architectures carry the satellite, the `-musl` ones not. `xbps-rindex --sign` signs every
+  `<arch>-repodata`, `--sign-pkg` every package (`.sig2`), with the same RSA key.
+- Without the RSA key (`LINDROIDS_APK_RSA_KEY`) the apk and xbps repositories are left as they
+  are and the release says so; install.sh falls back to the static tarball while a repository is
+  not published.
 
 - The pacman packages are made from the `.deb`s by
   [`packaging/build-pacman.sh`](../packaging/build-pacman.sh) (same files; `.PKGINFO` and `.MTREE`
@@ -192,15 +231,19 @@ lindroids.gpg   lindroids.asc   install.sh   VERSION   index.html   .nojekyll
 
 | What                       | Where (maintainer machine)                         | GitHub secret               |
 | -------------------------- | -------------------------------------------------- | --------------------------- |
-| APT signing key (ed25519)  | GNUPGHOME `~/.local/share/lindroids/gnupg`         | `LINDROIDS_GPG_PRIVATE_KEY` |
+| APT, pacman and RPM signing key (ed25519) | GNUPGHOME `~/.local/share/lindroids/gnupg` | `LINDROIDS_GPG_PRIVATE_KEY` |
+| apk and xbps signing key (RSA 4096, PEM) | `~/.local/share/lindroids/lindroids.rsa`; public half committed as `packaging/repo/lindroids.rsa.pub` | `LINDROIDS_APK_RSA_KEY` |
 
 APT key: `Lindroids APT repository <lindroids@users.noreply.github.com>`, fingerprint
 `CF71814EDB63C911B430479C6FFD91C90F43BF7B`, no expiry, no passphrase (it lives in a CI secret).
 A revocation certificate is in `~/.local/share/lindroids/gnupg/openpgp-revocs.d/`. Back up
 `~/.local/share/lindroids/gnupg` offline: losing the key means every user has to fetch a new key.
 
-[`scripts/set-github-secrets.sh`](../scripts/set-github-secrets.sh) sets the secret with
-`gh secret set` (nothing is printed or written to disk).
+[`scripts/set-github-secrets.sh`](../scripts/set-github-secrets.sh) sets both secrets with
+`gh secret set` (nothing is printed). The first time, it generates the RSA key and writes
+`packaging/repo/lindroids.rsa.pub`, which must be committed: `build-repo.sh` refuses an RSA key
+that does not match it, and publishes it as `lindroids.rsa.pub`. Back up `lindroids.rsa` with the
+GnuPG directory.
 
 ### Rotating the APT key
 
@@ -208,6 +251,13 @@ A revocation certificate is in `~/.local/share/lindroids/gnupg/openpgp-revocs.d/
    `.asc`, update the fingerprint here and in INSTALL.md, and run `scripts/set-github-secrets.sh`.
 2. Commit; the next release is signed with the new key. Users re-run the installer (it rewrites
    the key file). If the old key was compromised, publish its revocation certificate.
+
+### Rotating the RSA key
+
+Move `~/.local/share/lindroids/lindroids.rsa` and `packaging/repo/lindroids.rsa.pub` away, run
+`scripts/set-github-secrets.sh` (it makes a new pair and sets the secret), commit the new
+`lindroids.rsa.pub`. Alpine and Void users re-run the installer (it installs the new key; xbps
+asks to trust it).
 
 ### Publishing without the secret
 

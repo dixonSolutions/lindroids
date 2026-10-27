@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set the GitHub Actions secret the release workflow needs, from the local key material.
+# Set the GitHub Actions secrets the release workflow needs, from the local key material.
 # Run once by a maintainer after the GitHub repository exists (needs `gh auth login`).
 #
 #   scripts/set-github-secrets.sh [--release] [owner/repo]   (default: dixonSolutions/lindroids)
@@ -8,11 +8,18 @@
 # (the APT repository and install.sh), so one command takes a fresh repository to a published
 # release.
 #
-# Secret:
+# Secrets:
 #   LINDROIDS_GPG_PRIVATE_KEY  armored secret key of the APT repository signing key, exported
-#                              from the GNUPGHOME ~/.local/share/lindroids/gnupg
+#                              from the GNUPGHOME ~/.local/share/lindroids/gnupg (also signs the
+#                              pacman and RPM repositories)
+#   LINDROIDS_APK_RSA_KEY      PEM private RSA key that signs the apk (Alpine) and xbps (Void)
+#                              repositories: ~/.local/share/lindroids/lindroids.rsa. If neither it
+#                              nor packaging/repo/lindroids.rsa.pub exists yet, a 4096-bit key is
+#                              generated there and its public half written to
+#                              packaging/repo/lindroids.rsa.pub, which must then be committed (the
+#                              release checks the secret against it, and publishes it).
 #
-# The value is piped to `gh secret set` and never printed or written to disk.
+# The values are piped to `gh secret set` and never printed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -31,9 +38,28 @@ FPR=$(gpg --batch --show-keys --with-colons packaging/repo/lindroids.gpg | awk -
 gpg --batch --list-secret-keys "$FPR" >/dev/null 2>&1 \
   || die "the secret key $FPR is not in $GNUPGHOME; it must match packaging/repo/lindroids.gpg"
 
-echo "Setting the secret on $REPO (APT key $FPR)"
+# The RSA key (apk, xbps): made once, here; its public half is committed.
+command -v openssl >/dev/null || die "openssl is required"
+RSA=$DIR/lindroids.rsa
+RSA_PUB=packaging/repo/lindroids.rsa.pub
+if [ ! -f "$RSA" ]; then
+  [ ! -f "$RSA_PUB" ] || die "$RSA_PUB exists, but its private key is not in $RSA"
+  echo "Generating the apk/xbps signing key $RSA"
+  mkdir -p "$DIR"
+  (umask 077 && openssl genrsa -out "$RSA" 4096 2>/dev/null)
+  echo "Back it up offline, with $GNUPGHOME: losing it means every Alpine and Void user re-trusts a new key."
+fi
+if [ ! -f "$RSA_PUB" ]; then
+  openssl pkey -in "$RSA" -pubout -out "$RSA_PUB"
+  echo "Wrote $RSA_PUB: commit it (releases check the key against it and publish it)."
+fi
+[ "$(openssl pkey -in "$RSA" -pubout)" = "$(openssl pkey -pubin -in "$RSA_PUB")" ] \
+  || die "$RSA does not match $RSA_PUB"
+
+echo "Setting the secrets on $REPO (APT key $FPR, RSA key $RSA)"
 gpg --batch --pinentry-mode loopback --passphrase '' --armor --export-secret-keys "$FPR" \
   | gh secret set LINDROIDS_GPG_PRIVATE_KEY --repo "$REPO"
+gh secret set LINDROIDS_APK_RSA_KEY --repo "$REPO" < "$RSA"
 gh secret list --repo "$REPO"
 
 [ $RELEASE = 1 ] || exit 0

@@ -8,13 +8,17 @@
 #   dist/xwayland-satellite/{termux,debian}-<arch>/     xwayland-satellite, 4 bionic + 4 glibc
 #   dist/debs/lindroids_VERSION_<arch>.deb              Termux and Debian packages
 #   dist/pacman/{termux,arch}/<arch>/*.pkg.tar.xz       the same as pacman packages
+#   dist/rpm/lindroids-VERSION-1.<arch>.rpm             RPM (dnf, yum, zypper): static CLI + glibc satellite
+#   dist/apk/<arch>/lindroids-VERSION-r0.apk            Alpine & co.: static CLI only (musl)
+#   dist/xbps/lindroids-VERSION_1.<arch>.xbps           Void (glibc and musl)
 #   dist/lindroids-VERSION-<arch>-linux-musl.tar.gz     static CLI (bin/lindroids) + the glibc
 #                                                       libexec/lindroids/xwayland-satellite
 #   dist/SHA256SUMS, dist/VERSION
 #
 # xwayland-satellite (X11 support) is built from its pinned source by
 # scripts/build-xwayland-satellite.sh, which skips builds that are up to date; the Debian half
-# needs podman or docker.
+# needs podman or docker, as do the rpm, apk and xbps packages (made with those distributions'
+# tools in their containers).
 #
 # The CLI is built twice per ABI on purpose:
 #   * against bionic (cargo-ndk, API 24) for Termux: Android's app seccomp filter kills static
@@ -22,8 +26,10 @@
 #   * as a static musl binary (linked with rust-lld, .cargo/config.toml) for glibc distros under
 #     proot and for plain Linux.
 #
-# Environment: ANDROID_HOME (default ~/Android/Sdk), ANDROID_NDK_HOME (default: the newest NDK
-# in it) for cargo-ndk; LINDROIDS_VERSION / LINDROIDS_BUILD_ID to override scripts/version.sh.
+# Environment: ANDROID_NDK_HOME, the Android NDK for cargo-ndk (r27c = 27.2.12479018; the NDK
+# alone, unpacked from android-ndk-r27c-linux.zip: no Android SDK and no Java). Default: the
+# newest NDK in $ANDROID_HOME/ndk or ~/Android/Sdk/ndk, if there is one.
+# LINDROIDS_VERSION / LINDROIDS_BUILD_ID override scripts/version.sh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
@@ -42,17 +48,20 @@ export LINDROIDS_VERSION LINDROIDS_BUILD_ID
 VER=$LINDROIDS_VERSION
 echo "==> Lindroids $VER (build $LINDROIDS_BUILD_ID)"
 
-: "${ANDROID_HOME:=$HOME/Android/Sdk}"
-: "${ANDROID_NDK_HOME:=$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1)}"
-export ANDROID_HOME ANDROID_NDK_HOME
+: "${ANDROID_NDK_HOME:=$(ls -d "${ANDROID_HOME:-$HOME/Android/Sdk}"/ndk/* 2>/dev/null | sort -V | tail -1)}"
+if [ ! -f "${ANDROID_NDK_HOME:-/nonexistent}/source.properties" ]; then
+  echo "build-release: no Android NDK: set ANDROID_NDK_HOME (android-ndk-r27c-linux.zip, unpacked)" >&2
+  exit 1
+fi
+export ANDROID_NDK_HOME
 
 ANDROID_TRIPLES="aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android"
 MUSL_TRIPLES="aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf x86_64-unknown-linux-musl i686-unknown-linux-musl"
 
 DIST=$ROOT/dist
 if [ $CLEAN = 1 ]; then rm -rf "$DIST"; fi
-rm -rf "${DIST:?}/bin" "${DIST:?}/debs" "${DIST:?}/xwayland-satellite" "$DIST"/lindroids-*.tar.gz \
-  "$DIST/SHA256SUMS"
+rm -rf "${DIST:?}/bin" "${DIST:?}/debs" "${DIST:?}/pacman" "${DIST:?}/rpm" "${DIST:?}/apk" "${DIST:?}/xbps" \
+  "${DIST:?}/xwayland-satellite" "$DIST"/lindroids-*.tar.gz "$DIST/SHA256SUMS"
 mkdir -p "$DIST/bin"
 
 echo "==> CLI for Termux (bionic, API 24)"
@@ -76,6 +85,10 @@ for t in $ANDROID_TRIPLES $MUSL_TRIPLES; do
     exit 1
   fi
 done
+# Android 7's linker warns about DF_1_PIE (from NDK r27's lld) on every run of the Termux builds.
+for t in $ANDROID_TRIPLES; do
+  python3 scripts/elf-clear-pie-flag.py "$DIST/bin/$t/lindroids"
+done
 # Refuse to ship a musl binary that is not static: it would not start under proot-distro.
 for t in $MUSL_TRIPLES; do
   if readelf -l "$DIST/bin/$t/lindroids" 2>/dev/null | grep -q 'Requesting program interpreter'; then
@@ -90,6 +103,7 @@ XWLS=$DIST/xwayland-satellite
 mkdir -p "$XWLS"
 cp -r "$ROOT"/target/xwls/out/termux-* "$ROOT"/target/xwls/out/debian-* "$XWLS/"
 rm -f "$XWLS"/*/.stamp
+python3 scripts/elf-clear-pie-flag.py "$XWLS"/termux-*/xwayland-satellite
 install -m 644 "$ROOT"/target/xwls/out/LICENSE.xwayland-satellite \
   "$ROOT"/target/xwls/out/xwayland-satellite-crates.txt "$XWLS/"
 
@@ -97,6 +111,10 @@ packaging/build-debs.sh --version "$VER" --dist "$DIST" --out "$DIST/debs" --xwl
 echo "==> pacman packages"
 rm -rf "${DIST:?}/pacman"
 packaging/build-pacman.sh --debs "$DIST/debs" --out "$DIST/pacman"
+# The same static CLI (and, for glibc systems, the same satellite) for the other package managers.
+packaging/build-rpm.sh --version "$VER" --dist "$DIST" --out "$DIST/rpm" --xwls "$XWLS"
+packaging/build-apk.sh --version "$VER" --dist "$DIST" --out "$DIST/apk"
+packaging/build-xbps.sh --version "$VER" --dist "$DIST" --out "$DIST/xbps" --xwls "$XWLS"
 
 echo "==> tarballs"
 : "${SOURCE_DATE_EPOCH:=$(git log -1 --format=%ct 2>/dev/null || date +%s)}"

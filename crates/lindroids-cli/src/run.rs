@@ -333,10 +333,17 @@ pub fn cmd_run(args: &[String]) -> i32 {
         Ok(c) => c,
         Err(e) => return crate::fail(&e),
     };
+    // Under proot (a distro, a Flatpak) a program killed by a signal shows only in proot's own
+    // report on stderr, and some proot builds exit 0 for SIGTRAP: watch for it.
+    let under_proot = o.distro.is_some() || matches!(target, Target::Flatpak(..));
+    if under_proot {
+        cmd.stderr(std::process::Stdio::piped());
+    }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return crate::fail(&format!("cannot start {}: {e}", o.command[0])),
     };
+    let signal_watch = child.stderr.take().map(|e| std::thread::spawn(move || forward_and_find_signal(e)));
     if o.x11 && sandbox::x11_display(&rt).is_none() {
         // The display the wrapper was given is the last free one we picked: find its socket.
         let dir = x11_dir();
@@ -361,9 +368,61 @@ pub fn cmd_run(args: &[String]) -> i32 {
         &CliRequest::Launch { pid: child.id(), name, icon_png_b64: Some(base64::engine::general_purpose::STANDARD.encode(icon)) },
         Duration::from_secs(3),
     );
-    match child.wait() {
+    let code = match child.wait() {
         Ok(st) => st.code().unwrap_or(1),
-        Err(e) => crate::fail(&e.to_string()),
+        Err(e) => return crate::fail(&e.to_string()),
+    };
+    match signal_watch.and_then(|t| t.join().ok()).flatten() {
+        Some(sig) => {
+            eprintln!("lindroids: {} crashed (signal {sig}, {})", program_of(&o.command), signal_name(sig));
+            128 + sig
+        }
+        None => code,
+    }
+}
+
+/// Copy a child's stderr to ours as it comes, and return the signal proot reports the first
+/// program died of ("proot info: vpid 1: terminated with signal 5"), if it does.
+fn forward_and_find_signal(mut from: impl std::io::Read) -> Option<i32> {
+    use std::io::Write;
+    let mut found = None;
+    let mut line = Vec::new();
+    let mut buf = [0u8; 8192];
+    let mut err = std::io::stderr();
+    loop {
+        let n = match from.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        let _ = err.write_all(&buf[..n]);
+        for &b in &buf[..n] {
+            if b == b'\n' {
+                found = found.or_else(|| proot_signal(&String::from_utf8_lossy(&line)));
+                line.clear();
+            } else if line.len() < 512 {
+                line.push(b);
+            }
+        }
+    }
+    found.or_else(|| proot_signal(&String::from_utf8_lossy(&line)))
+}
+
+fn proot_signal(line: &str) -> Option<i32> {
+    let rest = line.trim().strip_prefix("proot info: vpid 1: terminated with signal ")?;
+    rest.split_whitespace().next()?.parse().ok().filter(|s| (1..64).contains(s))
+}
+
+fn signal_name(sig: i32) -> &'static str {
+    match sig {
+        4 => "illegal instruction",
+        5 => "trace trap: a failed check or assertion",
+        6 => "aborted",
+        7 => "bus error",
+        8 => "arithmetic error",
+        9 => "killed",
+        11 => "segmentation fault",
+        15 => "terminated",
+        _ => "signal",
     }
 }
 
@@ -409,6 +468,15 @@ mod tests {
         let o = parse(&s(&["--distro", "debian", "--name", "Ed", "gedit", "--new-window"])).unwrap();
         assert_eq!(o.distro.as_deref(), Some("debian"));
         assert_eq!(o.command, s(&["gedit", "--new-window"]));
+    }
+
+    #[test]
+    fn proot_signal_reports() {
+        assert_eq!(proot_signal("proot info: vpid 1: terminated with signal 5"), Some(5));
+        assert_eq!(proot_signal("proot info: vpid 2: terminated with signal 11"), None);
+        assert_eq!(proot_signal("some program output"), None);
+        let found = forward_and_find_signal(&b"x\nproot info: vpid 1: terminated with signal 11\n"[..]);
+        assert_eq!(found, Some(11));
     }
 
     #[test]

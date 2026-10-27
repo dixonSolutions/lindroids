@@ -1,7 +1,7 @@
 # Installing Lindroids
 
 Lindroids is one Linux package, the **`lindroids` CLI**, which is also the server and runs
-wherever your Linux programs run: Termux, a Debian/Ubuntu rootfs under proot (proot-distro,
+wherever your Linux programs run: Termux, a Linux distribution under proot (proot-distro,
 UserLAnd, Andronix), or an ordinary Linux machine. There is no Android app to install: the
 windows show in the phone's own web browser, on a page the server serves at
 `http://127.0.0.1:<port>/`, which `lindroids run` opens.
@@ -18,13 +18,25 @@ It finds the package manager in use and installs the way that fits it:
 | -------------------------------------------- | ---------------------------------------------------------- | ------------------------- |
 | Termux with apt (the default)                | adds the Lindroids APT repository, suite `termux`          | bionic (Android libc)     |
 | Termux with pacman (the pacman bootstrap)    | adds the Lindroids pacman repository `pacman/termux`       | bionic (Android libc)     |
-| Debian, Ubuntu and derivatives, incl. proot  | adds the Lindroids APT repository, suite `stable`          | static musl               |
-| Arch Linux and derivatives, incl. proot      | adds the Lindroids pacman repository `pacman/arch`         | static musl               |
-| anything else (Fedora, Alpine, openSUSE, Void, …) | downloads the static binary into `~/.local/bin`       | static musl               |
+| Debian, Ubuntu, Kali, Mint and derivatives   | adds the Lindroids APT repository, suite `stable`          | static musl               |
+| Arch, Manjaro, Artix, EndeavourOS            | adds the Lindroids pacman repository `pacman/arch`         | static musl               |
+| Fedora, RHEL 8+, Rocky, Alma, CentOS Stream, Oracle, Amazon Linux 2023 | adds the Lindroids RPM repository `rpm/`, installs with dnf | static musl |
+| openSUSE Tumbleweed and Leap, SLE            | adds the same RPM repository, installs with zypper         | static musl               |
+| Alpine, postmarketOS, Adélie, Chimera        | adds the Lindroids apk repository `apk/`                    | static musl               |
+| Void (glibc and musl)                        | adds the Lindroids xbps repository `xbps/`                  | static musl               |
+| anything else (Amazon Linux 2, CentOS 7, Gentoo, NixOS, …) | downloads the static binary into `~/.local/bin` | static musl            |
+
+All of them work the same under proot (proot-distro, UserLAnd, Andronix). The installer goes by
+what is really there: the package managers that are installed and run, with `/etc/os-release`
+(`ID`, `ID_LIKE`) deciding between several (a Debian with pacman installed uses apt). When the
+repository has no package for the CPU, or is not reachable, it installs the static binary instead
+and says so. Outside Termux it needs root for the system changes: as root (the usual case in a
+proot distro) it runs them directly, otherwise with `sudo` (or `doas`); it prints what it is about
+to change first.
 
 The installer can be read first: `curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh | less`.
 It honours these variables: `LINDROIDS_METHOD` (`apt-termux`, `pacman-termux`, `apt-debian`,
-`pacman-arch` or `static`),
+`pacman-arch`, `dnf`, `yum`, `zypper`, `apk`, `xbps` or `static`),
 `LINDROIDS_INSTALL_DIR` (static installs), `LINDROIDS_VERSION` (static installs; default: latest)
 and `LINDROIDS_REPO_URL` (a mirror or a local test repository).
 
@@ -140,26 +152,81 @@ with xwayland-satellite, for `x86_64`, `aarch64` (Arch Linux ARM), `armv7h` and
 `i686`. Run as root or with `sudo`. **Update:** `pacman -Syu`, or run the installer again. By hand,
 as above with `/etc/pacman.conf` and `.../pacman/arch/$arch`.
 
+## Fedora, RHEL and openSUSE (dnf, zypper), including proot-distro
+
+One RPM repository for all of them, `x86_64`, `aarch64`, `armv7hl` and `i686`: the static CLI
+and xwayland-satellite (glibc), with Xwayland, `libxcb` and `libxcb-cursor` as weak dependencies
+(Recommends). Its metadata is signed with the repository key below (`repo_gpgcheck=1`) and holds
+every package's checksum. The installer writes `/etc/yum.repos.d/lindroids.repo` (zypper:
+`/etc/zypp/repos.d/lindroids.repo`) and installs `lindroids`. **Update:** `dnf upgrade` /
+`zypper update`, or run the installer again. By hand:
+
+```sh
+curl -fsSL https://dixonsolutions.github.io/lindroids/rpm/lindroids.repo -o /etc/yum.repos.d/lindroids.repo
+dnf install lindroids
+# openSUSE:
+zypper addrepo https://dixonsolutions.github.io/lindroids/rpm/lindroids.repo
+zypper --gpg-auto-import-keys refresh lindroids && zypper install lindroids
+```
+
+**Uninstall:** `dnf remove lindroids` (or `zypper remove lindroids`) and the `.repo` file.
+
+yum without dnf (RHEL/CentOS 7, Amazon Linux 2) has a GnuPG too old for the repository's ed25519
+key; the installer uses the static binary there.
+
+## Alpine, postmarketOS and Chimera (apk), including proot-distro
+
+The apk repository has the static CLI for `x86_64`, `aarch64`, `armv7` and `x86`, without
+xwayland-satellite: these are musl systems, and `lindroids setup x11` installs Alpine's own
+`xwayland-satellite` package. Its index is signed with an RSA key (apk does not use OpenPGP),
+`lindroids.rsa.pub`, which the installer puts into `/etc/apk/keys/`; the repository goes into
+`/etc/apk/repositories` (`/etc/apk/repositories.d/lindroids.list` where that directory exists).
+apk-tools 2 and 3 both read it. **Update:** `apk upgrade`, or run the installer again. By hand:
+
+```sh
+wget -O /etc/apk/keys/lindroids.rsa.pub https://dixonsolutions.github.io/lindroids/lindroids.rsa.pub
+echo https://dixonsolutions.github.io/lindroids/apk >> /etc/apk/repositories
+apk update && apk add lindroids
+```
+
+**Uninstall:** `apk del lindroids`, then remove the line and the key.
+
+## Void Linux (xbps), including proot-distro
+
+`/etc/xbps.d/lindroids.conf` points at the xbps repository (`x86_64`, `aarch64`, `armv7l`,
+`i686` and their `-musl` variants; the glibc ones also carry xwayland-satellite). It is signed with
+the same RSA key as the apk repository; xbps asks to trust it on the first sync, and the installer
+answers yes for this repository only. **Update:** `xbps-install -Su`, or run the installer again.
+Void images have neither curl nor wget: `xbps-install -S curl` first. By hand:
+
+```sh
+echo repository=https://dixonsolutions.github.io/lindroids/xbps > /etc/xbps.d/lindroids.conf
+xbps-install -S lindroids        # answer y to import the key
+```
+
+**Uninstall:** `xbps-remove lindroids` and `rm /etc/xbps.d/lindroids.conf`.
+
 ## Other distributions and plain Linux
 
 The installer downloads `lindroids-<version>-<arch>-linux-musl.tar.gz` from the latest
 [GitHub release](https://github.com/dixonSolutions/lindroids/releases/latest), checks it against
 the release's `SHA256SUMS`, and installs `~/.local/bin/lindroids` (`LINDROIDS_INSTALL_DIR` to
-change). Architectures: `x86_64`, `aarch64`, `armv7`, `i686`. Make sure `~/.local/bin` is in
-`PATH`.
+change) and, on glibc systems, `~/.local/libexec/lindroids/xwayland-satellite`. Architectures:
+`x86_64`, `aarch64`, `armv7`, `i686`. Make sure `~/.local/bin` is in `PATH`. If `tar` or `gzip`
+is missing it installs them with the package manager.
 
 The same tarballs can be installed by hand:
 
 ```sh
 tar -xzf lindroids-<version>-x86_64-linux-musl.tar.gz
-install -m 755 lindroids-<version>-x86_64-linux-musl/lindroids ~/.local/bin/
+install -m 755 lindroids-<version>-x86_64-linux-musl/bin/lindroids ~/.local/bin/
 ```
 
 **Update:** run the installer again. **Uninstall:** `rm ~/.local/bin/lindroids ~/.local/share/lindroids -r`.
 
-## Verifying the repository key
+## Verifying the repository keys
 
-The repository is signed with an ed25519 key:
+The APT, pacman and RPM repositories are signed with an ed25519 key:
 
 ```
 Lindroids APT repository <lindroids@users.noreply.github.com>
@@ -169,6 +236,9 @@ CF71 814E DB63 C911 B430  479C 6FFD 91C9 0F43 BF7B
 Check a downloaded key with `gpg --show-keys lindroids.gpg`. The same key is in the source tree as
 `packaging/repo/lindroids.gpg`.
 
+The apk and xbps repositories are signed with an RSA key, `lindroids.rsa.pub` on the site and
+`packaging/repo/lindroids.rsa.pub` in the source tree.
+
 ## Troubleshooting
 
 - `NO_PUBKEY` or `not signed` from apt: the key file is missing or stale; run the installer again.
@@ -176,4 +246,8 @@ Check a downloaded key with `gpg --show-keys lindroids.gpg`. The same key is in 
   trusted in pacman's keyring; run the installer again (it runs `pacman-key --add` and
   `--lsign-key`).
 - `apt update` cannot reach the repository from a proot distro: install `ca-certificates`.
+- `UNTRUSTED signature` from apk: `/etc/apk/keys/lindroids.rsa.pub` is missing or stale; run the
+  installer again.
+- `Gpg Keys not imported` / `Signature verification failed` from dnf or zypper: the repository
+  key changed; run the installer again (dnf: `dnf clean all` first).
 - `lindroids doctor` shows what the CLI found (sandbox, proot, Xwayland, xwayland-satellite, server, display, the X display).
