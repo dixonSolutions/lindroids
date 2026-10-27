@@ -201,7 +201,12 @@ next_steps() {
   say "Lindroids is installed: $(lindroids version 2>/dev/null || echo "run 'lindroids version'")"
   echo
   echo "Next: lindroids run <program>   # e.g. lindroids run foot; X11 programs work too"
-  echo "  The windows show in the web browser: lindroids run opens it."
+  if [ -n "$TERMUX" ]; then
+    echo "  Each program opens in a window of its own (a full-screen Custom Tab of Firefox, Chrome,"
+    echo "  Edge, Samsung Internet or Brave: one of them must be installed). Closing it ends the program."
+  else
+    echo "  The windows show in a browser page: lindroids run opens it."
+  fi
   if [ -n "${FLATPAK_DISTRO:-}" ]; then
     flatpak_hint " (inside: proot-distro login $FLATPAK_DISTRO)"
   elif [ -n "$TERMUX" ] && have flatpak; then

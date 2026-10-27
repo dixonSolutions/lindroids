@@ -35,7 +35,8 @@ say() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 say "build tools and libraries (pkg)"
 # bubblewrap is in root-repo: only root uses it, but it is part of a complete Flatpak.
 yes | pkg install -y root-repo > /dev/null 2>&1 || true
-yes | pkg install -y build-essential ninja pkg-config python python-pip bison gettext autoconf automake libtool \
+# xz-utils, tar and patch: the sources are .tar.xz, and a fresh Termux has no xz program.
+yes | pkg install -y build-essential xz-utils tar patch ninja pkg-config python python-pip bison gettext autoconf automake libtool \
   glib libarchive libcurl gpgme json-glib libxml2 libseccomp appstream gdk-pixbuf zstd libyaml \
   libgpg-error libassuan liblzma libcap e2fsprogs libfuse3 dbus bubblewrap
 pip install --quiet meson pyparsing
