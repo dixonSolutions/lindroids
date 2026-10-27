@@ -145,6 +145,12 @@ function connect() {
     ready = false;
     for (const w of [...windows.keys()]) removeWindow(w);
     if (replaced) return;
+    // A program's own window: the program cannot outlive the server (its display went with it;
+    // a run from a home screen icon ends with Termux's session, server and all). That is its end.
+    if (OWN_WINDOW && RUN && was) {
+      if (ended === null) ended = program ? program.name : 'The program';
+      return showEnded();
+    }
     if (was) toast({ title: 'The server went away', body: 'Reconnecting…' }, 3000);
     waitForServer();
   };
@@ -307,9 +313,13 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// Lindroids' icon, kept: the panel still shows it when the server is gone.
+let ownIcon = '/icon.svg';
+fetch('/icon.svg').then((r) => (r.ok ? r.text() : Promise.reject())).then((t) => { ownIcon = 'data:image/svg+xml,' + encodeURIComponent(t); }).catch(() => {});
+
 function showPanel(html, after, icon) {
   panel.hidden = false;
-  panel.innerHTML = `<div class="box"><img src="${icon || '/icon.svg'}" alt="">${html}</div>`;
+  panel.innerHTML = `<div class="box"><img src="${icon || ownIcon}" alt="">${html}</div>`;
   if (after) after();
 }
 
@@ -318,6 +328,7 @@ function showPanel(html, after, icon) {
 // Tabs ignore window.close(), and Back only hides them: their ✕ closes them). Not at once: a
 // splash may give way to the window.
 const OWN_WINDOW = new URLSearchParams(location.search).has('window');
+const RUN = new URLSearchParams(location.search).get('run');
 let ended = null, endedIcon = null, endTimer = null;
 let program = null; // { name, icon } of this window's run, from the server
 
@@ -348,19 +359,20 @@ function showTools(on) {
 $('handle').onclick = (e) => { e.stopPropagation(); showTools(!document.body.classList.contains('tools')); };
 $('tools').addEventListener('click', () => showTools(true));
 
+function showEnded() {
+  const icon = endedIcon || (program && program.icon);
+  showPanel(`<p>${esc(program ? program.name : ended)} closed.</p><p>Close this window with the ✕ at the top.</p>`, null,
+    icon && `data:image/png;base64,${icon}`);
+  // Out of full screen, so the browser's own close button shows where the page cannot close.
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  endTimer = setTimeout(() => { if (!windows.size) window.close(); }, 1500);
+}
+
 function hidePanelIfWindows() {
   if (!ready) return;
   clearTimeout(endTimer);
   if (windows.size) { ended = null; panel.hidden = true; return; }
-  if (ended !== null) {
-    const icon = endedIcon || (program && program.icon);
-    showPanel(`<p>${esc(program ? program.name : ended)} closed.</p><p>Close this window with the ✕ at the top.</p>`, null,
-      icon && `data:image/png;base64,${icon}`);
-    // Out of full screen, so the browser's own close button shows where the page cannot close.
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-    endTimer = setTimeout(() => { if (!windows.size) window.close(); }, 1500);
-    return;
-  }
+  if (ended !== null) return showEnded();
   if (program) {
     return showPanel(`<p>Starting ${esc(program.name)}…</p>`, null, program.icon && `data:image/png;base64,${program.icon}`);
   }
@@ -929,6 +941,10 @@ function dialog(html, buttons) {
 const picked = new Map(); // request -> [File]
 const saves = new Map(); // uri -> {name, parts}
 
+// The last tap or click on the page, for what a browser allows only right after one.
+let lastTap = -1e9;
+addEventListener('pointerup', () => { lastTap = performance.now(); }, { capture: true });
+
 function pickFiles(p) {
   const cancel = () => send({ t: 'files_picked', request: p.request, files: [] });
   if (p.directory) return cancel();
@@ -947,14 +963,24 @@ function pickFiles(p) {
   input.type = 'file';
   input.multiple = !!p.multiple;
   if (p.mime_types && p.mime_types.length) input.accept = p.mime_types.join(',');
+  const key = 'pick:' + p.request;
   input.onchange = () => {
+    closeToast(key);
     const files = [...input.files];
     picked.set(p.request, files);
     send({ t: 'files_picked', request: p.request, files: files.map((f, i) => ({ uri: `pick:${p.request}:${i}`, name: f.name, size: f.size, mime: f.type || undefined })) });
   };
-  input.oncancel = cancel;
-  // The file chooser needs a tap on this page.
-  dialog(`<p>${esc(p.title || 'A Linux program wants a file')}</p>`, [['Choose…', () => input.click()], ['Cancel', cancel, true]]);
+  input.oncancel = () => { closeToast(key); cancel(); };
+  const title = p.title || 'A Linux program wants a file';
+  // The file chooser needs a tap on this page. The tap that asked for it (Open in the program) is
+  // still fresh for a few seconds: straight to Android's picker then, with a note in the corner
+  // in case the browser did not show it (it goes when a file is picked or the picker cancelled).
+  if (activeGesture() || performance.now() - lastTap < 4000) {
+    input.click();
+    toast({ key, title, actions: [['choose', 'Choose…'], ['cancel', 'Cancel']], onAction: (k) => (k === 'choose' ? input.click() : cancel()) }, 0);
+    return;
+  }
+  dialog(`<p>${esc(title)}</p>`, [['Choose…', () => input.click()], ['Cancel', cancel, true]]);
 }
 
 async function fetchFile(m) {
