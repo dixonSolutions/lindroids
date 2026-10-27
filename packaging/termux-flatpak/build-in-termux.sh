@@ -29,8 +29,39 @@ FLATHUB=https://dl.flathub.org/repo/flathub.flatpakrepo
 [ -n "${PREFIX:-}" ] && [ -d "$PREFIX" ] || { echo "build-in-termux: run this in Termux" >&2; exit 1; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 WORK=${TMPDIR:-$PREFIX/tmp}/lindroids-flatpak-build
-JOBS=$(nproc 2>/dev/null || echo 2)
+# Few parallel jobs: on a phone, Android 12+'s phantom process killer ends an app's children when
+# there are too many of them (and big parallel builds run out of memory); either kills the build
+# half way. LINDROIDS_BUILD_JOBS overrides.
+JOBS=${LINDROIDS_BUILD_JOBS:-2}
 say() { printf '\033[1m==> %s\033[0m\n' "$*"; }
+
+# step <log> <command...>: run it with its output in <log>; if it fails, say which step, where
+# its log is and how the log ends, and stop.
+step() {
+  log=$1
+  shift
+  "$@" > "$log" 2>&1 && return 0
+  echo "build-in-termux: failed: $* (in $(pwd); the whole log: $log)" >&2
+  tail -40 "$log" >&2
+  exit 1
+}
+
+# build <log> <make|ninja> [args...]: build with $JOBS jobs; if that fails, once more with one
+# job (it carries on where it stopped), which gets past processes killed for being too many.
+build() {
+  log=$1
+  tool=$2
+  shift 2
+  if [ "$tool" = ninja ]; then
+    ninja -j"$JOBS" "$@" > "$log" 2>&1 && return 0
+    echo "  (failed with $JOBS jobs: trying again with one)"
+    step "$log.retry" ninja -j1 "$@"
+  else
+    make -j"$JOBS" "$@" > "$log" 2>&1 && return 0
+    echo "  (failed with $JOBS jobs: trying again with one)"
+    step "$log.retry" make -j1 "$@"
+  fi
+}
 
 say "build tools and libraries (pkg)"
 # bubblewrap is in root-repo: only root uses it, but it is part of a complete Flatpak.
@@ -55,34 +86,46 @@ fetch "https://github.com/ostreedev/ostree/releases/download/v$OSTREE_VERSION/li
 fetch "https://github.com/flatpak/flatpak/releases/download/$FLATPAK_VERSION/flatpak-$FLATPAK_VERSION.tar.xz" "$FLATPAK_SHA256"
 COMPAT="-include $HERE/bionic-compat.h"
 
-say "ostree $OSTREE_VERSION"
-rm -rf "libostree-$OSTREE_VERSION"
-tar xf "libostree-$OSTREE_VERSION.tar.xz"
-cd "libostree-$OSTREE_VERSION"
-# The compat header only at build time: in configure's checks it hides what bionic really has.
-./configure --prefix="$PREFIX" --with-curl --without-soup --without-libsystemd --without-selinux \
-  --without-avahi --disable-man --disable-gtk-doc --disable-rofiles-fuse > ../ostree-configure.log
-make -j"$JOBS" CFLAGS="-g -O2 $COMPAT" > ../ostree-make.log 2>&1 || { tail -30 ../ostree-make.log >&2; exit 1; }
-make install > /dev/null
-cd ..
+# Each part is built once: a run that stopped after ostree starts again at Flatpak
+# (LINDROIDS_REBUILD=1 builds everything again).
+built() { [ -z "${LINDROIDS_REBUILD:-}" ] && [ "$1" = "$2" ]; }
 
-say "flatpak $FLATPAK_VERSION"
-rm -rf "flatpak-$FLATPAK_VERSION"
-tar xf "flatpak-$FLATPAK_VERSION.tar.xz"
-cd "flatpak-$FLATPAK_VERSION"
-patch -p1 < "$HERE/flatpak-android.patch"
-patch -p1 < "$HERE/libglnx-android-seccomp.patch"
-# Termux's gettext makes translated format strings non-literal for clang: not errors here.
-meson setup build --prefix="$PREFIX" \
-  -Dsystem_bubblewrap="$PREFIX/libexec/lindroids/bwrap" -Dsystem_install_dir="$PREFIX/var/lib/flatpak" \
-  -Dsystemd=disabled -Dsystem_helper=disabled -Dmalcontent=disabled -Dselinux_module=disabled \
-  -Dgir=disabled -Ddocbook_docs=disabled -Dman=disabled -Dgtkdoc=disabled -Dtests=false \
-  -Dinstalled_tests=false -Dwayland_security_context=disabled -Ddconf=disabled \
-  -Dc_args="$COMPAT -Wno-error=format-nonliteral -Wno-error=format-security -Wno-format-nonliteral -Wno-format-security" \
-  > ../flatpak-setup.log 2>&1 || { tail -30 ../flatpak-setup.log >&2; exit 1; }
-ninja -C build > ../flatpak-build.log 2>&1 || { grep -E 'error' ../flatpak-build.log | head -20 >&2; exit 1; }
-ninja -C build install > /dev/null
-cd ..
+if built "$(pkg-config --modversion ostree-1 2>/dev/null)" "$OSTREE_VERSION"; then
+  say "ostree $OSTREE_VERSION: built already"
+else
+  say "ostree $OSTREE_VERSION (logs: $WORK/ostree-*.log)"
+  rm -rf "libostree-$OSTREE_VERSION"
+  tar xf "libostree-$OSTREE_VERSION.tar.xz"
+  cd "libostree-$OSTREE_VERSION"
+  # The compat header only at build time: in configure's checks it hides what bionic really has.
+  step "$WORK/ostree-configure.log" ./configure --prefix="$PREFIX" --with-curl --without-soup --without-libsystemd \
+    --without-selinux --without-avahi --disable-man --disable-gtk-doc --disable-rofiles-fuse
+  build "$WORK/ostree-make.log" make CFLAGS="-g -O2 $COMPAT"
+  # (libtool's "ldconfig: not found" while installing is harmless: Android has no ldconfig.)
+  step "$WORK/ostree-install.log" make install
+  cd "$WORK"
+fi
+
+if built "$(flatpak --version 2>/dev/null)" "Flatpak $FLATPAK_VERSION"; then
+  say "flatpak $FLATPAK_VERSION: built already"
+else
+  say "flatpak $FLATPAK_VERSION (logs: $WORK/flatpak-*.log)"
+  rm -rf "flatpak-$FLATPAK_VERSION"
+  tar xf "flatpak-$FLATPAK_VERSION.tar.xz"
+  cd "flatpak-$FLATPAK_VERSION"
+  patch -p1 < "$HERE/flatpak-android.patch"
+  patch -p1 < "$HERE/libglnx-android-seccomp.patch"
+  # Termux's gettext makes translated format strings non-literal for clang: not errors here.
+  step "$WORK/flatpak-setup.log" meson setup build --prefix="$PREFIX" \
+    -Dsystem_bubblewrap="$PREFIX/libexec/lindroids/bwrap" -Dsystem_install_dir="$PREFIX/var/lib/flatpak" \
+    -Dsystemd=disabled -Dsystem_helper=disabled -Dmalcontent=disabled -Dselinux_module=disabled \
+    -Dgir=disabled -Ddocbook_docs=disabled -Dman=disabled -Dgtkdoc=disabled -Dtests=false \
+    -Dinstalled_tests=false -Dwayland_security_context=disabled -Ddconf=disabled \
+    -Dc_args="$COMPAT -Wno-error=format-nonliteral -Wno-error=format-security -Wno-format-nonliteral -Wno-format-security"
+  build "$WORK/flatpak-build.log" ninja -C build
+  step "$WORK/flatpak-install.log" ninja -C build install
+  cd "$WORK"
+fi
 
 # Flatpak's bubblewrap: `lindroids bwrap` (the Termux package ships this too).
 if [ ! -x "$PREFIX/libexec/lindroids/bwrap" ]; then
