@@ -281,7 +281,7 @@ flatpak_native() {
     ostree-android-nolink.patch libglnx-android-nolink.patch; do
     curl -fsSL -o "$kit/$f" "$REPO_URL/termux-flatpak/$f" || { warn "cannot download the Flatpak build kit ($f)"; return 0; }
   done
-  say "building Flatpak for Termux (this takes a while)"
+  say "Flatpak for Termux: the build kit (a first build takes a while)"
   sh "$kit/build-in-termux.sh" < /dev/null || { warn "building Flatpak failed (see the messages above)"; return 0; }
   rm -rf "$kit"
 }
@@ -317,6 +317,14 @@ flatpak_in_distro() {
 # (the default), in a proot-distro distro you have, in a new Debian one, or not now.
 # LINDROIDS_FLATPAK answers it: native (or yes) | debian | distro:<name> | no.
 flatpak_termux() {
+  # Lindroids' own native build (the kit installs it into $PREFIX): run the kit again. It rebuilds
+  # only what an older kit built (whose fixes it lacks, e.g. for Termux from Google Play, which may
+  # not make hard links), skips what is current, and makes sure Flathub is added.
+  if [ "$(command -v flatpak 2>/dev/null)" = "$PREFIX/bin/flatpak" ]; then
+    say "Flatpak: found ($(flatpak --version 2>/dev/null || echo flatpak)); bringing it up to date"
+    flatpak_native
+    return 0
+  fi
   if have flatpak; then
     say "Flatpak: found ($(flatpak --version 2>/dev/null || echo flatpak))"
     flatpak --user remote-add --if-not-exists flathub "$FLATHUB" 2>/dev/null || true

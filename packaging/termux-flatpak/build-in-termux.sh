@@ -67,18 +67,18 @@ build() {
   fi
 }
 
-say "build tools and libraries (pkg)"
+mkdir -p "$WORK"
+say "build tools and libraries (pkg; log: $WORK/pkg.log)"
 # bubblewrap is in root-repo: only root uses it, but it is part of a complete Flatpak.
 yes | pkg install -y root-repo > /dev/null 2>&1 || true
 # xz-utils, tar and patch: the sources are .tar.xz, and a fresh Termux has no xz program.
 # libxau with xorgproto: Flatpak's configure looks xau up, and xau.pc needs xproto.pc.
 # git: meson fetches Flatpak's dbus-proxy subproject (xdg-dbus-proxy) with it.
-yes | pkg install -y build-essential xz-utils tar patch git ninja pkg-config python python-pip bison gettext autoconf automake libtool \
-  glib libarchive libcurl gpgme json-glib libxml2 libseccomp appstream gdk-pixbuf zstd libyaml \
-  libgpg-error libassuan liblzma libcap e2fsprogs libfuse3 dbus bubblewrap libxau xorgproto
-pip install --quiet meson pyparsing
+step "$WORK/pkg.log" sh -c 'yes | pkg install -y build-essential xz-utils tar patch git ninja pkg-config python python-pip \
+  bison gettext autoconf automake libtool glib libarchive libcurl gpgme json-glib libxml2 libseccomp appstream \
+  gdk-pixbuf zstd libyaml libgpg-error libassuan liblzma libcap e2fsprogs libfuse3 dbus bubblewrap libxau xorgproto'
+step "$WORK/pip.log" pip install meson pyparsing
 
-mkdir -p "$WORK"
 cd "$WORK"
 fetch() { # fetch <url> <sha256>
   f=${1##*/}
