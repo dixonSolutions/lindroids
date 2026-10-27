@@ -57,7 +57,7 @@ fn apps_dir() -> std::path::PathBuf {
     lindroids_server::state_dir().join("apps")
 }
 
-fn load_all() -> Vec<Exported> {
+pub(crate) fn load_all() -> Vec<Exported> {
     let mut v: Vec<Exported> = std::fs::read_dir(apps_dir())
         .into_iter()
         .flatten()

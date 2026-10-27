@@ -41,6 +41,16 @@
   .toast small { color: var(--dim); }
   .dialog { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 6; min-width: 260px; text-align: center; }
   .dialog .ghost { background: none; color: var(--fg); border: 1px solid #334; }
+  /* A window of its own showing one program: the program has the whole window; the tools wait
+     behind a small handle at the top. */
+  #handle { display: none; }
+  body.solo #tabs { display: none; }
+  body.solo #bar { position: fixed; top: 0; left: 50%; transform: translate(-50%, -110%); z-index: 4; height: 44px;
+    border-radius: 0 0 14px 14px; background: #0F1720e8; box-shadow: 0 4px 16px #0008; transition: transform .18s; }
+  body.solo.tools #bar { transform: translate(-50%, 0); }
+  body.solo #handle { display: block; position: fixed; top: 0; left: 50%; transform: translateX(-50%); z-index: 3;
+    width: 72px; height: 12px; padding: 0; border: 0; background: none; cursor: pointer; touch-action: none; }
+  body.solo #handle::after { content: ""; display: block; margin: 3px auto 0; width: 40px; height: 4px; border-radius: 2px; background: #fff6; }
 </style>
 </head>
 <body>
@@ -52,6 +62,7 @@
     <button id="fs" title="Full screen">⛶</button>
   </div>
 </div>
+<button id="handle" title="Tools" aria-label="Tools"></button>
 <div id="stage">
   <div id="panel"><div class="box"><img src="/icon.svg" alt=""><p>Connecting to Lindroids…</p></div></div>
 </div>

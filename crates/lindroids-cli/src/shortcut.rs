@@ -55,14 +55,20 @@ const WINDOW_BROWSERS: &[&str] = &[
 /// has them (`LINDROIDS_BROWSER`, comma-separated packages, goes first). Sending the same URL again
 /// brings that window back instead of opening another. Returns the browser used.
 pub fn open_window(url: &str) -> Result<String, String> {
-    let mut browsers: Vec<String> = std::env::var("LINDROIDS_BROWSER")
-        .map(|v| v.split(',').map(|b| b.trim().to_string()).filter(|b| !b.is_empty()).collect())
-        .unwrap_or_default();
-    browsers.extend(WINDOW_BROWSERS.iter().map(|b| b.to_string()));
     let mut args = vec!["open".to_string(), package(), "raise".into(), url.to_string()];
-    args.extend(browsers);
+    args.extend(browsers());
     let out = helper(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
     Ok(out.lines().find_map(|l| l.strip_prefix("browser ")).unwrap_or("?").to_string())
+}
+
+/// The browsers to show windows in, in order: `LINDROIDS_BROWSER` (comma-separated packages)
+/// first.
+fn browsers() -> Vec<String> {
+    let mut v: Vec<String> = std::env::var("LINDROIDS_BROWSER")
+        .map(|v| v.split(',').map(|b| b.trim().to_string()).filter(|b| !b.is_empty()).collect())
+        .unwrap_or_default();
+    v.extend(WINDOW_BROWSERS.iter().map(|b| b.to_string()));
+    v
 }
 
 /// The URL a shortcut shares with the terminal app.
@@ -170,28 +176,43 @@ echo "No opener for $1 (put yours in {before})"
 }
 
 /// Make `~/bin/termux-url-opener` start exported programs, keeping any opener already there.
-fn install_opener(sb: &Sandbox) -> Result<(), String> {
+fn install_opener(sb: &Sandbox) -> Result<bool, String> {
+    install_termux_script(sb, "termux-url-opener", OPENER_MARK, opener_script, "still opens every other URL")
+}
+
+/// Make `~/bin/termux-file-editor` open the files Termux receives (Files' "Open with", Share) in
+/// Linux programs (`lindroids open --linux`), keeping any editor already there for the rest.
+/// Whether it was (re)written.
+pub fn install_file_editor(sb: &Sandbox) -> Result<bool, String> {
+    install_termux_script(sb, "termux-file-editor", crate::open::EDITOR_MARK, crate::open::editor_script, "opens the files no Linux program opens")
+}
+
+/// Write `~/bin/<name>` (Termux runs it), marked as ours by `mark`. A script of the user's there
+/// is moved to `~/.local/share/lindroids/<name>.before` first, once, and ours hands it what we do
+/// not handle. Whether the script was (re)written.
+fn install_termux_script(sb: &Sandbox, name: &str, mark: &str, script: fn(&str, &Path) -> String, theirs_does: &str) -> Result<bool, String> {
     let home = termux_home(sb).ok_or("Termux's home is not reachable from here")?;
     let bin = home.join("bin");
-    let opener = bin.join("termux-url-opener");
-    let before = home.join(".local/share/lindroids/termux-url-opener.before");
-    if let Ok(old) = std::fs::read_to_string(&opener) {
-        if !old.contains(OPENER_MARK) && !before.exists() {
-            std::fs::create_dir_all(before.parent().unwrap()).map_err(|e| e.to_string())?;
-            std::fs::rename(&opener, &before).map_err(|e| format!("{}: {e}", opener.display()))?;
-            eprintln!("lindroids: your termux-url-opener is kept as {} and still opens every other URL", before.display());
-        }
+    let path = bin.join(name);
+    let before = home.join(".local/share/lindroids").join(format!("{name}.before"));
+    // Bytes, not text: Termux also takes a symlink to a program here.
+    let ours = std::fs::read(&path).map_or(false, |old| old.windows(mark.len()).any(|w| w == mark.as_bytes()));
+    if path.symlink_metadata().is_ok() && !ours && before.symlink_metadata().is_err() {
+        std::fs::create_dir_all(before.parent().unwrap()).map_err(|e| e.to_string())?;
+        std::fs::rename(&path, &before).map_err(|e| format!("{}: {e}", path.display()))?;
+        eprintln!("lindroids: your {name} is kept as {} and {theirs_does}", before.display());
     }
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| format!("{}/bin/lindroids", proto::TERMUX_PREFIX));
-    let text = opener_script(&exe, &before);
-    if std::fs::read_to_string(&opener).ok().as_deref() == Some(text.as_str()) {
-        return Ok(());
+    let text = script(&exe, &before);
+    if std::fs::read_to_string(&path).ok().as_deref() == Some(text.as_str()) {
+        return Ok(false);
     }
     std::fs::create_dir_all(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
-    let tmp = bin.join(".termux-url-opener.lindroids");
+    let tmp = bin.join(format!(".{name}.lindroids"));
     std::fs::File::create(&tmp).and_then(|mut f| f.write_all(text.as_bytes())).map_err(|e| format!("{}: {e}", tmp.display()))?;
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &opener).map_err(|e| format!("{}: {e}", opener.display()))
+    std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(true)
 }
 
 /// Put an exported program on the home screen (Android: the launcher asks the user first).
@@ -201,11 +222,17 @@ pub fn create(sb: &Sandbox, rec: &Exported, icon_png: &[u8]) -> Result<String, S
         Kind::Proot => Err("make the shortcut from Termux: `lindroids export` there runs programs in proot-distro distros too".into()),
         Kind::Termux => {
             install_opener(sb)?;
+            if let Err(e) = install_file_editor(sb) {
+                eprintln!("lindroids: files shared to Termux will not open in Linux programs: {e}");
+            }
             let icon = lindroids_server::state_dir().join("apps").join(format!("{}.png", rec.id));
             std::fs::write(&icon, icon_png).map_err(|e| format!("{}: {e}", icon.display()))?;
             let url = launch_url(sb.uid, &rec.id);
             let icon_s = icon.display().to_string();
-            helper(&["pin", &package(), &rec.id, &rec.name, &icon_s, "android.intent.action.SEND", RECEIVER, "text/plain", &url])?;
+            let out = helper(&["pin", &package(), &rec.id, &rec.name, &icon_s, "android.intent.action.SEND", RECEIVER, "text/plain", &url])?;
+            if out.lines().any(|l| l == "updated") {
+                return Ok("Its home screen icon is updated.".into());
+            }
             Ok("Android asks to add it to the home screen: tap \"Add\" (or drag it into place).".into())
         }
     }
@@ -248,6 +275,45 @@ fn desktop_entry(rec: &Exported, icon_png: &[u8]) -> Result<String, String> {
     );
     std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(format!("It is in the applications menu ({}).", path.display()))
+}
+
+
+/// Programs' notifications in Android's shade, posted by the helper as the terminal app (which
+/// may post them: no permission of Lindroids' own). One at a time, in order: each runs
+/// app_process, which takes a moment.
+pub struct AndroidServices {
+    queue: std::sync::Mutex<std::sync::mpsc::Sender<Vec<String>>>,
+}
+
+impl AndroidServices {
+    /// None where the helper cannot run (no app_process, an ARM translation layer).
+    pub fn new() -> Option<AndroidServices> {
+        if !sandbox::on_android() || sandbox::native_bridge() || !Path::new("/system/bin/app_process").exists() {
+            return None;
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<String>>();
+        std::thread::spawn(move || {
+            for args in rx {
+                if let Err(e) = helper(&args.iter().map(String::as_str).collect::<Vec<_>>()) {
+                    log::warn!("android notification: {e}");
+                }
+            }
+        });
+        Some(AndroidServices { queue: std::sync::Mutex::new(tx) })
+    }
+}
+
+impl lindroids_server::android::Android for AndroidServices {
+    fn notify(&self, n: lindroids_server::android::Notice) {
+        let icon = n.icon.map(|p| p.display().to_string()).unwrap_or_default();
+        let mut args = vec!["notify".to_string(), package(), n.id.to_string(), n.app, n.title, n.body, icon, n.url.unwrap_or_default()];
+        args.extend(browsers());
+        let _ = self.queue.lock().unwrap().send(args);
+    }
+
+    fn cancel(&self, id: i32) {
+        let _ = self.queue.lock().unwrap().send(vec!["cancel".into(), package(), id.to_string()]);
+    }
 }
 
 #[cfg(test)]

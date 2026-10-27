@@ -335,6 +335,19 @@ function showProgram() {
   document.head.appendChild(l);
 }
 
+// One program in a window of its own: no tab strip (see index.html, body.solo).
+function updateChrome() {
+  document.body.classList.toggle('solo', OWN_WINDOW && windows.size <= 1);
+}
+let toolsTimer = null;
+function showTools(on) {
+  clearTimeout(toolsTimer);
+  document.body.classList.toggle('tools', on);
+  if (on) toolsTimer = setTimeout(() => showTools(false), 5000);
+}
+$('handle').onclick = (e) => { e.stopPropagation(); showTools(!document.body.classList.contains('tools')); };
+$('tools').addEventListener('click', () => showTools(true));
+
 function hidePanelIfWindows() {
   if (!ready) return;
   clearTimeout(endTimer);
@@ -370,6 +383,7 @@ function newWindow(m) {
   tabsEl.appendChild(tab);
   const w = { win: m.win, title: m.title, appId: m.app_id, icon: m.icon_png_b64, canvas, ctx: canvas.getContext('2d'), tab, pendingAck: false, size: [0, 0] };
   windows.set(m.win, w);
+  updateChrome();
   attachInput(w);
   resizeWindow(w);
   activate(m.win);
@@ -379,6 +393,7 @@ function removeWindow(win) {
   const w = windows.get(win);
   if (!w) return;
   windows.delete(win);
+  updateChrome();
   if (OWN_WINDOW && !windows.size) { ended = w.title || 'The program'; endedIcon = w.icon || null; }
   w.canvas.remove();
   w.tab.remove();
@@ -457,9 +472,22 @@ function lz4(src, dst) {
   return d;
 }
 
+// `&stats` in the page's URL: frames, data and drawing time each second, in a corner.
+const STATS = new URLSearchParams(location.search).has('stats') ? { frames: 0, bytes: 0, pixels: 0, ms: 0, el: null } : null;
+if (STATS) {
+  STATS.el = document.createElement('div');
+  STATS.el.style.cssText = 'position:fixed;left:4px;bottom:4px;z-index:9;font:12px monospace;color:#0f0;background:#000a;padding:2px 6px;pointer-events:none';
+  document.body.appendChild(STATS.el);
+  setInterval(() => {
+    STATS.el.textContent = `${STATS.frames} fps  ${(STATS.bytes / 1024).toFixed(0)} KiB/s  ${(STATS.pixels / 1e6).toFixed(2)} Mpx/s  draw ${STATS.frames ? (STATS.ms / STATS.frames).toFixed(1) : 0} ms`;
+    STATS.frames = STATS.bytes = STATS.pixels = STATS.ms = 0;
+  }, 1000);
+}
+
 function tiles(m, payload) {
   const w = windows.get(m.win);
   if (!w) return send({ t: 'frame_done', win: m.win });
+  const t = STATS && performance.now();
   if (w.canvas.width !== m.width || w.canvas.height !== m.height) {
     w.canvas.width = m.width;
     w.canvas.height = m.height;
@@ -473,6 +501,7 @@ function tiles(m, payload) {
     w.ctx.putImageData(new ImageData(raw.subarray(off, off + n), rw, rh), x, y);
     off += n;
   }
+  if (STATS) { STATS.frames++; STATS.bytes += payload.length; STATS.pixels += size / 4; STATS.ms += performance.now() - t; }
   w.pendingAck = true;
   ackLater(w);
 }
@@ -946,8 +975,11 @@ function writeFile(m, payload) {
   if (m.offset === 0) s.parts = [];
   s.parts.push(payload.slice());
   if (m.last) {
-    download(URL.createObjectURL(new Blob(s.parts)), s.name);
-    saves.delete(m.uri);
+    // Kept: the program saves to the same file again (Ctrl+S), and each save is downloaded anew.
+    const url = URL.createObjectURL(new Blob(s.parts));
+    download(url, s.name);
+    s.parts = [];
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
   send({ t: 'write_result', request: m.request, ok: true });
 }

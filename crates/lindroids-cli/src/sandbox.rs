@@ -241,6 +241,10 @@ pub fn page_url(origin: &str, run: Option<u32>, window: bool, ticket: Option<&st
     if let Some(pid) = run {
         query.push(format!("run={pid}"));
     }
+    // Frame rate and drawing time in a corner of the window (LINDROIDS_STATS=1).
+    if std::env::var("LINDROIDS_STATS").is_ok_and(|v| v == "1") {
+        query.push("stats".to_string());
+    }
     let mut url = format!("{origin}/");
     if !query.is_empty() {
         url.push('?');

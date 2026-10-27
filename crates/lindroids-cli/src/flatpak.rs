@@ -71,6 +71,28 @@ pub fn find(root: &Path, id: &str) -> Option<App> {
     crate::run::distro_rootfses().iter().find_map(|d| find_in(d, id))
 }
 
+/// The apps installed under `root` (not `/run/host` or distros: callers look there themselves),
+/// each once, with its deploy directory (its `export/` has its .desktop files).
+pub fn installed_apps(root: &Path) -> Vec<(String, PathBuf)> {
+    let insts = install::installations(root);
+    let arch = install::arch();
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
+    for (i, inst) in insts.iter().enumerate() {
+        let Ok(rd) = std::fs::read_dir(inst.host.join("app")) else { continue };
+        let mut ids: Vec<String> = rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        ids.sort();
+        for id in ids {
+            if out.iter().any(|(x, _)| *x == id) {
+                continue;
+            }
+            if let Some(d) = install::find_ref(root, &insts, Some(i), "app", &id, arch, None) {
+                out.push((id, d.dir));
+            }
+        }
+    }
+    out
+}
+
 fn find_in(root: &Path, id: &str) -> Option<App> {
     let installations = install::installations(root);
     let arch = install::arch();
@@ -493,6 +515,16 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
         let taken = reserved.iter().any(|r| path == *r || path.starts_with(&format!("{r}/")));
         if path.len() > 1 && path.starts_with('/') && !taken && Path::new(path).exists() {
             binds.push((path.into(), path.into()));
+        }
+    }
+    // Folders asked for (`run --bind`; `open --linux` shows the opened file's folder), at their
+    // own path, unless the sandbox has them there already (the home, shared storage).
+    for b in &o.binds {
+        let path = b.display().to_string();
+        let taken = reserved.iter().any(|r| path == *r || path.starts_with(&format!("{r}/")));
+        let there = binds.iter().any(|(src, dst)| *dst == path || (src == Path::new(dst) && b.starts_with(dst)));
+        if b.is_absolute() && b.is_dir() && !taken && !there {
+            binds.push((b.clone(), path));
         }
     }
     // Inside a distro rootfs, deploys may hold symlinks absolute to the distro's own paths (hard

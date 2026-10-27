@@ -239,6 +239,15 @@ cmd_wait_boot() {
         adbc shell setenforce 1 >/dev/null 2>&1 || true
         echo "$NAME: setenforce 1 -> $(adbc shell getenforce | tr -d '\r')"
       fi
+      # ARM phones have no translation layer; with one, app_process (Lindroids' window and
+      # shortcut helper) is killed. Off, as a phone has it (NATIVE_BRIDGE=1 keeps it).
+      local magisk=$LAB_HOME/tools/magisk
+      if [[ ${NATIVE_BRIDGE:-0} == 0 && -f $magisk && $(adbc shell getprop ro.dalvik.vm.native.bridge | tr -d '\r') != 0 ]]; then
+        adbc root >/dev/null 2>&1 || true
+        adbc push "$magisk" /data/local/tmp/magisk >/dev/null 2>&1
+        adbc shell 'cd /data/local/tmp && chmod 755 magisk && ln -sf magisk resetprop && ./resetprop ro.dalvik.vm.native.bridge 0' >/dev/null 2>&1 || true
+        echo "$NAME: native bridge -> $(adbc shell getprop ro.dalvik.vm.native.bridge | tr -d '\r')"
+      fi
       return 0
     fi
     sleep 3

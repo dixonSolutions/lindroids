@@ -23,8 +23,8 @@ pub struct ExtrasState {
     pub primary: Option<pss::ZwpPrimarySelectionSourceV1>,
     /// Activation tokens handed out and not used yet.
     tokens: Vec<String>,
-    /// The CSS cursor last sent to the page.
-    cursor: String,
+    /// The CSS cursor last sent, and the page it went to.
+    cursor: (Option<u64>, String),
 }
 
 pub fn register_globals(dh: &DisplayHandle) {
@@ -207,10 +207,13 @@ impl Dispatch<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1, ()> for State {
 
 /// The page's pointer over Linux windows (a CSS cursor name). wl_pointer.set_cursor with a
 /// surface (a picture of its own) shows the default arrow; with none, no pointer.
+/// It goes to the page showing the window the pointer is over.
 pub fn set_cursor(state: &mut State, css: &str) {
-    if state.extras.cursor != css {
-        state.extras.cursor = css.to_string();
-        state.send_app(&ToApp::Cursor { css: css.to_string() });
+    let Some(win) = state.seat.ptr_focus.as_ref().and_then(|s| state.window_of(&s.id())) else { return };
+    let page = state.windows.get(&win).and_then(|w| w.link);
+    if page.is_some() && (state.extras.cursor.0 != page || state.extras.cursor.1 != css) {
+        state.extras.cursor = (page, css.to_string());
+        state.send_win(win, &ToApp::Cursor { css: css.to_string() });
     }
 }
 

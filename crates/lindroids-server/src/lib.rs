@@ -8,6 +8,7 @@
 //! One thread runs the compositor. It polls the Wayland socket and clients, the display link, the
 //! CLI socket, and a wake pipe other threads (sound, clipboard) use to post work.
 
+pub mod android;
 pub mod applink;
 pub mod audio;
 mod data;
@@ -146,6 +147,35 @@ pub fn page_origin(port: u16) -> String {
     format!("http://{}.localhost:{port}", origin_label())
 }
 
+/// The origin this server serves pages in.
+fn served_origin() -> String {
+    format!("http://{}.localhost:{}", web::origin_label(), proto::server_tcp_port(proto::real_uid()))
+}
+
+/// Tickets handed to the CLI for page URLs: (ticket, the run it is for, good until).
+static TICKETS: Mutex<Vec<(String, Option<u32>, Instant)>> = Mutex::new(Vec::new());
+
+/// The tickets still good (their run still running).
+fn live_tickets() -> std::sync::MutexGuard<'static, Vec<(String, Option<u32>, Instant)>> {
+    let mut t = TICKETS.lock().unwrap();
+    t.retain(|(_, r, until)| *until > Instant::now() && r.map_or(true, |p| Path::new(&format!("/proc/{p}")).exists()));
+    t
+}
+
+/// The run a process belongs to, for what it shows outside its window (an Android notification):
+/// the URL of the run's window (with the run's ticket, as `lindroids run` opened it), and the
+/// icon and name `lindroids run` gave it.
+pub(crate) fn run_of_pid(pid: u32) -> Option<(String, Option<String>, String)> {
+    let run = icons::launch_of_pid(pid)?;
+    let (name, icon) = icons::launch_info(run)?;
+    let mut url = format!("{}/?window&run={run}", served_origin());
+    if let Some((t, ..)) = live_tickets().iter().find(|(_, r, _)| *r == Some(run)) {
+        url.push_str("#t=");
+        url.push_str(t);
+    }
+    Some((url, icon, name))
+}
+
 /// The relay's own key pair (`<state>/relay.key`, 0600), made once.
 pub fn load_or_create_relay_key() -> proto::auth::KeyPair {
     let path = state_dir().join("relay.key");
@@ -196,8 +226,10 @@ pub fn forget_display(id: &str) -> bool {
 /// Work other threads hand to the compositor thread.
 pub enum Inbox {
     ToApp(ToApp),
-    /// A message with a binary payload (sound).
+    /// A message with a binary payload.
     WithPayload(ToApp, Vec<u8>),
+    /// From a Linux process (its pid, when known: sound, the portal): to the page showing its run.
+    From(Option<u32>, ToApp, Vec<u8>),
 }
 
 pub struct Shared {
@@ -331,8 +363,6 @@ pub struct State {
     /// Links that have not authenticated yet.
     pending: Vec<Link>,
     relay_key: auth::KeyPair,
-    /// Tickets handed to the CLI for page URLs: (ticket, the run it is for, good until).
-    tickets: Vec<(String, Option<u32>, Instant)>,
     pub pairing_code: String,
     pairing_failures: u32,
     pub seat: seat::Seat,
@@ -350,6 +380,10 @@ pub struct State {
     clis: Vec<CliConn>,
     next_request: u32,
     clients: u32,
+    /// Sound streams: the pid that plays each, and the page it is open on.
+    sound: HashMap<u32, (Option<u32>, Option<u64>)>,
+    /// The page each of the portal's requests went to: what follows it goes there too.
+    asked: HashMap<u32, u64>,
 }
 
 impl State {
@@ -366,25 +400,24 @@ impl State {
     /// 10 minutes). The same one again while it is good, so the URL stays the same and opening it
     /// again brings back the same window.
     fn ticket(&mut self, run: Option<u32>) -> String {
-        self.tickets.retain(|(_, r, until)| *until > Instant::now() && r.map_or(true, |p| Path::new(&format!("/proc/{p}")).exists()));
-        if let Some((t, ..)) = self.tickets.iter().find(|(_, r, _)| *r == run) {
+        let mut tickets = live_tickets();
+        if let Some((t, ..)) = tickets.iter().find(|(_, r, _)| *r == run) {
             return t.clone();
         }
         let t = auth::random_token(16);
         let life = if run.is_some() { Duration::from_secs(24 * 3600) } else { Duration::from_secs(600) };
-        self.tickets.push((t.clone(), run, Instant::now() + life));
+        tickets.push((t.clone(), run, Instant::now() + life));
         t
     }
 
     /// Whether `t` is a ticket handed out and still good; for `run`, that run's.
     fn ticket_valid(&mut self, t: &str, run: Option<u32>) -> bool {
-        self.tickets.retain(|(_, r, until)| *until > Instant::now() && r.map_or(true, |p| Path::new(&format!("/proc/{p}")).exists()));
-        self.tickets.iter().any(|(v, r, _)| auth::same(v, t) && (run.is_none() || *r == run))
+        live_tickets().iter().any(|(v, r, _)| auth::same(v, t) && (run.is_none() || *r == run))
     }
 
     /// The origin pages are served in.
     fn origin(&self) -> String {
-        format!("http://{}.localhost:{}", web::origin_label(), proto::server_tcp_port(proto::real_uid()))
+        served_origin()
     }
 
     /// Whether any page is linked.
@@ -396,8 +429,7 @@ impl State {
         self.primary.and_then(|id| self.links.iter().find(|l| l.id == id)).or_else(|| self.links.last())
     }
 
-    /// What is not about one window (sound, the portal, notifications, the cursor): to the page
-    /// last used.
+    /// What is not about one window nor from one program (the clipboard): to the page last used.
     pub fn send_app(&mut self, msg: &ToApp) {
         self.send_app_with(msg, &[]);
     }
@@ -428,18 +460,80 @@ impl State {
         }
     }
 
-    /// The page for a run: its own window, else (for what did not ask for one) the page showing
-    /// everything else, else the page last used. None: not shown (yet).
-    fn route(&self, run: Option<u32>) -> Option<u64> {
-        if let Some(r) = run {
-            if let Some(l) = self.links.iter().rev().find(|l| l.run == Some(r)) {
-                return Some(l.id);
+    /// What a Linux process sent (sound, the portal's requests, notifications): to the page
+    /// showing its run. A sound stream stays on the page it was opened on, and what follows a
+    /// request (a picked file's contents, the rest of a save) goes where the request went.
+    pub fn send_from(&mut self, pid: Option<u32>, msg: &ToApp, payload: &[u8]) {
+        let to = match msg {
+            ToApp::AudioOpen { stream, .. } => {
+                let to = self.page_for(pid);
+                self.sound.insert(*stream, (pid, to));
+                to
             }
-            if icons::wants_own_window(r) {
-                return None;
-            }
+            ToApp::AudioData { stream, .. } | ToApp::AudioCork { stream, .. } => self.sound.get(stream).and_then(|s| s.1),
+            ToApp::AudioClose { stream } => self.sound.remove(stream).and_then(|s| s.1),
+            _ => match portal_request(msg) {
+                Some(r) => {
+                    let follow_up = matches!(msg, ToApp::FetchFile { .. } | ToApp::WriteFile { offset: 1.., .. });
+                    let to = self.asked.get(&r).copied().or_else(|| if follow_up { None } else { self.page_for(pid) });
+                    match to {
+                        Some(id) => {
+                            self.asked.insert(r, id);
+                        }
+                        // No page to answer it: the asker gives up now rather than at its timeout.
+                        None => portal::forget(r),
+                    }
+                    to
+                }
+                None => self.page_for(pid),
+            },
+        };
+        if let Some(id) = to {
+            self.send_to(id, msg, payload);
         }
-        self.links.iter().rev().find(|l| l.run.is_none()).map(|l| l.id).or_else(|| self.primary_link().map(|l| l.id))
+    }
+
+    /// The page for what a process asks: its run's, else the page last used.
+    fn page_for(&self, pid: Option<u32>) -> Option<u64> {
+        let run = pid.and_then(icons::launch_of_pid);
+        pick_page(&self.pages(), self.primary, run, run.map_or(false, icons::wants_own_window), run.is_some())
+    }
+
+    /// The linked pages, oldest first: their link and the run each shows.
+    fn pages(&self) -> Vec<(u64, Option<u32>)> {
+        self.links.iter().map(|l| (l.id, l.run)).collect()
+    }
+
+    /// The page for a run's windows: its own window, else (for what did not ask for one) the page
+    /// showing everything else, else the page last used. None: not shown (yet).
+    fn route(&self, run: Option<u32>) -> Option<u64> {
+        pick_page(&self.pages(), self.primary, run, run.map_or(false, icons::wants_own_window), true)
+    }
+
+    /// Sound streams whose page is not the one that should play them now (a page linked or went,
+    /// or the page last used changed) start over there: closed on the old page, opened again on
+    /// the new one by the sound thread.
+    fn reroute_sound(&mut self) {
+        let mut moved = Vec::new();
+        let mut closes = Vec::new();
+        let streams: Vec<(u32, Option<u32>, Option<u64>)> = self.sound.iter().map(|(s, (p, l))| (*s, *p, *l)).collect();
+        for (stream, pid, old) in streams {
+            let to = self.page_for(pid);
+            if to == old {
+                continue;
+            }
+            self.sound.insert(stream, (pid, to));
+            if let Some(l) = old {
+                closes.push((l, stream));
+            }
+            moved.push(stream);
+        }
+        for (l, stream) in closes {
+            self.send_to(l, &ToApp::AudioClose { stream }, &[]);
+        }
+        if !moved.is_empty() {
+            audio::reopen(moved);
+        }
     }
 
     /// A window starts over on another page (or none): what the old one showed is forgotten.
@@ -483,6 +577,7 @@ impl State {
             self.unshow(win);
             self.announce(win);
         }
+        self.reroute_sound();
     }
 
     fn drop_link(&mut self, id: u64) {
@@ -491,6 +586,12 @@ impl State {
             self.primary = self.links.last().map(|l| l.id);
         }
         portal::app_changed(self.primary_link().map_or(0, |l| l.version));
+        // What the page was asked will not be answered (a file picker it showed, a file to open).
+        let unanswered: Vec<u32> = self.asked.iter().filter(|(_, l)| **l == id).map(|(r, _)| *r).collect();
+        for r in unanswered {
+            self.asked.remove(&r);
+            portal::forget(r);
+        }
         let wins: Vec<u32> = self.windows.iter().filter(|(_, w)| w.link == Some(id)).map(|(k, _)| *k).collect();
         for win in wins {
             self.unshow(win);
@@ -724,7 +825,6 @@ impl State {
                 if let Some((name, icon_png_b64)) = run.and_then(icons::launch_info) {
                     self.send_to(id, &ToApp::Run { name, icon_png_b64 }, &[]);
                 }
-                audio::link_up();
                 if let Some((w, h)) = screen {
                     output::screen_size_hint(self, w, h);
                 }
@@ -746,8 +846,12 @@ impl State {
     }
 
     fn handle_app_message(&mut self, from: u64, msg: ToServer, payload: Vec<u8>) {
-        if matches!(msg, ToServer::Touch { .. } | ToServer::Pointer { .. } | ToServer::Key { .. } | ToServer::Text { .. } | ToServer::Focus { focused: true, .. }) {
+        if matches!(msg, ToServer::Touch { .. } | ToServer::Pointer { .. } | ToServer::Key { .. } | ToServer::Text { .. } | ToServer::Focus { focused: true, .. })
+            && self.primary != Some(from)
+        {
             self.primary = Some(from);
+            // Sound no run claims plays on the page last used.
+            self.reroute_sound();
         }
         if portal::wants(&msg) {
             return portal::from_app(msg, payload);
@@ -866,7 +970,7 @@ impl State {
                 if !self.linked() {
                     Some(no_app())
                 } else {
-                    portal::notify(title, body);
+                    portal::notify(peer_pid(&self.clis[idx].stream), title, body);
                     Some(CliReply::Ok { message: "shown".into() })
                 }
             }
@@ -874,16 +978,18 @@ impl State {
                 Err(e) => Some(CliReply::Error { message: e.to_string() }),
                 Ok(mut stream) => {
                     // A file travels as a descriptor (the CLI may see another filesystem than
-                    // this server, as in a proot distro); anything else is a URI.
+                    // this server, as in a proot distro); anything else is a URI. Either goes to
+                    // the page of the program that ran `lindroids open` (xdg-open).
                     let file = fds.into_iter().next();
+                    let pid = peer_pid(&stream);
                     self.clis[idx].waiting = Some(Waiting::Detached);
                     std::thread::spawn(move || {
                         let r = match file {
                             Some(fd) => {
                                 let name = Path::new(&target).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| portal::fd_name(&fd));
-                                portal::open_file(std::fs::File::from(fd), name)
+                                portal::open_file(pid, std::fs::File::from(fd), name)
                             }
-                            None => portal::open_uri(target),
+                            None => portal::open_uri(pid, target),
                         };
                         let reply = match r {
                             Ok(()) => CliReply::Ok { message: "opened".into() },
@@ -895,17 +1001,17 @@ impl State {
                     None
                 }
             },
-            CliRequest::PickFolder => {
-                if !self.linked() {
-                    Some(no_app())
-                } else {
+            // On the page of the program that asked.
+            CliRequest::PickFolder => match self.page_for(peer_pid(&self.clis[idx].stream)) {
+                None => Some(no_app()),
+                Some(page) => {
                     self.next_request += 1;
                     let r = self.next_request;
-                    self.send_app(&ToApp::PickFolder { request: r });
+                    self.send_to(page, &ToApp::PickFolder { request: r }, &[]);
                     self.clis[idx].waiting = Some(Waiting::Folder(r));
                     None
                 }
-            }
+            },
         };
         if let Some(r) = reply {
             let c = &mut self.clis[idx];
@@ -983,11 +1089,21 @@ pub fn connect_abstract(name: &str) -> std::io::Result<UnixStream> {
     }
 }
 
-pub fn peer_uid(s: &UnixStream) -> u32 {
+fn peer_cred(s: &UnixStream) -> libc::ucred {
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred as *mut _ as *mut _, &mut len) };
-    cred.uid
+    cred
+}
+
+pub fn peer_uid(s: &UnixStream) -> u32 {
+    peer_cred(s).uid
+}
+
+/// The process at the other end of a Unix socket (as it was when it connected), if known.
+pub fn peer_pid(s: &UnixStream) -> Option<u32> {
+    let pid = peer_cred(s).pid;
+    (pid > 0).then_some(pid as u32)
 }
 
 // ------------------------------------------------------------------ main loop
@@ -1080,7 +1196,6 @@ pub fn run(cfg: Config) -> i32 {
         primary: None,
         pending: Vec::new(),
         relay_key,
-        tickets: Vec::new(),
         pairing_code,
         pairing_failures: 0,
         seat: seat::Seat::default(),
@@ -1094,6 +1209,8 @@ pub fn run(cfg: Config) -> i32 {
         clis: Vec::new(),
         next_request: 0,
         clients: 0,
+        sound: HashMap::new(),
+        asked: HashMap::new(),
     };
     surface::register_globals(&dh);
     shell::register_globals(&dh);
@@ -1208,6 +1325,7 @@ pub fn run(cfg: Config) -> i32 {
                 match item {
                     Inbox::ToApp(m) => state.send_app(&m),
                     Inbox::WithPayload(m, p) => state.send_app_with(&m, &p),
+                    Inbox::From(pid, m, p) => state.send_from(pid, &m, &p),
                 }
             }
         }
@@ -1360,6 +1478,37 @@ pub fn run(cfg: Config) -> i32 {
     0
 }
 
+/// Which page something goes to, among the linked ones (`pages`: link and the run each shows,
+/// oldest first): its run's own page; nothing (yet) for a run that wants one and has none; else
+/// the page showing everything else if `shared_first`, else the page last used (`primary`).
+fn pick_page(pages: &[(u64, Option<u32>)], primary: Option<u64>, run: Option<u32>, own_window: bool, shared_first: bool) -> Option<u64> {
+    if let Some(r) = run {
+        if let Some((id, _)) = pages.iter().rev().find(|(_, p)| *p == Some(r)) {
+            return Some(*id);
+        }
+        if own_window {
+            return None;
+        }
+    }
+    let last_used = primary.filter(|p| pages.iter().any(|(id, _)| id == p)).or_else(|| pages.last().map(|(id, _)| *id));
+    let shared = pages.iter().rev().find(|(_, p)| p.is_none()).map(|(id, _)| *id);
+    if shared_first {
+        shared.or(last_used)
+    } else {
+        last_used
+    }
+}
+
+/// The portal's request a message is part of.
+fn portal_request(msg: &ToApp) -> Option<u32> {
+    let r = match msg {
+        ToApp::OpenUri { request, .. } | ToApp::OpenFile { request, .. } | ToApp::FetchFile { request, .. } | ToApp::WriteFile { request, .. } => *request,
+        ToApp::PickFiles(p) => p.request,
+        _ => return None,
+    };
+    (r >= portal::FIRST_REQUEST).then_some(r)
+}
+
 /// The run a page shows: `?run=<pid>` in its URL.
 fn run_of_page(page: &str) -> Option<u32> {
     let query = page.split_once('?')?.1;
@@ -1459,7 +1608,7 @@ fn render_dirty(state: &mut State) {
 
 #[cfg(test)]
 mod tests {
-    use super::run_of_page;
+    use super::{pick_page, run_of_page};
 
     #[test]
     fn pages_name_their_run() {
@@ -1468,5 +1617,27 @@ mod tests {
         assert_eq!(run_of_page("/?window"), None);
         assert_eq!(run_of_page("/"), None);
         assert_eq!(run_of_page("/?run=x"), None);
+    }
+
+    #[test]
+    fn requests_go_to_the_page_of_the_asking_run() {
+        // Link 1 shows everything else, 2 shows run 100, 3 shows run 200; 3 was used last.
+        let pages = [(1, None), (2, Some(100)), (3, Some(200))];
+        let last = Some(3);
+        // A run's own page, whichever page was used last.
+        assert_eq!(pick_page(&pages, last, Some(100), true, true), Some(2));
+        assert_eq!(pick_page(&pages, Some(1), Some(200), true, true), Some(3));
+        // A run that wants a page of its own and has none yet: nowhere until it links.
+        assert_eq!(pick_page(&pages, last, Some(300), true, true), None);
+        // A run started into the shared page: that page.
+        assert_eq!(pick_page(&pages, last, Some(400), false, true), Some(1));
+        // What no run claims: the page last used, or the newest if that one went.
+        assert_eq!(pick_page(&pages, last, None, false, false), Some(3));
+        assert_eq!(pick_page(&pages, Some(9), None, false, false), Some(3));
+        // Windows no run claims go to the shared page.
+        assert_eq!(pick_page(&pages, last, None, false, true), Some(1));
+        // No shared page: the page last used.
+        assert_eq!(pick_page(&pages[1..], Some(2), Some(400), false, true), Some(2));
+        assert_eq!(pick_page(&[], None, Some(100), false, true), None);
     }
 }

@@ -10,6 +10,7 @@ mod run;
 mod sandbox;
 mod elf;
 mod integration;
+mod open;
 mod setup_x11;
 mod shortcut;
 mod update;
@@ -37,6 +38,8 @@ USAGE
                                      distro (yours or a new Debian), or the system's package
   lindroids update [--check]         update lindroids to the latest release
   lindroids open <file|URI>          open with Android (what xdg-open does for Linux programs)
+  lindroids open --linux <file>      open in the Linux program for its type, in a window of its own
+        [--with <program>] [--choose] [--list]   (asks once when several can; --choose asks again)
   lindroids notify <title> [body]    an Android notification
   lindroids info [--json]            Android's theme, accent, network, memory, battery
   lindroids displays [forget <id>]    the browsers paired with this server
@@ -49,6 +52,7 @@ RUN OPTIONS
   --icon <file>       icon (PNG or SVG)
   -e, --env K=V       extra environment (repeatable)
   --touch pointer     treat touch as a mouse for this program's windows
+  --bind <folder>     show a folder at the same path inside a distro or Flatpak
 
 EXPORT OPTIONS (as run, plus)
   --id <id>           shortcut id (default: derived from the program)
@@ -70,6 +74,11 @@ the program ending leaves its window saying so. Elsewhere the windows show in a 
 The first time, the page pairs with a ticket in its URL; a page opened by hand asks for the code
 `lindroids pair` shows. `lindroids export` puts a program on the home screen (a shortcut, with the
 program's icon, that has Termux start it, or bring back its window).
+
+Files from Android open in Linux programs: open a file with Termux in the Files app, or share it to
+Termux, and tap \"Edit\". Termux saves it in ~/downloads and runs ~/bin/termux-file-editor, which
+`lindroids setup` and `lindroids export` install: it runs `lindroids open --linux <file>`. The
+choice of program per file type is kept in ~/.config/mimeapps.list.
 ";
 
 fn main() {
@@ -102,6 +111,11 @@ fn main() {
         // Older releases run `<new binary> update --app-only` after upgrading; there is no app now.
         Some("update") if args.iter().any(|a| a == "--app-only") => update::cmd_update_app_only(),
         Some("update") => update::cmd_update(&args[1..]),
+        // `open` alone hands a file or link to Android (what Linux programs' xdg-open runs);
+        // `--linux`/`--with` open a file in a Linux program here instead.
+        Some("open") if args[1..].iter().any(|a| matches!(a.as_str(), "--linux" | "--with" | "--choose" | "--list") || a.starts_with("--with=")) => {
+            open::cmd_open_linux(&args[1..])
+        }
         Some("open") => integration::cmd_open(&args[1..]),
         Some("notify") => integration::cmd_notify(&args[1..]),
         Some("info") => integration::cmd_info(&args[1..]),
@@ -157,6 +171,9 @@ fn cmd_server(args: &[String]) -> i32 {
         cfg.sandbox = sandbox::detect().name;
     }
     lindroids_server::stop_on_signals();
+    if let Some(a) = shortcut::AndroidServices::new() {
+        lindroids_server::android::set(Box::new(a));
+    }
     lindroids_server::run(cfg)
 }
 
@@ -381,6 +398,14 @@ pub fn cmd_setup() -> i32 {
         Ok(rt) => rt,
         Err(e) => return fail(&e),
     };
+    // Files opened with or shared to Termux ("Edit") open in Linux programs.
+    if sb.kind == sandbox::Kind::Termux {
+        match shortcut::install_file_editor(&sb) {
+            Ok(true) => println!("Files opened with Termux or shared to it (\"Edit\") now open in Linux programs (~/bin/termux-file-editor)."),
+            Ok(false) => {}
+            Err(e) => eprintln!("lindroids: files shared to Termux will not open in Linux programs: {e}"),
+        }
+    }
     if ensure_display(&sb, &rt, false) {
         println!("Ready: windows show in the browser ({}). Try: lindroids run <program>", shown_origin(&rt));
         0

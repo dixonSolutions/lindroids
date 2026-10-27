@@ -17,6 +17,8 @@ pub struct Opts {
     pub icon: Option<PathBuf>,
     pub env: Vec<(String, String)>,
     pub id: Option<String>,
+    /// Folders a distro or a Flatpak is shown at their own path (`--bind`).
+    pub binds: Vec<PathBuf>,
     pub command: Vec<String>,
 }
 
@@ -56,6 +58,7 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
             "--name" => o.name = Some(value()?),
             "--icon" => o.icon = Some(PathBuf::from(value()?)),
             "--id" => o.id = Some(value()?),
+            "--bind" => o.binds.push(PathBuf::from(value()?)),
             "-e" | "--env" => {
                 let kv = value()?;
                 let (k, v) = kv.split_once('=').ok_or_else(|| format!("--env wants KEY=VALUE, not {kv:?}"))?;
@@ -77,7 +80,7 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
 
 /// Options of `run` (and `export`) followed by a value.
 pub fn takes_value(opt: &str) -> bool {
-    matches!(opt, "--distro" | "--prootdistro" | "--name" | "--icon" | "--id" | "-e" | "--env")
+    matches!(opt, "--distro" | "--prootdistro" | "--name" | "--icon" | "--id" | "-e" | "--env" | "--bind")
 }
 
 /// `lindroids run "foo --bar"` (one argument with spaces) is a shell command line.
@@ -271,6 +274,9 @@ pub fn build_command(o: &Opts, target: &Target, rt: &Path) -> Result<Command, St
                     // The runtime dir also at the path the server knows it by, so files the portal
                     // hands out (picked documents) are where it says.
                     c.arg("--bind").arg(format!("{}:{}", rt.display(), rt.display()));
+                    for b in &o.binds {
+                        c.arg("--bind").arg(format!("{}:{}", b.display(), b.display()));
+                    }
                     c.arg("--");
                     c.arg("env");
                     for (k, v) in &env {

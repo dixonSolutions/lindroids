@@ -75,13 +75,27 @@ enum NoteOwner {
     Portal { sender: String, id: String },
 }
 
-fn to_app(msg: ToApp, payload: Vec<u8>) {
-    let inbox = if payload.is_empty() { crate::Inbox::ToApp(msg) } else { crate::Inbox::WithPayload(msg, payload) };
-    crate::shared().post(inbox);
+/// To the page showing the run of `pid` (the program that asked), else the page last used.
+fn to_app(pid: Option<u32>, msg: ToApp, payload: Vec<u8>) {
+    crate::shared().post(crate::Inbox::From(pid, msg, payload));
 }
 
-/// Send a request and return the channel its answers arrive on; None without a capable app.
-fn ask(make: impl FnOnce(u32) -> (ToApp, Vec<u8>)) -> Option<(u32, mpsc::Receiver<Answer>)> {
+/// The process behind a bus name (a caller), if the bus knows it. It waits for the bus: never on
+/// the thread that runs the services' calls (the answer would have to come through it).
+pub(crate) fn caller_pid(sender: &str) -> Option<u32> {
+    let name = zbus::names::BusName::try_from(sender).ok()?;
+    zbus::blocking::fdo::DBusProxy::new(conn()?).ok()?.get_connection_unix_process_id(name).ok()
+}
+
+/// To the caller's page, from a service's call: who the caller is is asked on a thread of its own.
+fn from_caller(hdr: &Header<'_>, msg: ToApp) {
+    let sender = hdr.sender().map(|s| s.to_string()).unwrap_or_default();
+    std::thread::spawn(move || to_app(caller_pid(&sender), msg, Vec::new()));
+}
+
+/// Send a request (for `pid`'s page) and return the channel its answers arrive on; None without
+/// a capable app.
+fn ask(pid: Option<u32>, make: impl FnOnce(u32) -> (ToApp, Vec<u8>)) -> Option<(u32, mpsc::Receiver<Answer>)> {
     if shared().app_version.load(Ordering::SeqCst) < 3 {
         return None;
     }
@@ -89,7 +103,7 @@ fn ask(make: impl FnOnce(u32) -> (ToApp, Vec<u8>)) -> Option<(u32, mpsc::Receive
     let (tx, rx) = mpsc::channel();
     shared().waiting.lock().unwrap().insert(r, tx);
     let (m, p) = make(r);
-    to_app(m, p);
+    to_app(pid, m, p);
     Some((r, rx))
 }
 
@@ -101,12 +115,13 @@ fn listen(r: u32) -> mpsc::Receiver<Answer> {
     rx
 }
 
-fn forget(r: u32) {
+/// Done with `r`; or nobody will answer it (its page went away), and whoever waits gives up now.
+pub(crate) fn forget(r: u32) {
     shared().waiting.lock().unwrap().remove(&r);
 }
 
-fn ask_once(make: impl FnOnce(u32) -> (ToApp, Vec<u8>), timeout: Duration) -> Option<Answer> {
-    let (r, rx) = ask(make)?;
+fn ask_once(pid: Option<u32>, make: impl FnOnce(u32) -> (ToApp, Vec<u8>), timeout: Duration) -> Option<Answer> {
+    let (r, rx) = ask(pid, make)?;
     let a = rx.recv_timeout(timeout).ok();
     forget(r);
     a
@@ -433,14 +448,14 @@ impl Settings {
 // ------------------------------------------------------------------ OpenURI
 
 /// Hand a file to Android to open with an app: Lindroids' side of `xdg-open file`.
-pub fn open_file(mut f: std::fs::File, name: String) -> Result<(), String> {
+pub fn open_file(pid: Option<u32>, mut f: std::fs::File, name: String) -> Result<(), String> {
     let mut data = Vec::new();
     Read::by_ref(&mut f).take(MAX_OPEN + 1).read_to_end(&mut data).map_err(|e| e.to_string())?;
     if data.len() as u64 > MAX_OPEN {
         return Err(format!("{name} is too large to hand to Android ({} MB at most)", MAX_OPEN >> 20));
     }
     let len = data.len() as u32;
-    match ask_once(|r| (ToApp::OpenFile { request: r, name, mime: None, len }, data), Duration::from_secs(120)) {
+    match ask_once(pid, |r| (ToApp::OpenFile { request: r, name, mime: None, len }, data), Duration::from_secs(120)) {
         Some(Answer::Open(true)) => Ok(()),
         Some(_) => Err("Android has no app to open it".into()),
         None => Err("no browser page is linked (`lindroids pair`)".into()),
@@ -448,8 +463,8 @@ pub fn open_file(mut f: std::fs::File, name: String) -> Result<(), String> {
 }
 
 /// Lindroids' side of `xdg-open URI`.
-pub fn open_uri(uri: String) -> Result<(), String> {
-    match ask_once(|r| (ToApp::OpenUri { request: r, uri }, Vec::new()), Duration::from_secs(120)) {
+pub fn open_uri(pid: Option<u32>, uri: String) -> Result<(), String> {
+    match ask_once(pid, |r| (ToApp::OpenUri { request: r, uri }, Vec::new()), Duration::from_secs(120)) {
         Some(Answer::Open(true)) => Ok(()),
         Some(_) => Err("Android has no app for it".into()),
         None => Err("no browser page is linked (`lindroids pair`)".into()),
@@ -465,7 +480,7 @@ impl OpenUri {
         let (handle, sender) = request_path(&hdr, &options);
         let h = handle.clone();
         std::thread::spawn(move || {
-            let code = match open_uri(uri) {
+            let code = match open_uri(caller_pid(&sender), uri) {
                 Ok(()) => 0,
                 Err(e) => {
                     warn!("OpenURI: {e}");
@@ -483,7 +498,7 @@ impl OpenUri {
         let fd: std::os::fd::OwnedFd = fd.into();
         std::thread::spawn(move || {
             let name = fd_name(&fd);
-            let code = match open_file(std::fs::File::from(fd), name) {
+            let code = match open_file(caller_pid(&sender), std::fs::File::from(fd), name) {
                 Ok(()) => 0,
                 Err(e) => {
                     warn!("OpenFile: {e}");
@@ -617,7 +632,8 @@ fn readable_path(request: u32, index: u32, f: &PickedFile) -> Result<PathBuf, St
         return Err("no browser page is linked (`lindroids pair`)".into());
     }
     let rx = listen(request);
-    to_app(ToApp::FetchFile { request, index }, Vec::new());
+    // To the page that showed the picker.
+    to_app(None, ToApp::FetchFile { request, index }, Vec::new());
     let result = loop {
         match rx.recv_timeout(Duration::from_secs(60)) {
             Ok(Answer::Chunk { error: Some(e), .. }) => break Err(e),
@@ -637,7 +653,7 @@ fn readable_path(request: u32, index: u32, f: &PickedFile) -> Result<PathBuf, St
 }
 
 /// After a save into a copy, write it back into the picked document whenever it changes.
-fn write_back(staging: PathBuf, uri: String) {
+fn write_back(pid: Option<u32>, staging: PathBuf, uri: String) {
     std::thread::spawn(move || {
         let stamp = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.modified().ok(), m.len()));
         let mut last = stamp(&staging);
@@ -658,7 +674,7 @@ fn write_back(staging: PathBuf, uri: String) {
             let chunks: Vec<&[u8]> = if data.is_empty() { vec![&[][..]] } else { data.chunks(1 << 20).collect() };
             let n = chunks.len();
             let mut offset = 0u64;
-            let (r, rx) = match ask(|r| {
+            let (r, rx) = match ask(pid, |r| {
                 let c = chunks[0];
                 (ToApp::WriteFile { request: r, uri: uri.clone(), offset: 0, last: n == 1, len: c.len() as u32 }, c.to_vec())
             }) {
@@ -667,7 +683,7 @@ fn write_back(staging: PathBuf, uri: String) {
             };
             offset += chunks[0].len() as u64;
             for (i, c) in chunks.iter().enumerate().skip(1) {
-                to_app(ToApp::WriteFile { request: r, uri: uri.clone(), offset, last: i + 1 == n, len: c.len() as u32 }, c.to_vec());
+                to_app(pid, ToApp::WriteFile { request: r, uri: uri.clone(), offset, last: i + 1 == n, len: c.len() as u32 }, c.to_vec());
                 offset += c.len() as u64;
             }
             match rx.recv_timeout(Duration::from_secs(120)) {
@@ -696,7 +712,8 @@ impl FileChooser {
             name: opt_str(&options, "current_name"),
         };
         std::thread::spawn(move || {
-            let Some((request, rx)) = ask(|r| (ToApp::PickFiles(PickFiles { request: r, ..req }), Vec::new())) else {
+            let pid = caller_pid(&sender);
+            let Some((request, rx)) = ask(pid, |r| (ToApp::PickFiles(PickFiles { request: r, ..req }), Vec::new())) else {
                 return respond(&sender, &h, 2, HashMap::new());
             };
             let answer = rx.recv_timeout(Duration::from_secs(3600));
@@ -725,7 +742,7 @@ impl FileChooser {
                         if std::fs::create_dir_all(&dir).is_err() || std::fs::File::create(&p).is_err() {
                             return respond(&sender, &h, 2, HashMap::new());
                         }
-                        write_back(p.clone(), f.uri.clone());
+                        write_back(pid, p.clone(), f.uri.clone());
                         p
                     }
                 };
@@ -794,10 +811,12 @@ fn note_closed(id: &str, reason: u32) {
     }
 }
 
-/// `lindroids notify`.
-pub fn notify(title: String, body: String) {
+/// `lindroids notify` (run by `pid`).
+pub fn notify(pid: Option<u32>, title: String, body: String) {
     let n = NEXT_NOTE.fetch_add(1, Ordering::SeqCst);
-    to_app(ToApp::Notify(Notification { id: format!("cli-{n}"), app: "Terminal".into(), title, body, urgency: 1, ..Default::default() }), Vec::new());
+    let note = Notification { id: format!("cli-{n}"), app: "Terminal".into(), title, body, urgency: 1, ..Default::default() };
+    to_android(pid, &note);
+    to_app(pid, ToApp::Notify(note), Vec::new());
 }
 
 struct Notifications;
@@ -807,6 +826,7 @@ impl Notifications {
     #[allow(clippy::too_many_arguments)]
     fn notify(
         &self,
+        #[zbus(header)] hdr: Header<'_>,
         app_name: String,
         replaces_id: u32,
         app_icon: String,
@@ -826,12 +846,17 @@ impl Notifications {
         // Pairs of (key, label); "default" is the notification's own tap.
         let buttons = actions.chunks(2).filter(|p| p.len() == 2 && p[0] != "default").map(|p| (p[0].clone(), p[1].clone())).collect();
         shared().notes.lock().unwrap().insert(id.clone(), NoteOwner::Fdo(n));
-        to_app(ToApp::Notify(Notification { id, app: app_name, title: summary, body: strip_markup(&body), icon_png_b64: icon, actions: buttons, urgency }), Vec::new());
+        let note = Notification { id, app: app_name, title: summary, body: strip_markup(&body), icon_png_b64: icon, actions: buttons, urgency };
+        notify_from(&hdr, note);
         n
     }
 
-    fn close_notification(&self, id: u32) {
-        to_app(ToApp::CloseNotification { id: format!("fdo-{id}") }, Vec::new());
+    fn close_notification(&self, #[zbus(header)] hdr: Header<'_>, id: u32) {
+        let id = format!("fdo-{id}");
+        if let Some(a) = crate::android::get() {
+            a.cancel(crate::android::note_id(&id));
+        }
+        from_caller(&hdr, ToApp::CloseNotification { id });
     }
 
     fn get_capabilities(&self) -> Vec<String> {
@@ -847,6 +872,41 @@ impl Notifications {
 
     #[zbus(signal)]
     async fn action_invoked(emitter: &SignalEmitter<'_>, id: u32, action_key: &str) -> zbus::Result<()>;
+}
+
+/// A program's notification also in Android's shade, where the server is on Android: the page
+/// shows its toasts only while it is on screen.
+fn to_android(pid: Option<u32>, note: &Notification) {
+    let Some(a) = crate::android::get() else { return };
+    // The program's run: its window to bring back on a tap, its icon and name.
+    let (url, run_icon, run_name) = match pid.and_then(crate::run_of_pid) {
+        Some((url, icon, name)) => (Some(url), icon, name),
+        None => (None, None, String::new()),
+    };
+    let app = if note.app.is_empty() { run_name } else { note.app.clone() };
+    let (app, title) = match (app.as_str(), note.title.as_str()) {
+        ("", t) => (String::new(), t.to_string()),
+        (app, "") => (app.to_string(), app.to_string()),
+        (app, t) => (app.to_string(), t.to_string()),
+    };
+    a.notify(crate::android::Notice {
+        id: crate::android::note_id(&note.id),
+        app,
+        title,
+        body: note.body.clone(),
+        icon: note.icon_png_b64.as_deref().or(run_icon.as_deref()).and_then(crate::android::icon_file),
+        url,
+    });
+}
+
+/// A program's notification, to Android and to its page, once the bus says which program it is.
+fn notify_from(hdr: &Header<'_>, note: Notification) {
+    let sender = hdr.sender().map(|s| s.to_string()).unwrap_or_default();
+    std::thread::spawn(move || {
+        let pid = caller_pid(&sender);
+        to_android(pid, &note);
+        to_app(pid, ToApp::Notify(note), Vec::new());
+    });
 }
 
 /// Notification bodies may carry a little markup; Android shows plain text.
@@ -885,23 +945,25 @@ impl PortalNotification {
             .filter_map(|b| Some((opt_str(b, "action")?, opt_str(b, "label")?)))
             .collect();
         shared().notes.lock().unwrap().insert(key.clone(), NoteOwner::Portal { sender, id });
-        to_app(
-            ToApp::Notify(Notification {
-                id: key,
-                app: String::new(),
-                title: opt_str(&notification, "title").unwrap_or_default(),
-                body: opt_str(&notification, "body").unwrap_or_default(),
-                icon_png_b64: None,
-                actions: buttons,
-                urgency,
-            }),
-            Vec::new(),
-        );
+        let note = Notification {
+            id: key,
+            app: String::new(),
+            title: opt_str(&notification, "title").unwrap_or_default(),
+            body: opt_str(&notification, "body").unwrap_or_default(),
+            icon_png_b64: None,
+            actions: buttons,
+            urgency,
+        };
+        notify_from(&hdr, note);
     }
 
     fn remove_notification(&self, #[zbus(header)] hdr: Header<'_>, id: String) {
         let sender = hdr.sender().map(|s| s.to_string()).unwrap_or_default();
-        to_app(ToApp::CloseNotification { id: format!("portal-{sender}-{id}") }, Vec::new());
+        let id = format!("portal-{sender}-{id}");
+        if let Some(a) = crate::android::get() {
+            a.cancel(crate::android::note_id(&id));
+        }
+        from_caller(&hdr, ToApp::CloseNotification { id });
     }
 
     #[zbus(signal)]

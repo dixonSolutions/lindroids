@@ -1,10 +1,19 @@
 package lindroids;
 
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.pm.ShortcutInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Rect;
 import android.graphics.drawable.Icon;
 import android.os.IBinder;
 import android.os.Process;
@@ -25,6 +34,9 @@ import java.util.concurrent.TimeUnit;
  *   app_process -Djava.class.path=shortcut.dex /system/bin lindroids.Shortcut \
  *       pin &lt;package&gt; &lt;id&gt; &lt;label&gt; &lt;icon.png&gt; &lt;intent action&gt; &lt;component&gt; &lt;mime type&gt; &lt;extra text&gt;
  *   app_process ... lindroids.Shortcut remove &lt;package&gt; &lt;id&gt;
+ *   app_process ... lindroids.Shortcut open &lt;package&gt; new|raise &lt;url&gt; &lt;browser&gt;...
+ *   app_process ... lindroids.Shortcut notify &lt;package&gt; &lt;id&gt; &lt;program&gt; &lt;title&gt; &lt;text&gt; &lt;icon.png&gt; &lt;url&gt; &lt;browser&gt;...
+ *   app_process ... lindroids.Shortcut cancel &lt;package&gt; &lt;id&gt;
  * </pre>
  *
  * Prints "ok", or "error: ..." and exits 1. Android's binder interfaces are hidden API, reached by
@@ -62,9 +74,16 @@ public final class Shortcut {
                 remove(a[1], a[2]);
             } else if (a.length >= 5 && a[0].equals("open")) {
                 System.out.println("browser " + open(a[1], a[2], a[3], Arrays.copyOfRange(a, 4, a.length)));
+            } else if (a.length >= 8 && a[0].equals("notify")) {
+                post(a[1], Integer.parseInt(a[2]), a[3], a[4], a[5], a[6], a[7], Arrays.copyOfRange(a, 8, a.length));
+            } else if (a.length >= 3 && a[0].equals("pinned")) {
+                System.out.println("pinned " + pinned(service(), a[1], a[2]));
+            } else if (a.length >= 3 && a[0].equals("cancel")) {
+                cancel(a[1], Integer.parseInt(a[2]));
             } else {
                 throw new IllegalArgumentException("usage: pin <package> <id> <label> <icon> <action> <component> <type> <text> | remove <package> <id>"
-                        + " | open <package> new|raise <url> <browser>...");
+                        + " | open <package> new|raise <url> <browser>... | notify <package> <id> <program> <title> <text> <icon> <url> <browser>..."
+                        + " | cancel <package> <id> | pinned <package> <id>");
             }
             System.out.println("ok");
             System.exit(0);
@@ -140,7 +159,7 @@ public final class Shortcut {
                 .setLongLabel(label)
                 .setIntent(i);
         Bitmap icon = iconPath.isEmpty() ? null : BitmapFactory.decodeFile(iconPath);
-        if (icon != null) b.setIcon(Icon.createWithBitmap(icon));
+        if (icon != null) b.setIcon(Icon.createWithAdaptiveBitmap(adaptive(icon)));
         ShortcutInfo s = b.build();
 
         Object svc = service();
@@ -158,8 +177,36 @@ public final class Shortcut {
         } catch (Exception ignored) {
             // Not pinned yet, or a release where this takes other arguments: pin it below.
         }
+        // On the home screen already: updated above. Asking again would add a second icon.
+        if (pinned(svc, pkg, id)) {
+            System.out.println("updated");
+            return;
+        }
         Object r = call(svc, "requestPinShortcut", pkg, s, userId());
         if (Boolean.FALSE.equals(r)) throw new IllegalStateException("the launcher does not take pinned shortcuts");
+    }
+
+    /** Whether shortcut {@code id} is pinned and enabled (FLAG_MATCH_PINNED = 4; before Android 11, getPinnedShortcuts). */
+    static boolean pinned(Object svc, String pkg, String id) {
+        Object r;
+        try {
+            r = call(svc, "getShortcuts", pkg, 4, userId());
+        } catch (Exception e) {
+            try {
+                r = call(svc, "getPinnedShortcuts", pkg, userId());
+            } catch (Exception e2) {
+                return false;
+            }
+        }
+        try {
+            for (Object o : (List<?>) r.getClass().getMethod("getList").invoke(r)) {
+                ShortcutInfo si = (ShortcutInfo) o;
+                if (si.getId().equals(id) && si.isEnabled()) return true;
+            }
+        } catch (Exception ignored) {
+            // An answer of another shape: ask the launcher.
+        }
+        return false;
     }
 
     /**
@@ -182,19 +229,133 @@ public final class Shortcut {
         if (mode.equals("new")) flags |= Intent.FLAG_ACTIVITY_MULTIPLE_TASK;
         String last = "no browser given";
         for (String browser : browsers) {
-            Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
-            i.setPackage(browser);
-            i.addFlags(flags);
-            android.os.Bundle extras = new android.os.Bundle();
-            extras.putBinder("android.support.customtabs.extra.SESSION", null);
-            i.putExtras(extras);
-            Object r = call(atm, "startActivity", pkg, i);
+            Object r = call(atm, "startActivity", pkg, windowIntent(url, browser, flags));
             // ActivityManager.START_SUCCESS and the other non-negative codes (delivered to the top,
             // task brought to the front) all mean the window is there.
             if (r instanceof Integer && (Integer) r >= 0) return browser;
             last = browser + ": start result " + r;
         }
         throw new IllegalStateException(last);
+    }
+
+    /**
+     * A program's icon as an adaptive icon, so the launcher fills its shape with it as it does for
+     * apps, instead of shrinking a plain bitmap into a white disc. Linux icons are drawn with their
+     * own margins, on transparency: what they draw (margins cut off) goes on a pale backdrop of
+     * its own colour, 50 units across in the middle of the 108-unit canvas, of which launcher
+     * shapes show the middle 72.
+     */
+    static Bitmap adaptive(Bitmap src) {
+        Rect drawn = opaqueBounds(src);
+        int size = 432;
+        Bitmap out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(out);
+        c.drawColor(backdrop(src));
+        int box = size * 50 / 108;
+        float k = Math.min((float) box / drawn.width(), (float) box / drawn.height());
+        int w = Math.round(drawn.width() * k), h = Math.round(drawn.height() * k);
+        Rect dst = new Rect((size - w) / 2, (size - h) / 2, (size - w) / 2 + w, (size - h) / 2 + h);
+        c.drawBitmap(src, drawn, dst, new Paint(Paint.FILTER_BITMAP_FLAG | Paint.ANTI_ALIAS_FLAG));
+        return out;
+    }
+
+    /** Where the icon draws anything (alpha above a trace); the whole bitmap if nowhere. */
+    static Rect opaqueBounds(Bitmap b) {
+        int l = b.getWidth(), t = b.getHeight(), r = -1, bt = -1;
+        for (int y = 0; y < b.getHeight(); y++) {
+            for (int x = 0; x < b.getWidth(); x++) {
+                if (Color.alpha(b.getPixel(x, y)) <= 16) continue;
+                l = Math.min(l, x); t = Math.min(t, y); r = Math.max(r, x); bt = Math.max(bt, y);
+            }
+        }
+        return r < 0 ? new Rect(0, 0, b.getWidth(), b.getHeight()) : new Rect(l, t, r + 1, bt + 1);
+    }
+
+    /** The icon's average opaque colour, mixed mostly with white. */
+    static int backdrop(Bitmap b) {
+        long r = 0, g = 0, bl = 0, n = 0;
+        int step = Math.max(1, Math.min(b.getWidth(), b.getHeight()) / 32);
+        for (int y = 0; y < b.getHeight(); y += step) {
+            for (int x = 0; x < b.getWidth(); x += step) {
+                int p = b.getPixel(x, y);
+                if (Color.alpha(p) < 200) continue;
+                r += Color.red(p); g += Color.green(p); bl += Color.blue(p); n++;
+            }
+        }
+        if (n == 0) return Color.WHITE;
+        float keep = 0.3f;
+        return Color.rgb(Math.round(255 - (255 - r / n) * keep), Math.round(255 - (255 - g / n) * keep), Math.round(255 - (255 - bl / n) * keep));
+    }
+
+    /**
+     * The terminal app's own Context (resources, application info), which Notification.Builder and
+     * PendingIntent need: made from the system context app_process can create, and accepted by
+     * Android's services because this process has the terminal app's uid.
+     */
+    static Context appContext(String pkg) throws Exception {
+        Class<?> at = Class.forName("android.app.ActivityThread");
+        Object thread = at.getMethod("systemMain").invoke(null);
+        Context sys = (Context) at.getMethod("getSystemContext").invoke(thread);
+        return sys.createPackageContext(pkg, Context.CONTEXT_IGNORE_SECURITY);
+    }
+
+    static Object notificationService() throws Exception {
+        Class<?> sm = Class.forName("android.os.ServiceManager");
+        IBinder b = (IBinder) sm.getMethod("getService", String.class).invoke(null, "notification");
+        return Class.forName("android.app.INotificationManager$Stub").getMethod("asInterface", IBinder.class).invoke(null, b);
+    }
+
+    static final String CHANNEL = "lindroids";
+
+    /**
+     * Posts a program's notification as the terminal app's (Android shows the terminal app as its
+     * source, with the program's name and icon). Tapping it brings back the program's window:
+     * {@code url} in the first of {@code browsers} installed, as {@code open raise} does.
+     */
+    static void post(String pkg, int id, String program, String title, String text, String iconPath, String url, String[] browsers) throws Exception {
+        Context ctx = appContext(pkg);
+        Object nm = notificationService();
+        NotificationChannel ch = new NotificationChannel(CHANNEL, "Linux programs", NotificationManager.IMPORTANCE_DEFAULT);
+        Object list = Class.forName("android.content.pm.ParceledListSlice").getConstructor(List.class).newInstance(Arrays.asList(ch));
+        call(nm, "createNotificationChannels", pkg, list);
+        Notification.Builder b = new Notification.Builder(ctx, CHANNEL)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(new Notification.BigTextStyle().bigText(text))
+                .setAutoCancel(true)
+                .setShowWhen(true);
+        if (!program.isEmpty() && !program.equals(title)) b.setSubText(program);
+        Bitmap icon = iconPath.isEmpty() ? null : BitmapFactory.decodeFile(iconPath);
+        if (icon != null) {
+            b.setLargeIcon(icon);
+            b.setSmallIcon(Icon.createWithBitmap(icon));
+        } else {
+            b.setSmallIcon(Icon.createWithResource("android", android.R.drawable.stat_notify_chat));
+        }
+        if (!url.isEmpty()) {
+            for (String browser : browsers) {
+                Intent i = windowIntent(url, browser, Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
+                if (ctx.getPackageManager().resolveActivity(i, 0) == null) continue;
+                b.setContentIntent(PendingIntent.getActivity(ctx, id, i, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
+                break;
+            }
+        }
+        call(nm, "enqueueNotificationWithTag", pkg, pkg, CHANNEL, id, b.build(), userId());
+    }
+
+    static void cancel(String pkg, int id) throws Exception {
+        call(notificationService(), "cancelNotificationWithTag", pkg, pkg, CHANNEL, id, userId());
+    }
+
+    /** A Custom Tab of {@code browser} showing {@code url}, without a session (see open). */
+    static Intent windowIntent(String url, String browser, int flags) {
+        Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+        i.setPackage(browser);
+        i.addFlags(flags);
+        android.os.Bundle extras = new android.os.Bundle();
+        extras.putBinder("android.support.customtabs.extra.SESSION", null);
+        i.putExtras(extras);
+        return i;
     }
 
     /** A pinned shortcut cannot be taken off the home screen by its app, only disabled. */

@@ -9,7 +9,8 @@
 //!
 //! Everything runs on one thread of its own with its own poll loop, so a busy compositor never
 //! makes sound skip and sound never stalls the compositor. Data goes to the app through the
-//! compositor's link (`Inbox::WithPayload`); the app's credits come back through [`credit`].
+//! compositor's link (`Inbox::From`, with the client's pid: the page showing its run plays it);
+//! the app's credits come back through [`credit`].
 //!
 //! Stream data travels in protocol packets on the socket. Shared memory and memfd transport are
 //! refused at the handshake: libpulse then sends everything on the socket by itself, and nothing
@@ -66,7 +67,7 @@ const MONITOR_DESCRIPTION: &CStr = c"Monitor of Android speaker";
 
 enum Event {
     Credit(u32, u32),
-    LinkUp,
+    Reopen(Vec<u32>),
 }
 
 struct Wake {
@@ -89,9 +90,15 @@ pub fn credit(stream: u32, bytes: u32) {
     post_event(Event::Credit(stream, bytes));
 }
 
-/// A new app link is up: open streams are announced to it again.
-pub fn link_up() {
-    post_event(Event::LinkUp);
+/// These streams moved to another page (called from the compositor thread): they are announced
+/// there again.
+pub fn reopen(streams: Vec<u32>) {
+    post_event(Event::Reopen(streams));
+}
+
+/// To the page that plays this client's sound.
+fn post(pid: Option<u32>, msg: ToApp, payload: Vec<u8>) {
+    shared().post(Inbox::From(pid, msg, payload));
 }
 
 /// Listen on `<runtime_dir>/pulse/native` and run the sound thread.
@@ -126,6 +133,8 @@ pub fn start(runtime_dir: &Path) -> Result<(), String> {
 /// A playback stream: the client's buffer, and how far it has gone to the app.
 struct Stream {
     id: u32,
+    /// The client's process: its run's page plays the stream.
+    pid: Option<u32>,
     spec: pa::SampleSpec,
     map: pa::ChannelMap,
     attr: pa::stream::BufferAttr,
@@ -266,7 +275,7 @@ impl Stream {
                 self.progress = now;
             }
             self.in_app += pcm.len() as u64;
-            shared().post(Inbox::WithPayload(ToApp::AudioData { stream: self.id, len: pcm.len() as u32 }, pcm));
+            post(self.pid, ToApp::AudioData { stream: self.id, len: pcm.len() as u32 }, pcm);
         }
     }
 
@@ -306,14 +315,14 @@ impl Stream {
         }
     }
 
-    /// A new link: the app there has nothing of this stream yet.
+    /// Another page plays it now: the app there has nothing of this stream yet.
     fn reannounce(&mut self) {
         self.in_app = 0;
         self.deaf = false;
         self.progress = Instant::now();
-        shared().post(Inbox::ToApp(self.open_msg()));
+        post(self.pid, self.open_msg(), Vec::new());
         if self.corked {
-            shared().post(Inbox::ToApp(ToApp::AudioCork { stream: self.id, corked: true }));
+            post(self.pid, ToApp::AudioCork { stream: self.id, corked: true }, Vec::new());
         }
     }
 
@@ -412,6 +421,8 @@ fn fix_buffer_attr(a: &mut pa::stream::BufferAttr, spec: &pa::SampleSpec) {
 struct Client {
     index: u32,
     sock: UnixStream,
+    /// Its process: the socket's peer, else what it says (application.process.id).
+    pid: Option<u32>,
     rbuf: Vec<u8>,
     wbuf: Vec<u8>,
     version: u16,
@@ -635,8 +646,8 @@ impl Server {
                     s.credit(bytes);
                 }
             }
-            Event::LinkUp => {
-                for s in self.clients.iter_mut().flat_map(|c| c.streams.values_mut()) {
+            Event::Reopen(ids) => {
+                for s in self.clients.iter_mut().flat_map(|c| c.streams.values_mut()).filter(|s| ids.contains(&s.id)) {
                     s.reannounce();
                 }
             }
@@ -653,6 +664,7 @@ impl Server {
             debug!("sound: client {index} connected");
             self.clients.push(Client {
                 index,
+                pid: crate::peer_pid(&sock),
                 sock,
                 rbuf: Vec::new(),
                 wbuf: Vec::new(),
@@ -672,7 +684,7 @@ impl Server {
             self.events.push((pa::SubscriptionEventFacility::Client, pa::SubscriptionEventType::Removed, c.index));
         }
         for s in c.streams.values() {
-            shared().post(Inbox::ToApp(ToApp::AudioClose { stream: s.id }));
+            post(s.pid, ToApp::AudioClose { stream: s.id }, Vec::new());
             self.events.push((pa::SubscriptionEventFacility::SinkInput, pa::SubscriptionEventType::Removed, s.id));
         }
     }
@@ -901,7 +913,7 @@ impl Server {
             Command::DeletePlaybackStream(id) => match c.streams.remove(&id) {
                 Some(s) => {
                     debug!("sound stream {}: closed, {} bytes written, {} taken", s.id, s.written, s.read_index());
-                    shared().post(Inbox::ToApp(ToApp::AudioClose { stream: s.id }));
+                    post(s.pid, ToApp::AudioClose { stream: s.id }, Vec::new());
                     c.ack(seq);
                     self.events.push((F::SinkInput, T::Removed, id));
                 }
@@ -931,7 +943,7 @@ impl Server {
                         } else {
                             s.progress = now;
                         }
-                        shared().post(Inbox::ToApp(ToApp::AudioCork { stream: s.id, corked: p.cork }));
+                        post(s.pid, ToApp::AudioCork { stream: s.id, corked: p.cork }, Vec::new());
                         self.events.push((F::SinkInput, T::Changed, p.channel));
                     }
                     c.ack(seq);
@@ -986,10 +998,10 @@ impl Server {
                     s.spec.sample_rate = p.sample_rate;
                     s.pacer.set_rate(now, p.sample_rate);
                     s.in_app = 0;
-                    shared().post(Inbox::ToApp(ToApp::AudioClose { stream: s.id }));
-                    shared().post(Inbox::ToApp(s.open_msg()));
+                    post(s.pid, ToApp::AudioClose { stream: s.id }, Vec::new());
+                    post(s.pid, s.open_msg(), Vec::new());
                     if s.corked {
-                        shared().post(Inbox::ToApp(ToApp::AudioCork { stream: s.id, corked: true }));
+                        post(s.pid, ToApp::AudioCork { stream: s.id, corked: true }, Vec::new());
                     }
                     c.ack(seq);
                 }
@@ -1016,10 +1028,10 @@ impl Server {
             Command::KillSinkInput(id) => match self.clients.iter().position(|c| c.streams.contains_key(&id)) {
                 Some(o) => {
                     let owner = &mut self.clients[o];
-                    owner.streams.remove(&id);
+                    let pid = owner.streams.remove(&id).and_then(|s| s.pid);
                     let v = owner.version;
                     send_command(&mut owner.wbuf, v, &Command::PlaybackStreamKilled(id));
-                    shared().post(Inbox::ToApp(ToApp::AudioClose { stream: id }));
+                    post(pid, ToApp::AudioClose { stream: id }, Vec::new());
                     self.clients[ci].ack(seq);
                     self.events.push((F::SinkInput, T::Removed, id));
                 }
@@ -1083,8 +1095,10 @@ impl Server {
                 props.set_bytes(pa::Prop::ApplicationName.to_c_str(), app);
             }
         }
+        let pid = c.pid.or_else(|| prop_string(&c.props, pa::Prop::ApplicationProcessId).and_then(|p| p.to_str().ok()?.parse().ok()));
         let s = Stream {
             id,
+            pid,
             spec,
             map,
             attr,
@@ -1116,9 +1130,9 @@ impl Server {
             attr.minimum_request_length,
             if s.corked { ", corked" } else { "" }
         );
-        shared().post(Inbox::ToApp(s.open_msg()));
+        post(pid, s.open_msg(), Vec::new());
         if s.corked {
-            shared().post(Inbox::ToApp(ToApp::AudioCork { stream: id, corked: true }));
+            post(pid, ToApp::AudioCork { stream: id, corked: true }, Vec::new());
         }
         let reply = pa::CreatePlaybackStreamReply {
             channel: id,
@@ -1295,6 +1309,7 @@ mod tests {
         fix_buffer_attr(&mut attr, &s);
         Stream {
             id: 9,
+            pid: None,
             spec: s,
             map: pa::ChannelMap::mono(),
             attr,
