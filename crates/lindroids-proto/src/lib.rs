@@ -112,6 +112,9 @@ pub enum ToApp {
         build: String,
         /// Human-readable name of the sandbox, e.g. "Termux" or "Debian (proot)".
         sandbox: String,
+        /// Show the frame rate in a corner (the server runs with LINDROIDS_STATS=1).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        stats: bool,
     },
     /// What a run's own window shows until the program's first window does (and after the
     /// last one goes): the program's name and icon (PNG, base64).

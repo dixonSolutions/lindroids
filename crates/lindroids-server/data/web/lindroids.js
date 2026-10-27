@@ -237,6 +237,7 @@ async function handle(m, payload) {
     case 'hello':
       // A page from before an update (a window raised rather than reloaded): load the new one.
       if (m.build && m.build !== BUILD && !BUILD.startsWith('@')) return location.reload();
+      if (m.stats) enableStats();
       ready = true;
       hidePanelIfWindows();
       sendSystem();
@@ -475,6 +476,29 @@ function resizeWindow(w) {
 
 new ResizeObserver(() => { for (const w of windows.values()) resizeWindow(w); }).observe(stage);
 
+// The page never scrolls, but Firefox leaves it scrolled by its toolbar's height when full screen
+// ends while the window is in the background: the program's window then shows shifted up. Back to
+// the top whenever the size or the visibility changes.
+function unscroll() {
+  if (STATS) {
+    const r = stage.getBoundingClientRect(), w = windows.get(active), vv = window.visualViewport;
+    plog(`layout: inner ${innerWidth}x${innerHeight} scroll ${scrollX},${scrollY} stage ${r.top},${r.height} vv ${vv ? `${vv.offsetTop},${vv.height}` : '-'} canvas ${w ? `${w.canvas.width}x${w.canvas.height} at ${w.canvas.getBoundingClientRect().top},${w.canvas.getBoundingClientRect().height}` : '-'} fs ${!!document.fullscreenElement}`);
+  }
+  if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
+}
+for (const ev of ['resize', 'fullscreenchange', 'visibilitychange', 'pageshow']) addEventListener(ev, () => requestAnimationFrame(unscroll));
+if (window.visualViewport) visualViewport.addEventListener('resize', () => requestAnimationFrame(unscroll));
+
+// Sizes sent while the page was hidden (full screen ending behind another app) may not take, and
+// the size settles only after the browser's bars do: on coming back, and when full screen
+// changes, every window's size again.
+function resizeAgain() {
+  if (document.hidden) return;
+  for (const t of [0, 400]) setTimeout(() => { for (const w of windows.values()) { w.size = [0, 0]; resizeWindow(w); ackLater(w); } }, t);
+}
+document.addEventListener('visibilitychange', resizeAgain);
+document.addEventListener('fullscreenchange', resizeAgain);
+
 // ------------------------------------------------------------------ frames
 
 function lz4(src, dst) {
@@ -499,9 +523,13 @@ function lz4(src, dst) {
   return d;
 }
 
-// `&stats` in the page's URL: frames, data and drawing time each second, in a corner.
-const STATS = new URLSearchParams(location.search).has('stats') ? { frames: 0, bytes: 0, pixels: 0, ms: 0, el: null } : null;
-if (STATS) {
+// The server runs with LINDROIDS_STATS=1 (its hello says so): frames, data and drawing time each
+// second, in a corner, and the page's layout in the server's log. Not in the URL: a window's URL
+// must stay the one Android raises it by.
+let STATS = null;
+function enableStats() {
+  if (STATS) return;
+  STATS = { frames: 0, bytes: 0, pixels: 0, ms: 0, el: null };
   STATS.el = document.createElement('div');
   STATS.el.style.cssText = 'position:fixed;left:4px;bottom:4px;z-index:9;font:12px monospace;color:#0f0;background:#000a;padding:2px 6px;pointer-events:none';
   document.body.appendChild(STATS.el);

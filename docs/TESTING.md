@@ -63,6 +63,7 @@ TCP link was found.
 
 Screens are recorded without a hardware encoder (the VMs have none) by `lab/record.sh`, which
 pulls raw `screencap` frames over adb and encodes an MP4 and an animated WebP for the README.
-`LINDROIDS_STATS=1` puts the frame rate and drawing time in a corner of each window.
+A server started with `LINDROIDS_STATS=1` puts the frame rate and drawing time in a corner of
+each window and the page's layout in `server.log`; pages also log their errors there.
 [lab/CHECKLIST.md](../lab/CHECKLIST.md) lists what "fully working" means and where each item
 stands.

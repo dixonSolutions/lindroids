@@ -828,7 +828,8 @@ impl State {
                     info!("a page linked again: what was started keeps running");
                 }
                 portal::app_changed(version);
-                let hello = ToApp::Hello { version: proto::PROTOCOL_VERSION, build: web::page_build().into(), sandbox: self.cfg.sandbox.clone() };
+                let stats = std::env::var("LINDROIDS_STATS").is_ok_and(|v| v == "1");
+                let hello = ToApp::Hello { version: proto::PROTOCOL_VERSION, build: web::page_build().into(), sandbox: self.cfg.sandbox.clone(), stats };
                 self.send_to(id, &hello, &[]);
                 // A run's window shows the program's name and icon until its first window does.
                 if let Some((name, icon_png_b64)) = run.and_then(icons::launch_info) {

@@ -41,8 +41,8 @@ lindroids export org.gnome.Calculator  # a home screen icon; works with Termux c
 - **Android's side, piped in**: dark mode and accent colour; files (Android's picker for
   *Open…*, *Open with* from the Files app, saves to Downloads, the Camera as a photo source);
   notifications in Android's shade; links open in Android's browser; clipboard both ways; sound;
-  keeping the screen on (for a video or a presentation); touch, pen, soft and hardware keyboards;
-  network state.
+  the microphone; keeping the screen on (for a video or a presentation); battery and battery
+  saver; touch, pen, soft and hardware keyboards; network state.
 
 ## How it works, and why
 
@@ -117,8 +117,8 @@ lindroids setup [x11|flatpak] | status | doctor | pair | stop | version
 ```
 
 `LINDROIDS_SCALE=2` sets the output scale, `LINDROIDS_TOUCH=pointer` makes touch a mouse,
-`LINDROIDS_BROWSER=<package>` picks the browser for windows, `LINDROIDS_STATS=1` shows the frame
-rate in the window.
+`LINDROIDS_BROWSER=<package>` picks the browser for windows, `LINDROIDS_STATS=1` (when the
+server starts) shows the frame rate in the window.
 
 ## Tested
 

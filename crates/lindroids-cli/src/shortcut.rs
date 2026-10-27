@@ -278,6 +278,20 @@ fn desktop_entry(rec: &Exported, icon_png: &[u8]) -> Result<String, String> {
 }
 
 
+/// The helper's `device` answer: `battery <percent> <charging 0|1>`, `powersave <0|1>`.
+fn parse_device(out: &str) -> lindroids_server::android::Device {
+    let mut d = lindroids_server::android::Device::default();
+    for line in out.lines() {
+        let w: Vec<&str> = line.split_whitespace().collect();
+        match w.as_slice() {
+            ["battery", level, charging] => d.battery = level.parse().ok().map(|l| (l, *charging == "1")),
+            ["powersave", on] => d.power_saver = Some(*on == "1"),
+            _ => {}
+        }
+    }
+    d
+}
+
 /// Programs' notifications in Android's shade, posted by the helper as the terminal app (which
 /// may post them: no permission of Lindroids' own). One at a time, in order: each runs
 /// app_process, which takes a moment.
@@ -320,8 +334,24 @@ impl lindroids_server::android::Android for AndroidServices {
         let _ = self.queue.lock().unwrap().send(args);
     }
 
+    fn device(&self) -> Option<lindroids_server::android::Device> {
+        let out = helper(&["device"]).ok()?;
+        Some(parse_device(&out))
+    }
+
     fn cancel(&self, id: i32) {
         let _ = self.queue.lock().unwrap().send(vec!["cancel".into(), package(), id.to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod device_tests {
+    #[test]
+    fn device_answer() {
+        let d = super::parse_device("battery 57 1\npowersave 0\nok\n");
+        assert_eq!(d.battery, Some((57, true)));
+        assert_eq!(d.power_saver, Some(false));
+        assert_eq!(super::parse_device("ok\n"), lindroids_server::android::Device::default());
     }
 }
 

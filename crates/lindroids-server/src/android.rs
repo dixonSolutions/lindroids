@@ -22,12 +22,20 @@ pub struct Notice {
     pub url: Option<String>,
 }
 
+/// Power, as Android says: the battery (percent, charging) and battery saver, each if known.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Device {
+    pub battery: Option<(u8, bool)>,
+    pub power_saver: Option<bool>,
+}
+
 /// What reaches Android: post (or replace) a notice, the quiet one of a running program, take one
-/// away.
+/// away; read the device's power state.
 pub trait Android: Send + Sync {
     fn notify(&self, n: Notice);
     fn running(&self, n: Notice);
     fn cancel(&self, id: i32);
+    fn device(&self) -> Option<Device>;
 }
 
 static ANDROID: OnceLock<Box<dyn Android>> = OnceLock::new();
@@ -56,6 +64,13 @@ pub fn symbolic_of(pid: u32) -> Option<PathBuf> {
 pub fn set(a: Box<dyn Android>) {
     if ANDROID.set(a).is_ok() {
         let _ = clear_running();
+        // Battery and battery saver every two minutes (each look runs the helper, briefly).
+        std::thread::spawn(|| loop {
+            if let Some(d) = get().and_then(|a| a.device()) {
+                crate::portal::device_changed(d);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(120));
+        });
     }
 }
 

@@ -22,6 +22,7 @@ from Android**, through the window page and Termux, never by giving the containe
 | Closing the program ends the window | 🟡 | ended screen with the program's icon, out of full screen; ⛔ Firefox ignores `window.close()`: one tap on ✕ |
 | Closing the window (✕, swipe from Recents) ends the program | ✅ | |
 | Back does not lose the program | ✅ | Back only sends the window behind |
+| Coming back to a window that left full screen in the background | 🟡 | Firefox lays the page under its toolbar until the next tap (which goes full screen again) |
 
 ## Launch and export
 
@@ -53,9 +54,11 @@ from Android**, through the window page and Termux, never by giving the containe
 | Clipboard both ways (text) | ✅ | images ❌ |
 | Sound out | 🟡 | per program; the VM has no audio output to check by ear |
 | Camera (as a photo for a program) | ✅ | through the file picker |
-| Microphone, live camera, location | ❌ | |
+| Live camera, location | ❌ | |
 | Language, time zone | 🟡 | time zone from Android for Flatpaks; language: Termux's `LANG` |
-| Battery, power saver, network, low memory | 🟡 | network yes; others constants |
+| Battery, power saver, network | ✅ | battery and battery saver from Android through the helper (every 2 min; `lindroids info`, PowerProfileMonitor); network from the page |
+| Low memory | ❌ | |
+| Microphone | 🟡 | PulseAudio recording from the page's microphone (desktop Chromium: −21 dBFS from a fake mic); the VM has no microphone to check |
 | Screen density, rotation | 🟡 | integer scale fixed at connect; rotation resizes |
 | Soft keyboard, hardware keyboard | 🟡 | US layout only outside text-input programs |
 
@@ -64,7 +67,7 @@ from Android**, through the window page and Termux, never by giving the containe
 | Criterion | Status | Evidence / notes |
 |---|---|---|
 | Tap on the icon to a drawn window | ✅ | ~1–2 s (Calculator) |
-| Scrolling | ✅ | 55 fps, 8.5 Mpx/s, 1.4 ms to draw a frame (`LINDROIDS_STATS=1`) |
+| Scrolling | ✅ | 55 fps, 8.5 Mpx/s, 1.4 ms to draw a frame (server started with `LINDROIDS_STATS=1`) |
 | Typing and taps feel immediate | ✅ | |
 
 ## Demos

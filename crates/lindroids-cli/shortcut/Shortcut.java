@@ -38,6 +38,7 @@ import java.util.concurrent.TimeUnit;
  *   app_process ... lindroids.Shortcut notify &lt;package&gt; &lt;id&gt; &lt;program&gt; &lt;title&gt; &lt;text&gt; &lt;icon.png&gt; &lt;small-icon.png&gt; &lt;url&gt; &lt;browser&gt;...
  *   app_process ... lindroids.Shortcut running &lt;package&gt; &lt;id&gt; &lt;program&gt; &lt;title&gt; &lt;text&gt; &lt;icon.png&gt; &lt;small-icon.png&gt; &lt;url&gt; &lt;browser&gt;...
  *   app_process ... lindroids.Shortcut cancel &lt;package&gt; &lt;id&gt;
+ *   app_process ... lindroids.Shortcut device
  * </pre>
  *
  * Prints "ok", or "error: ..." and exits 1. Android's binder interfaces are hidden API, reached by
@@ -77,6 +78,8 @@ public final class Shortcut {
                 System.out.println("browser " + open(a[1], a[2], a[3], Arrays.copyOfRange(a, 4, a.length)));
             } else if (a.length >= 9 && (a[0].equals("notify") || a[0].equals("running"))) {
                 post(a[1], Integer.parseInt(a[2]), a[3], a[4], a[5], a[6], a[7], a[8], Arrays.copyOfRange(a, 9, a.length), a[0].equals("running"));
+            } else if (a.length >= 1 && a[0].equals("device")) {
+                device();
             } else if (a.length >= 3 && a[0].equals("pinned")) {
                 System.out.println("pinned " + pinned(service(), a[1], a[2]));
             } else if (a.length >= 3 && a[0].equals("cancel")) {
@@ -84,7 +87,7 @@ public final class Shortcut {
             } else {
                 throw new IllegalArgumentException("usage: pin <package> <id> <label> <icon> <action> <component> <type> <text> | remove <package> <id>"
                         + " | open <package> new|raise <url> <browser>... | notify|running <package> <id> <program> <title> <text> <icon> <small-icon> <url> <browser>..."
-                        + " | cancel <package> <id> | pinned <package> <id>");
+                        + " | cancel <package> <id> | pinned <package> <id> | device");
             }
             System.out.println("ok");
             System.exit(0);
@@ -154,6 +157,13 @@ public final class Shortcut {
             return ((Future<?>) future).get(10, TimeUnit.SECONDS);
         }
         return r;
+    }
+
+    static boolean hasMethod(Object o, String name) {
+        for (Method m : o.getClass().getMethods()) {
+            if (m.getName().equals(name)) return true;
+        }
+        return false;
     }
 
     static boolean stackMentions(Throwable t, String what) {
@@ -382,6 +392,50 @@ public final class Shortcut {
 
     static void cancel(String pkg, int id) throws Exception {
         call(notificationService(), "cancelNotificationWithTag", pkg, pkg, CHANNEL, id, userId());
+    }
+
+    /**
+     * What Android says about the device, for programs' power and battery questions:
+     * {@code battery <percent> <charging 0|1>} and {@code powersave <0|1>}, a line each, for what
+     * it could read.
+     */
+    static void device() throws Exception {
+        Context ctx = appContext(packageOf());
+        // The battery service's last broadcast (what apps read), else the battery HAL.
+        int level = -1, status = -1;
+        try {
+            // As the activity manager's own call, with no caller and no receiver: the sticky
+            // intent alone (a Context's registerReceiver wants a real app process).
+            Class<?> sm = Class.forName("android.os.ServiceManager");
+            IBinder ab = (IBinder) sm.getMethod("getService", String.class).invoke(null, "activity");
+            Object am = Class.forName("android.app.IActivityManager$Stub").getMethod("asInterface", IBinder.class).invoke(null, ab);
+            android.content.IntentFilter f = new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+            String name = hasMethod(am, "registerReceiverWithFeature") ? "registerReceiverWithFeature" : "registerReceiver";
+            Intent b = (Intent) call(am, name, ctx.getPackageName(), f, userId(), 0);
+            if (b != null && b.getBooleanExtra(android.os.BatteryManager.EXTRA_PRESENT, true)) {
+                int scale = b.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100);
+                level = scale > 0 ? b.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) * 100 / scale : -1;
+                status = b.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1);
+            }
+        } catch (Exception e) {
+            android.os.BatteryManager bm = ctx.getSystemService(android.os.BatteryManager.class);
+            if (bm != null) {
+                level = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY);
+                status = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_STATUS);
+            }
+        }
+        boolean charging = status == android.os.BatteryManager.BATTERY_STATUS_CHARGING || status == android.os.BatteryManager.BATTERY_STATUS_FULL;
+        if (level >= 0 && level <= 100) System.out.println("battery " + level + " " + (charging ? 1 : 0));
+        android.os.PowerManager pm = ctx.getSystemService(android.os.PowerManager.class);
+        if (pm != null) System.out.println("powersave " + (pm.isPowerSaveMode() ? 1 : 0));
+    }
+
+    /** The package this process runs as (its uid's first package). */
+    static String packageOf() throws Exception {
+        Class<?> ag = Class.forName("android.app.AppGlobals");
+        Object pmgr = ag.getMethod("getPackageManager").invoke(null);
+        String[] pkgs = (String[]) pmgr.getClass().getMethod("getPackagesForUid", int.class).invoke(pmgr, Process.myUid());
+        return pkgs != null && pkgs.length > 0 ? pkgs[0] : "com.termux";
     }
 
     /** A Custom Tab of {@code browser} showing {@code url}, without a session (see open). */

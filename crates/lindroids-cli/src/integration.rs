@@ -113,6 +113,8 @@ fn describe(s: &SystemState) -> String {
     out += &format!("memory      {:.1} of {:.1} GiB free{}\n", gib(s.memory.available), gib(s.memory.total), if s.memory.low { " (low)" } else { "" });
     if let Some(b) = &s.battery {
         out += &format!("battery     {}%{}{}\n", b.level, if b.charging { ", charging" } else { "" }, if s.power_saver { ", battery saver" } else { "" });
+    } else if s.power_saver {
+        out += "battery     battery saver\n";
     }
     if !s.locale.is_empty() {
         out += &format!("locale      {}\n", s.locale);

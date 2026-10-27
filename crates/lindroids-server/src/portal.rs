@@ -390,7 +390,26 @@ fn owned(v: Value<'_>) -> OwnedValue {
     v.try_to_owned().expect("settings values hold no file descriptors")
 }
 
-fn system_changed(new: SystemState) {
+/// Battery and battery saver as Android itself says (the helper, where there is one): they win
+/// over what the browser reports (Firefox has no battery API, and no page knows battery saver).
+static DEVICE: std::sync::Mutex<Option<crate::android::Device>> = std::sync::Mutex::new(None);
+
+pub(crate) fn device_changed(d: crate::android::Device) {
+    let changed = DEVICE.lock().unwrap().replace(d.clone()) != Some(d);
+    if changed {
+        system_changed(current());
+    }
+}
+
+fn system_changed(mut new: SystemState) {
+    if let Some(d) = DEVICE.lock().unwrap().as_ref() {
+        if let Some((level, charging)) = d.battery {
+            new.battery = Some(lindroids_proto::BatteryState { level, charging });
+        }
+        if let Some(p) = d.power_saver {
+            new.power_saver = p;
+        }
+    }
     let _ = std::fs::write(system_file(), serde_json::to_vec(&new).unwrap_or_default());
     let old = Some(current());
     shared().system.lock().unwrap().replace(new.clone());
