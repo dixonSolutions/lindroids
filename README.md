@@ -20,7 +20,7 @@ theme, notifications and files. One package in Termux. No app to install, no per
 </tr>
 <tr>
 <td align="center"><img src="media/screenshots/browser-xournalpp-pen.png" width="400"><br><sub>Xournal++ from a proot-distro Debian, drawn with the pen</sub></td>
-<td align="center"><img src="media/screenshots/running-notification.png" width="400"><br><sub>A running program: its own icon in the status bar, a tap brings back its window</sub></td>
+<td align="center"><img src="media/demos/running-icon.webp" width="400"><br><sub>A running program keeps its icon in the status bar; its notification brings its window back. <a href="media/demos/running-icon.mp4">mp4</a></sub></td>
 </tr>
 </table>
 

@@ -71,4 +71,5 @@ from Android**, through the window page and Termux, never by giving the containe
 
 Recorded with `lab/record.sh` (the VM has no hardware encoder) in `media/demos/`:
 `launch-from-home` (icon → Calculator with Termux closed → close), `open-with` (Files → Termux →
-Mousepad), `file-picker` (Text Editor → Android's picker).
+Mousepad), `file-picker` (Text Editor → Android's picker), `running-icon` (status bar icon and
+notification bring the window back).
