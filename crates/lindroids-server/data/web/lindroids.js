@@ -736,8 +736,22 @@ function needsShift(e) {
   return '~!@#$%^&*()_+{}|:"<>?'.includes(e.key);
 }
 
+// While a composition is open, keys wait for its text: Firefox can open one for a single key
+// among others (Android's injected keys) and hand over its text only when it ends, so the keys
+// typed after it would overtake it ("echo" arrived as "eco…h"). Safety: they go after 2 s anyway.
+let heldKeys = [], heldTimer = null;
 function key(code, down) {
-  send({ t: 'key', win: active, code, down, time_ms: now() });
+  const m = { t: 'key', win: active, code, down, time_ms: now() };
+  if (!composing && !heldKeys.length) return send(m);
+  heldKeys.push(m);
+  if (!heldTimer) heldTimer = setTimeout(sendHeldKeys, 2000);
+}
+function sendHeldKeys() {
+  clearTimeout(heldTimer);
+  heldTimer = null;
+  const q = heldKeys;
+  heldKeys = [];
+  q.forEach((m) => send(m));
 }
 
 document.addEventListener('keydown', (e) => onKey(e, true));
@@ -784,7 +798,7 @@ function hideKeyboard() {
 }
 
 ime.addEventListener('compositionstart', () => { composing = true; });
-ime.addEventListener('compositionend', () => { composing = false; imeInput(); });
+ime.addEventListener('compositionend', () => { composing = false; imeInput(); sendHeldKeys(); });
 ime.addEventListener('input', () => imeInput());
 
 function imeInput() {
@@ -794,11 +808,12 @@ function imeInput() {
   while (p < imeLast.length && p < now_.length && imeLast[p] === now_[p]) p++;
   const removed = imeLast.length - p;
   const added = now_.slice(p);
-  for (let i = 0; i < removed; i++) { key(67, true); key(67, false); }
+  const press = (c) => { send({ t: 'key', win: active, code: c, down: true, time_ms: now() }); send({ t: 'key', win: active, code: c, down: false, time_ms: now() }); };
+  for (let i = 0; i < removed; i++) press(67);
   // Enter as a key, so single-line fields activate.
   const parts = added.split('\n');
   parts.forEach((s, i) => {
-    if (i > 0) { key(66, true); key(66, false); }
+    if (i > 0) press(66);
     if (s) send({ t: 'text', win: active, text: s.replace(/ /g, ' ') });
   });
   imeLast = now_;

@@ -523,8 +523,12 @@ pub fn text(state: &mut State, win: u32, text: &str) {
         window_focus(state, win, true);
     }
     let Some(surface) = state.seat.kb_focus.clone() else { return };
-    // A text field that speaks text-input-v3 takes the string as is (any script, emoji...).
-    let ti = state.seat.text_inputs.iter().find(|t| {
+    // A text field that speaks text-input-v3 takes the string as is (any script, emoji...), but
+    // not what keys can type: keys and text-input reach the program by different ways, and keys
+    // pressed around it (Backspace, Enter, a keyboard that sends some letters as keys) would
+    // overtake it (Firefox: ".lab-typed" arrived as ".lypedab-t").
+    let typeable = text.chars().all(|c| keys::char_to_key(c).is_some());
+    let ti = state.seat.text_inputs.iter().filter(|_| !typeable).find(|t| {
         same_client(*t, &surface) && t.data::<Mutex<TextInputState>>().map_or(false, |d| d.lock().unwrap().enabled)
     });
     if let Some(ti) = ti {
