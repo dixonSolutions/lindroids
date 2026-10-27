@@ -255,7 +255,7 @@ public final class Shortcut {
         int flags = Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT;
         if (mode.equals("new")) flags |= Intent.FLAG_ACTIVITY_MULTIPLE_TASK;
         String last = "no browser given";
-        for (String browser : browsers) {
+        for (String browser : withDefault(browsers)) {
             Object r = call(atm, "startActivity", pkg, windowIntent(url, browser, flags));
             // ActivityManager.START_SUCCESS and the other non-negative codes (delivered to the top,
             // task brought to the front) all mean the window is there; no answer (see call) means
@@ -380,7 +380,7 @@ public final class Shortcut {
             b.setSmallIcon(Icon.createWithResource("android", android.R.drawable.stat_notify_chat));
         }
         if (!url.isEmpty()) {
-            for (String browser : browsers) {
+            for (String browser : withDefault(browsers)) {
                 Intent i = windowIntent(url, browser, Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
                 if (ctx.getPackageManager().resolveActivity(i, 0) == null) continue;
                 b.setContentIntent(PendingIntent.getActivity(ctx, id, i, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
@@ -438,13 +438,59 @@ public final class Shortcut {
         return pkgs != null && pkgs.length > 0 ? pkgs[0] : "com.termux";
     }
 
-    /** A Custom Tab of {@code browser} showing {@code url}, without a session (see open). */
+    /** Cromite opens Custom Tabs only as the default browser, with its "Allow custom tab intents". */
+    static final String CROMITE = "org.cromite.cromite";
+
+    /**
+     * {@code browsers} with {@code default} replaced by the phone's default browser, when it is one
+     * of the others or Cromite, and left out otherwise.
+     */
+    static String[] withDefault(String[] browsers) {
+        List<String> all = Arrays.asList(browsers);
+        String d = all.contains("default") ? defaultBrowser() : null;
+        java.util.ArrayList<String> out = new java.util.ArrayList<>();
+        for (String b : browsers) {
+            if (!b.equals("default")) out.add(b);
+            else if (d != null && (all.contains(d) || d.equals(CROMITE))) out.add(d);
+        }
+        return out.toArray(new String[0]);
+    }
+
+    /** The package that opens web links, if one is chosen. */
+    static String defaultBrowser() {
+        try {
+            Object pm = Class.forName("android.app.ActivityThread").getMethod("getPackageManager").invoke(null);
+            Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("http://example.com/"));
+            i.addCategory(Intent.CATEGORY_BROWSABLE);
+            for (Method m : pm.getClass().getMethods()) {
+                Class<?>[] t = m.getParameterTypes();
+                if (!m.getName().equals("resolveIntent") || t.length != 4) continue;
+                // The flags are an int before Android 13, a long since.
+                Object flags = t[2] == long.class ? (Object) (long) android.content.pm.PackageManager.MATCH_DEFAULT_ONLY
+                        : (Object) android.content.pm.PackageManager.MATCH_DEFAULT_ONLY;
+                android.content.pm.ResolveInfo r = (android.content.pm.ResolveInfo) m.invoke(pm, i, null, flags, userId());
+                return r != null && r.activityInfo != null ? r.activityInfo.packageName : null;
+            }
+        } catch (Exception e) {
+            System.err.println("default browser: " + e);
+        }
+        return null;
+    }
+
+    /**
+     * A Custom Tab of {@code browser} showing {@code url}, without a session (see open). Its bar,
+     * until the first tap takes the whole screen: the page's title (the program's name) rather
+     * than the URL, in the page's colour, without a share button.
+     */
     static Intent windowIntent(String url, String browser, int flags) {
         Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
         i.setPackage(browser);
         i.addFlags(flags);
         android.os.Bundle extras = new android.os.Bundle();
         extras.putBinder("android.support.customtabs.extra.SESSION", null);
+        extras.putInt("android.support.customtabs.extra.TITLE_VISIBILITY", 1);
+        extras.putInt("android.support.customtabs.extra.TOOLBAR_COLOR", 0xFF0F1720);
+        extras.putInt("androidx.browser.customtabs.extra.SHARE_STATE", 2);
         i.putExtras(extras);
         return i;
     }

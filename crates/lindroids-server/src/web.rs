@@ -58,6 +58,8 @@ pub enum Sniff {
 pub struct Request {
     pub method: String,
     pub path: String,
+    /// What follows `?`, without the fragment.
+    pub query: String,
     pub headers: Vec<(String, String)>,
 }
 
@@ -85,9 +87,11 @@ pub fn sniff(buf: &[u8]) -> Sniff {
     let mut first = lines.next().unwrap_or("").split(' ');
     let method = first.next().unwrap_or("").to_string();
     let target = first.next().unwrap_or("");
-    let path = target.split(['?', '#']).next().unwrap_or("").to_string();
+    let target = target.split('#').next().unwrap_or("");
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let (path, query) = (path.to_string(), query.to_string());
     let headers = lines.filter_map(|l| l.split_once(':')).map(|(k, v)| (k.trim().to_string(), v.trim().to_string())).collect();
-    Sniff::Http(Request { method, path, headers }, buf[end + 4..].to_vec())
+    Sniff::Http(Request { method, path, query, headers }, buf[end + 4..].to_vec())
 }
 
 static LABEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -147,13 +151,42 @@ pub fn answer(req: &Request, port: u16) -> Answer {
         return Answer::Upgrade(head.into_bytes());
     }
     let (ctype, body): (&str, std::borrow::Cow<[u8]>) = match req.path.as_str() {
-        "/" | "/index.html" => ("text/html; charset=utf-8", INDEX_HTML.as_bytes().into()),
+        "/" | "/index.html" => ("text/html; charset=utf-8", index_html(&req.query).into_bytes().into()),
         "/lindroids.js" => ("text/javascript; charset=utf-8", CLIENT_JS.replace("@BUILD@", page_build()).into_bytes().into()),
         "/icon.svg" => ("image/svg+xml", ICON_SVG.as_bytes().into()),
         "/mic-worklet.js" => ("text/javascript; charset=utf-8", MIC_WORKLET_JS.as_bytes().into()),
+        p if p.starts_with("/run-icon/") => match run_icon(p) {
+            Some(png) => ("image/png", png.into()),
+            None => return Answer::Close(response(404, "text/plain", b"not found\n")),
+        },
         _ => return Answer::Close(response(404, "text/plain", b"not found\n")),
     };
     Answer::Close(response(200, ctype, &body))
+}
+
+/// The run a window's URL is for (`?window&run=<pid>`).
+fn run_of_query(query: &str) -> Option<u32> {
+    query.split('&').find_map(|kv| kv.strip_prefix("run=")).and_then(|v| v.parse().ok())
+}
+
+/// The page, as a window of a run's own: the program's name and icon from the start, so the
+/// browser shows them outside the page too (Chrome's Custom Tabs put the page's title and favicon
+/// on the window's task in Recents, and take the favicon from a URL, not from a `data:` one).
+fn index_html(query: &str) -> String {
+    let Some((run, (name, Some(_)))) = run_of_query(query).and_then(|r| Some((r, crate::icons::launch_info(r)?))) else {
+        return INDEX_HTML.to_string();
+    };
+    let name = name.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    INDEX_HTML
+        .replacen("<title>Lindroids</title>", &format!("<title>{name}</title>"), 1)
+        .replacen(r#"<link rel="icon" href="/icon.svg">"#, &format!(r#"<link rel="icon" type="image/png" sizes="192x192" href="/run-icon/{run}.png">"#), 1)
+}
+
+/// `/run-icon/<pid>.png`: a run's icon.
+fn run_icon(path: &str) -> Option<Vec<u8>> {
+    let pid = path.strip_prefix("/run-icon/")?.strip_suffix(".png")?.parse().ok()?;
+    let b64 = crate::icons::launch_info(pid)?.1?;
+    base64::engine::general_purpose::STANDARD.decode(b64).ok()
 }
 
 fn response(status: u16, ctype: &str, body: &[u8]) -> Vec<u8> {
@@ -286,6 +319,19 @@ mod tests {
     }
 
     #[test]
+    fn a_runs_window_has_its_name_and_icon() {
+        // A live pid: launches whose process is gone are forgotten.
+        let pid = std::process::id();
+        crate::icons::register_launch(pid, "A <b>".into(), Some(base64::engine::general_purpose::STANDARD.encode(b"png")), true);
+        let html = index_html(&format!("window&run={pid}"));
+        assert!(html.contains("<title>A &lt;b&gt;</title>"), "{html}");
+        assert!(html.contains(&format!(r#"href="/run-icon/{pid}.png""#)));
+        assert_eq!(run_icon(&format!("/run-icon/{pid}.png")), Some(b"png".to_vec()));
+        assert_eq!(index_html(""), INDEX_HTML);
+        assert_eq!(run_icon("/run-icon/x.png"), None);
+    }
+
+    #[test]
     fn sniffs_http_and_raw() {
         assert!(matches!(sniff(b"{\"t\":\"hello\"}"), Sniff::Raw));
         assert!(matches!(sniff(b"GE"), Sniff::More));
@@ -293,6 +339,7 @@ mod tests {
         match sniff(b"GET /link?x=1 HTTP/1.1\r\nHost: 127.0.0.1:47282\r\nUpgrade: websocket\r\n\r\nrest") {
             Sniff::Http(r, rest) => {
                 assert_eq!(r.path, "/link");
+                assert_eq!(r.query, "x=1");
                 assert_eq!(r.header("host"), Some("127.0.0.1:47282"));
                 assert_eq!(rest, b"rest");
             }
@@ -305,6 +352,7 @@ mod tests {
         let req = |host: &str, origin: &str| Request {
             method: "GET".into(),
             path: LINK_PATH.into(),
+            query: String::new(),
             headers: vec![
                 ("Host".into(), host.into()),
                 ("Origin".into(), origin.into()),

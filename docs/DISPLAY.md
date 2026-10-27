@@ -64,25 +64,28 @@ it from its `app_process` helper, as Termux, the way export pins shortcuts
   relay tells to stand down (see *The handshake*).
 - **Closing by the user.** The close button, Back, or swiping the window from recents gives the
   relay a clean `pagehide` and WebSocket close 1001, and the task goes away.
-- **Closing by the program: not possible in Firefox.** `window.close()` is ignored in a Firefox
-  Custom Tab, even a fresh one, and nothing outside Firefox may finish its activity. When the
-  program exits, the window shows the program's end screen, and Back closes it.
+- **Closing by the program: Chromium yes, Firefox no.** In Chromium's Custom Tabs the page's
+  `window.close()` ends the window when the program exits *(tested with Cromite)*. It is ignored
+  in a Firefox Custom Tab, even a fresh one, and nothing outside Firefox may finish its activity:
+  there the window shows the program's end screen, and Back closes it.
 
 **By browser:**
 
 | Browser | Custom Tab |
 |---|---|
 | Firefox | Works as above *(tested)*. |
-| Chrome, Edge, Samsung Internet, Brave | They implement Custom Tabs; not tested yet (installing a stock Chromium build on the lab VM was not allowed). From Chrome's source: Recents shows the page's title and icon (above), and `window.close()` closes the Custom Tab when its history has one entry (Blink's `kWindowCloseHistoryLengthOne`, then `finishAndRemoveTask`); the page keeps one entry (`replaceState` only). Chromium 132+ also has File System Access: files picked are written back, folders can be picked. |
-| Cromite | Opens an ordinary tab: it does not honour the session extra *(tested)*. Left off the list. |
+| Chrome, Edge, Brave, Vivaldi, Samsung Internet | Chromium's Custom Tabs, as Cromite's below; Chrome itself not yet tried on a device. |
+| Cromite | With Settings → Privacy and security → *Allow custom tab intents* on, and as the default browser (it needs both): a window of its own whose task in Recents has the program's name and icon (Chromium's `CustomTabTaskDescriptionHelper` takes the page's title and favicon), which closes itself when the program ends (`window.close()` with one history entry), and File System Access *(tested, Cromite 153)*. Without the setting: an ordinary tab. |
 | WebView-based browsers (Jellyfish…) | No Custom Tabs; an ordinary tab. |
 
 Lindroids tries, in order:
 
 1. the browsers named in `LINDROIDS_BROWSER` (comma-separated packages);
-2. Firefox, Chrome, Edge, Samsung Internet, Brave, Vivaldi, then the beta and nightly builds.
+2. the default browser, if it is one of these or Cromite;
+3. Chrome, Edge, Brave, Vivaldi, Samsung Internet, Chrome Beta, Chromium, then Firefox and its
+   beta and nightly builds: Chromium's windows show the program in Recents and close themselves.
 
-It uses the first one installed, so the phone's default browser doesn't matter
+It uses the first one installed
 (`WINDOW_BROWSERS` in `crates/lindroids-cli/src/shortcut.rs`). If none is installed, the program
 shows in a tab of the default browser.
 
@@ -93,7 +96,7 @@ shows in a tab of the default browser.
 | Home screen | The exported program's own icon and name, as an adaptive icon (the program's drawing on a backdrop of its colour), on a shortcut pinned for Termux. The launcher adds a small Termux badge. Exporting again updates it in place *(tested)*. |
 | Status bar and shade | While the program runs: its one-colour (`-symbolic`) icon in the status bar, its name and icon in a notification the helper posts as Termux; a tap brings back its window *(tested)*. Its own notifications show the same way. |
 | The window | The page's favicon and title are the program's. While it starts, and after it ends, the page shows the program's icon and name full size *(tested: "Calculator closed." under the Calculator icon)*. |
-| Recents | **The browser's icon** (Firefox *(tested)*), with a live thumbnail of the program. Firefox sets a task's icon only for web apps installed through it, which are rejected above. Chrome's source sets the page's title, favicon (32 dp or more; the program's is 192 px) and theme colour on a Custom Tab in a task of its own (`CustomTabTaskDescriptionHelper`, for `NEW_DOCUMENT` intents), so in Chrome Recents should show the program's icon; not yet tried on a device. |
+| Recents | Chromium-based browsers: **the program's icon and name** *(tested, Cromite)*. Chromium sets the page's title, favicon (32 dp or more; the program's is 192 px, at `/run-icon/<run>.png`: a `data:` favicon is not taken) and theme colour on a Custom Tab in a task of its own (`CustomTabTaskDescriptionHelper`). Firefox: **the browser's icon** *(tested)*, with a live thumbnail of the program; it sets a task's icon only for web apps installed through it, which are rejected above. |
 
 ## The parts
 
@@ -420,8 +423,8 @@ has a developer option to turn it off. Lindroids keeps its own process count low
 | No root, no APK, no special permission or setting | Yes. Lindroids uses intents to the browser and to Termux's share receiver, and pinned shortcuts: nothing else. |
 | Any Android version and vendor | Yes, with a browser that has Custom Tabs, which every major one does. Without one, the windows fall back to a plain browser tab. |
 | A window of its own, not a tab, not installed through the browser | Yes. A Custom Tab in its own task per program, opened and raised by Lindroids. Full screen from the first tap; before that, a thin bar with close, title and menu. |
-| The program's icon | Yes on the home screen, in the status bar and notifications, in the window, as the favicon, and on the start and end screens. **Not in recents in Firefox**, where the browser's icon shows with a live thumbnail of the program; Chrome's source puts the page's icon there (not yet tried on a device). |
-| Single run tied to its process | Window gone: the program ends 5 s later, or 60 s later if the browser died. Program gone: `run` exits, and the window shows its end screen until ✕ (Firefox does not let a page close a Custom Tab). |
+| The program's icon | Yes on the home screen, in the status bar and notifications, in the window, as the favicon, and on the start and end screens. In recents too with a Chromium-based browser; Firefox shows its own icon there. |
+| Single run tied to its process | Window gone: the program ends 5 s later, or 60 s later if the browser died. Program gone: `run` exits and the window closes itself (Chromium), or shows its end screen until ✕ (Firefox does not let a page close a Custom Tab). |
 | Export works with Termux closed | Yes. A Termux-owned shortcut with the program's icon, through the share receiver; 2 s to the window in the lab. |
 
 ## Ideas to make it better
@@ -431,10 +434,8 @@ These have not been tried yet.
 - **Stop from the running program's notification.** It has the program's icon and a tap that
   brings back the window (done). A *Stop* button needs a way back from Android to the relay
   without Termux coming to the front (a PendingIntent can only start Termux's activities).
-- **Chrome.** Test Chrome's Custom Tabs on a phone: whether `window.close()` works there, and
-  whether recents shows the page's title and icon. Installing a stock Chromium build on the lab
-  VM was not permitted in this session. On phones with Google Play, Chrome's minted WebAPKs answer
-  `VIEW` intents for their URLs, which might put the program's icon in recents too.
+- **Chrome.** Chromium's Custom Tabs are tested through Cromite; try Chrome itself on a phone.
+  On phones with Google Play, Chrome's minted WebAPKs answer `VIEW` intents for their URLs.
 - **Closing Firefox's window from outside.** Its source offers no way: Gecko does ask to close
   a one-entry window, but only normal tabs act on it; `ExternalAppBrowserActivity` ends itself
   only when its tab is gone, and only its ✕, "Open in Firefox" or its own end remove that tab

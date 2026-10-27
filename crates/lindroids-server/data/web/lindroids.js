@@ -357,7 +357,8 @@ function showProgram() {
   const l = document.createElement('link');
   l.rel = 'icon';
   l.type = 'image/png';
-  l.href = `data:image/png;base64,${program.icon}`;
+  // A URL rather than data: Chrome's Custom Tabs take the favicon for Recents only from one.
+  l.href = RUN ? `/run-icon/${RUN}.png` : `data:image/png;base64,${program.icon}`;
   document.head.appendChild(l);
 }
 

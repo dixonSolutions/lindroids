@@ -78,10 +78,11 @@ Details and the experiments behind them: [docs/DISPLAY.md](docs/DISPLAY.md),
 
 ## Limits (no app of our own)
 
-- Recents shows the browser's icon on the window in Firefox (the program's name is the title).
-  Chrome's source sets the page's icon there; not yet tried on a device.
-- Full screen starts on the first tap: browsers allow it only then. Firefox does not let a page
-  close its window, so an ended program's window asks for one tap on ✕ (Chrome's source closes it).
+- In Firefox, Recents shows Firefox's icon on the window (the program's name is the title), and
+  an ended program's window asks for one tap on ✕. Chromium-based browsers (Chrome, Edge, Brave,
+  Cromite…) show the program's icon there and close the window themselves, so Lindroids prefers
+  them. Cromite needs to be the default browser, with *Allow custom tab intents* on.
+- Full screen starts on the first tap: browsers allow it only then.
 - Files in Firefox: a picked file reaches the program as a copy, *Save As* goes to Downloads, and
   there is no folder picker. Chromium-based browsers (Chrome 132+, Edge, Brave, Cromite) have
   File System Access: saves go into the picked file or where *Save As* says, and folders can be

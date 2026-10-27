@@ -14,12 +14,12 @@ from Android**, through the window page and Termux, never by giving the containe
 |---|---|---|
 | One program, one window of its own in Recents (not a tab) | ✅ | Custom Tab in its own task |
 | The program fills the window | ✅ | no tab strip for one window; tools behind a handle at the top; dialogs bring the tabs back |
-| Window shows the program's name and icon | 🟡 | title, start/ended screens, favicon; ⛔ Recents shows the browser's icon (Firefox sets its task icon itself; Chrome-family untested) |
+| Window shows the program's name and icon | 🟡 | title, start/ended screens, favicon (served at `/run-icon/<run>.png`); Chromium Custom Tabs: Recents shows the program's icon and name (b16, Cromite 153); ⛔ Firefox: the browser's icon |
 | The program's icon in the status bar while it runs | ✅ | its `-symbolic` icon (else a window glyph); tap → its window; goes when it ends, and after a killed server |
 | Full screen, no browser bars | 🟡 | after the first tap (browsers allow full screen only on a tap) |
 | Follows Android's dark mode and accent colour | ✅ | Settings portal; libadwaita, GTK 3 |
 | Program's icons and title bar draw right (Adwaita) | ✅ | portal sends GNOME's icon theme and button layout |
-| Closing the program ends the window | 🟡 | ended screen with the program's icon, out of full screen; ⛔ Firefox ignores `window.close()`: one tap on ✕ |
+| Closing the program ends the window | 🟡 | Chromium Custom Tabs: the window closes itself and leaves Recents (b16, Cromite); ⛔ Firefox ignores `window.close()`: the ended screen asks for one tap on ✕ |
 | Closing the window (✕, swipe from Recents) ends the program | ✅ | |
 | Back does not lose the program | ✅ | Back only sends the window behind |
 | Coming back to a window that left full screen in the background | 🟡 | Firefox lays the page under its toolbar until the next tap (which goes full screen again) |

@@ -36,19 +36,23 @@ fn package() -> String {
         .unwrap_or_else(|| "com.termux".into())
 }
 
-/// Browsers whose Custom Tabs open as windows of their own, in the order tried. Cromite and
-/// WebView-based browsers are missing on purpose: they open a Custom Tab intent as an ordinary tab.
+/// Browsers whose Custom Tabs open as windows of their own, in the order tried after the phone's
+/// default browser (when it is one of them, or Cromite). Chromium's first: they put the program's
+/// name and icon on its window in Recents, close the window when the program ends, and let the
+/// program write into files and folders picked on Android; Firefox does none of that. Cromite opens
+/// Custom Tabs only as the default browser with "Allow custom tab intents" on, and WebView-based
+/// browsers not at all: they open an ordinary tab.
 const WINDOW_BROWSERS: &[&str] = &[
-    "org.mozilla.firefox",
     "com.android.chrome",
     "com.microsoft.emmx",
-    "com.sec.android.app.sbrowser",
     "com.brave.browser",
     "com.vivaldi.browser",
-    "org.mozilla.firefox_beta",
-    "org.mozilla.fenix",
+    "com.sec.android.app.sbrowser",
     "com.chrome.beta",
     "org.chromium.chrome",
+    "org.mozilla.firefox",
+    "org.mozilla.firefox_beta",
+    "org.mozilla.fenix",
 ];
 
 /// Shows `url` in a window of its own: a Custom Tab, in its own task, of the first browser that
@@ -62,11 +66,12 @@ pub fn open_window(url: &str) -> Result<String, String> {
 }
 
 /// The browsers to show windows in, in order: `LINDROIDS_BROWSER` (comma-separated packages)
-/// first.
+/// first, then the default browser (`default`, which the helper resolves), then the list.
 fn browsers() -> Vec<String> {
     let mut v: Vec<String> = std::env::var("LINDROIDS_BROWSER")
         .map(|v| v.split(',').map(|b| b.trim().to_string()).filter(|b| !b.is_empty()).collect())
         .unwrap_or_default();
+    v.push("default".into());
     v.extend(WINDOW_BROWSERS.iter().map(|b| b.to_string()));
     v
 }
