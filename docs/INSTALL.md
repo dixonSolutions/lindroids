@@ -42,17 +42,19 @@ and `LINDROIDS_REPO_URL` (a mirror or a local test repository).
 
 It also checks for Flatpak and, when it is missing, asks whether to install it with Flathub, with
 the package manager it found: apt, pacman, dnf, yum, zypper, apk or xbps. Termux has no flatpak
-package, so there it offers to install Flatpak into a proot-distro distro you already have (the
-first one, or `LINDROIDS_DISTRO`), with that distro's own package manager; it never installs
-proot-distro or a distro itself, and with no distro it skips Flatpak.
-`LINDROIDS_FLATPAK=yes` or `no` answers the question in advance; with no terminal it is skipped.
+package, so there it asks to install Flatpak into a proot-distro distro you already have (the
+first one, or `LINDROIDS_DISTRO`; default yes), with that distro's own package manager. With no
+distro it explains that Flatpak needs one and asks whether to set up proot-distro with Debian
+for it (default no: nothing is created unless you answer yes). `lindroids run <app-id>` then
+finds the apps in that distro by itself.
+`LINDROIDS_FLATPAK=yes` or `no` answers the questions in advance; with no terminal they are skipped.
 
 ## Termux
 
 Use Termux from F-Droid or GitHub (the Play Store build works too).
 
 ```sh
-curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh | sh
+curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh -o install.sh && sh install.sh
 lindroids run <command>
 ```
 

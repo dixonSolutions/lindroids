@@ -17,7 +17,9 @@
 #                                      release into ~/.local/bin
 # The same works under proot (proot-distro, UserLAnd, Andronix), where the shell is root. Outside
 # Termux, system changes need root: it runs them directly as root, else with sudo or doas.
-# It also offers to install Flatpak (with Flathub) with the same package manager.
+# It also checks for Flatpak and, when it is missing, asks to install it (with Flathub): with the
+# system's package manager, or in Termux (which has no Flatpak package) in a proot-distro distro —
+# one you have, or, if you say yes, a Debian it sets up for that.
 #
 # Safe to run again: it rewrites the same source and key files and upgrades the package.
 #
@@ -31,7 +33,7 @@
 #                           zypper | apk | xbps | static
 #   LINDROIDS_FLATPAK       yes | no: install Flatpak (with Flathub) without asking, or skip it
 #   LINDROIDS_DISTRO        proot-distro distro for Flatpak in Termux (default: the first one installed;
-#                           the installer never installs a distro)
+#                           with none, Debian is set up only when you answer yes)
 set -eu
 
 # build-repo.sh rewrites these lines for the repository it publishes.
@@ -252,10 +254,11 @@ flatpak_termux() {
       return 0
     fi
   done
-  # Flatpak has no Termux build. It can only go into a proot-distro distro the user already has,
-  # with that distro's own package manager; the installer never creates a distro for it.
+  # Flatpak has no Termux build: it goes into a proot-distro distro, with that distro's own
+  # package manager — one the user has, or a Debian set up for it, only when the user says so.
   distro=''
   rootfs=''
+  created=''
   if [ -n "${LINDROIDS_DISTRO:-}" ] && [ -d "$(distro_rootfs "$LINDROIDS_DISTRO")/usr" ]; then
     distro=$LINDROIDS_DISTRO
     rootfs=$(distro_rootfs "$distro")
@@ -271,9 +274,23 @@ flatpak_termux() {
     done
   fi
   if [ -z "$distro" ]; then
-    echo "Flatpak: not installed. Flatpak has no Termux package; to use Flatpak apps, install it in a"
-    echo "  proot-distro distro you have (or run this installer inside one)."
-    return 0
+    echo
+    echo "Flatpak: not installed. Termux has no Flatpak package: Flatpak needs a Linux distro, which"
+    echo "  proot-distro runs inside Termux, without root (Debian: about 300 MB, more with apps)."
+    echo "  lindroids runs Termux programs without it; it is only for Flatpak apps."
+    if ! ask "Set up proot-distro with Debian and install Flatpak (with Flathub) in it?" no; then
+      echo "Skipping Flatpak (to add it later: LINDROIDS_FLATPAK=yes, then run this installer again)."
+      return 0
+    fi
+    if ! have proot-distro; then
+      say "installing proot-distro"
+      pm_install proot-distro < /dev/null || { warn "installing proot-distro failed"; return 0; }
+    fi
+    say "proot-distro: installing Debian"
+    proot-distro install debian < /dev/null || { warn "proot-distro could not install Debian"; return 0; }
+    distro=debian
+    rootfs=$(distro_rootfs debian)
+    created=1
   fi
   # The distro's package manager, from its root filesystem.
   dpm=
@@ -296,10 +313,14 @@ flatpak_termux() {
     echo "Flatpak: not installed (proot-distro is missing, so the distro $distro cannot be entered)."
     return 0
   fi
-  echo
-  if ! ask "Install Flatpak (with Flathub) in your proot-distro distro $distro, with ${dpm%-install}?" no; then
-    echo "Skipping Flatpak (to add it later: LINDROIDS_FLATPAK=yes, then run this installer again)."
-    return 0
+  if [ -z "$created" ]; then
+    echo
+    echo "Flatpak: not installed. Termux has no Flatpak package; it can go into your proot-distro"
+    echo "  distro $distro, where lindroids finds its apps by itself."
+    if ! ask "Install Flatpak (with Flathub) in $distro, with ${dpm%-install}?"; then
+      echo "Skipping Flatpak (to add it later: LINDROIDS_FLATPAK=yes, then run this installer again)."
+      return 0
+    fi
   fi
   say "installing Flatpak in $distro (${dpm%-install}) and adding Flathub"
   proot-distro login "$distro" -- sh -c "$inst && flatpak remote-add --if-not-exists flathub $FLATHUB" \
