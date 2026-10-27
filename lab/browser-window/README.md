@@ -15,6 +15,9 @@ get without an APK, and what a relay sees when they open and close.
 - `Open.java` — starts an activity as Termux with extras `am` cannot send (the Custom Tabs
   session Binder): `app_process -Djava.class.path=open.dex /system/bin probe.Open com.termux <url>
   -p <browser> --cct -f 18080000`.
+- `TaskProbe.java` — what Recents draws for each task: the activity that owns it and the
+  TaskDescription (label, icon) that activity set; run as adb's shell:
+  `adb shell CLASSPATH=/data/local/tmp/taskprobe.dex app_process /system/bin probe.TaskProbe`.
 - `b16-2026-10-27.log`, `b16-2026-10-27-customtabs.log` — the probe's logs from the runs below,
   without heartbeats.
 
@@ -45,3 +48,4 @@ get without an APK, and what a relay sees when they open and close.
 | Android's accent colour | CSS `AccentColor` in Firefox | the system accent (`#824c76` on b16); `prefers-color-scheme` follows the system's dark mode |
 | Raise a Custom Tab | same intent, `NEW_DOCUMENT` without `MULTIPLE_TASK` | the existing task comes to the front; the page reloads |
 | Stock Chromium (Chrome's Custom Tabs) | — | not tested: installing the Chromium snapshot APK on the VM was not permitted in this session |
+| Whose icon Recents shows (2026-10-28) | `TaskProbe` on a running Calculator window; Firefox's manifest (`aapt2 dump xmltree`) | the task's activity is `org.mozilla.firefox/…customtabs.ExternalAppBrowserActivity`; its TaskDescription has no label and no icon (Firefox does not pass the page's title or favicon on); that activity declares no icon of its own, so Android uses Firefox's application icon (`@0x7f100000`, label "Firefox") |
