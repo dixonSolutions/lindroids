@@ -193,7 +193,8 @@ pub enum ToApp {
     /// Send the content of a picked document (FilesPicked's `files[index]`) as FileChunk
     /// payloads: the Linux side cannot read it in place.
     FetchFile { request: u32, index: u32 },
-    /// Write the payload into a document picked for saving (its content URI). Answered with
+    /// Write the payload into a document picked for saving, a `writable` picked document, or a
+    /// new file in a picked folder (the folder's uri + "/" + its path inside it). Answered with
     /// WriteResult. `offset` 0 truncates first; later chunks of the same write follow with
     /// growing offsets, the last one with `last`.
     WriteFile { request: u32, uri: String, offset: u64, last: bool, len: u32 },
@@ -246,7 +247,8 @@ pub struct PickFiles {
     pub name: Option<String>,
 }
 
-/// One document the user picked.
+/// One document the user picked. For a folder, the folder itself comes first (mime
+/// `inode/directory`, `rel` ""), then everything in it, folders included.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct PickedFile {
     /// The document's content URI (kept by the app for FetchFile/WriteFile).
@@ -261,6 +263,12 @@ pub struct PickedFile {
     pub size: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime: Option<String>,
+    /// The app can write changes back into it (WriteFile), not only send its content.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub writable: bool,
+    /// In a picked folder: where it is inside it ("notes/a.txt").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rel: Option<String>,
 }
 
 /// What Android says about itself, for Linux programs (the Settings, NetworkMonitor,

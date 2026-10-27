@@ -810,11 +810,14 @@ $('kb').onclick = () => {
 };
 // A window of its own (a Custom Tab opened by `lindroids run`, `?window`): the first tap takes the
 // whole screen, so nothing of the browser is left. Browsers allow full screen only while handling
-// a tap; the canvas cancels touches (no click follows), so ask on the tap's end.
+// a tap; the canvas cancels touches (no click follows), so ask on the tap's end. Not on the
+// page's own buttons: asking for full screen uses up the tap, and they need it (Choose… opens
+// Android's picker).
 if (new URLSearchParams(location.search).has('window')) {
-  const full = () => {
+  const full = (e) => {
     // Not once the program has ended: the browser's close button is the way out then.
     if (ended !== null && !windows.size) return;
+    if (e.target instanceof Element && e.target.closest('.dialog, .toast')) return;
     if (!document.fullscreenElement) document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
   };
   for (const ev of ['pointerup', 'touchend', 'click']) addEventListener(ev, full, { capture: true });
@@ -1159,12 +1162,20 @@ function dialog(html, buttons) {
 const picked = new Map(); // request -> [File]
 const saves = new Map(); // uri -> {name, parts}
 
+// File System Access (Chromium 132+ on Android): picked documents can be written back, a save goes
+// where the user says, and folders can be picked. Without it (Firefox) a pick is a copy and a
+// save is a download.
+const fsa = typeof window.showOpenFilePicker === 'function';
+const handles = new Map(); // uri -> the picked file's handle, or the picked folder's
+const writes = new Map(); // uri -> the write going on (a promise of its stream; null when done)
+
 // The last tap or click on the page, for what a browser allows only right after one.
 let lastTap = -1e9;
 addEventListener('pointerup', () => { lastTap = performance.now(); }, { capture: true });
 
 function pickFiles(p) {
   const cancel = () => send({ t: 'files_picked', request: p.request, files: [] });
+  if (fsa) return pickHandles(p, cancel);
   if (p.directory) return cancel();
   if (p.save) {
     const name = p.name || 'file';
@@ -1201,6 +1212,109 @@ function pickFiles(p) {
   dialog(`<p>${esc(title)}</p>`, [['Choose…', () => input.click()], ['Cancel', cancel, true]]);
 }
 
+// Android's picker through File System Access. Like the file chooser it needs a tap: the one that
+// asked (Open in the program) if it is fresh, else a tap on a dialog.
+function pickHandles(p, cancel) {
+  const title = p.title || (p.directory ? 'A Linux program wants a folder' : p.save ? 'Save' : 'A Linux program wants a file');
+  const ask = () => dialog(`<p>${esc(title)}</p>`, [['Choose…', go], ['Cancel', cancel, true]]);
+  function go() {
+    showPicker(p).then((files) => send({ t: 'files_picked', request: p.request, files }), (e) => {
+      if (e.name === 'SecurityError' || e.name === 'NotAllowedError') return ask();
+      if (e.name !== 'AbortError') plog(`picker: ${e}`);
+      cancel();
+    });
+  }
+  if (activeGesture() || performance.now() - lastTap < 4000) go();
+  else ask();
+}
+
+function pickTypes(p) {
+  const mimes = (p.mime_types || []).filter((m) => /^[\w.+-]+\/[\w.+*-]+$/.test(m));
+  return mimes.length ? [{ description: p.title || 'Files', accept: Object.fromEntries(mimes.map((m) => [m, []])) }] : undefined;
+}
+
+async function showPicker(p) {
+  const types = pickTypes(p);
+  if (p.save) {
+    const h = await showSaveFilePicker({ suggestedName: p.name || 'file', types });
+    const uri = 'save:' + p.request;
+    handles.set(uri, h);
+    return [{ uri, name: h.name, size: 0, writable: true }];
+  }
+  if (p.directory) {
+    const d = await showDirectoryPicker({ mode: 'readwrite' });
+    const uri = 'dir:' + p.request;
+    handles.set(uri, d);
+    const files = [{ uri, name: d.name, size: 0, mime: 'inode/directory', rel: '', writable: true }];
+    const blobs = [null];
+    await listFolder(d, '', uri, files, blobs);
+    picked.set(p.request, blobs);
+    return files;
+  }
+  const hs = await showOpenFilePicker({ multiple: !!p.multiple, types });
+  const blobs = await Promise.all(hs.map((h) => h.getFile()));
+  picked.set(p.request, blobs);
+  return hs.map((h, i) => {
+    const uri = `pick:${p.request}:${i}`;
+    handles.set(uri, h);
+    return { uri, name: h.name, size: blobs[i].size, mime: blobs[i].type || undefined, writable: true };
+  });
+}
+
+// Everything in a picked folder, folders first in each, as files_picked entries (and the files to
+// fetch, at the same index).
+async function listFolder(d, prefix, uri, files, blobs) {
+  for await (const [name, h] of d.entries()) {
+    if (files.length > 20000) throw new Error(`${d.name}: too many files`);
+    const rel = prefix + name;
+    if (h.kind === 'directory') {
+      files.push({ uri: `${uri}/${rel}`, name, size: 0, mime: 'inode/directory', rel, writable: true });
+      blobs.push(null);
+      await listFolder(h, rel + '/', uri, files, blobs);
+    } else {
+      const f = await h.getFile();
+      files.push({ uri: `${uri}/${rel}`, name, size: f.size, mime: f.type || undefined, rel, writable: true });
+      blobs.push(f);
+    }
+  }
+}
+
+// A picked file's handle; in a picked folder ("dir:<request>/<path>"), made if it is new.
+async function fileHandle(uri) {
+  const h = handles.get(uri);
+  if (h) return h;
+  const m = /^(dir:\d+)\/(.+)$/.exec(uri);
+  let d = m && handles.get(m[1]);
+  if (!d) throw new Error('not a picked file');
+  const parts = m[2].split('/');
+  for (const part of parts.slice(0, -1)) d = await d.getDirectoryHandle(part, { create: true });
+  return d.getFileHandle(parts[parts.length - 1], { create: true });
+}
+
+// Into the picked document itself. The first write into a file picked to open asks "Save
+// changes?" once; no tap is needed.
+function writeHandle(m, payload) {
+  const data = payload.slice();
+  let w = (writes.get(m.uri) || Promise.resolve(null)).catch(() => null);
+  if (m.offset === 0) {
+    w = w.then(async (old) => {
+      if (old) await old.abort().catch(() => {});
+      return (await fileHandle(m.uri)).createWritable();
+    });
+  }
+  w = w.then(async (s) => {
+    if (!s) throw new Error('a write without its start');
+    await s.write(data);
+    return s;
+  });
+  if (m.last) {
+    w = w.then(async (s) => { await s.close(); return null; });
+    w.then(() => send({ t: 'write_result', request: m.request, ok: true }),
+      (e) => send({ t: 'write_result', request: m.request, ok: false, message: String(e) }));
+  }
+  writes.set(m.uri, w);
+}
+
 async function fetchFile(m) {
   const f = (picked.get(m.request) || [])[m.index];
   if (!f) return send({ t: 'file_chunk', request: m.request, index: m.index, last: true, error: 'no such file', len: 0 });
@@ -1214,6 +1328,7 @@ async function fetchFile(m) {
 }
 
 function writeFile(m, payload) {
+  if (handles.has(m.uri) || /^dir:\d+\//.test(m.uri)) return writeHandle(m, payload);
   const s = saves.get(m.uri);
   if (!s) return send({ t: 'write_result', request: m.request, ok: false, message: 'not a file picked for saving' });
   if (m.offset === 0) s.parts = [];

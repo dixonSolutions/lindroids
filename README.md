@@ -39,7 +39,8 @@ lindroids export org.gnome.Calculator  # a home screen icon; works with Termux c
 - **Home screen icons** (`lindroids export`) that start the program even when Termux is closed or
   the phone just restarted.
 - **Android's side, piped in**: dark mode and accent colour; files (Android's picker for
-  *Open…*, *Open with* from the Files app, saves to Downloads, the Camera as a photo source);
+  *Open…* and *Save As…*, *Open with* from the Files app, the Camera as a photo source; in
+  Chromium-based browsers saves go back into the picked file and folders can be picked);
   notifications in Android's shade; links open in Android's browser; clipboard both ways; sound;
   the microphone; keeping the screen on (for a video or a presentation); battery and battery
   saver; touch, pen, soft and hardware keyboards; network state.
@@ -77,12 +78,16 @@ Details and the experiments behind them: [docs/DISPLAY.md](docs/DISPLAY.md),
 
 ## Limits (no app of our own)
 
-- Recents shows the browser's icon on the window (the program's name is the title).
-- Full screen starts on the first tap; Firefox does not let a page close its window, so an ended
-  program's window asks for one tap on ✕.
-- A file picked in Android's picker reaches the program as a copy: *Save As* goes to Downloads.
-  Browsers have no folder picker.
-- Home screen icons carry Termux's badge, and `lindroids remove` can only grey one out.
+- Recents shows the browser's icon on the window in Firefox (the program's name is the title).
+  Chrome's source sets the page's icon there; not yet tried on a device.
+- Full screen starts on the first tap: browsers allow it only then. Firefox does not let a page
+  close its window, so an ended program's window asks for one tap on ✕ (Chrome's source closes it).
+- Files in Firefox: a picked file reaches the program as a copy, *Save As* goes to Downloads, and
+  there is no folder picker. Chromium-based browsers (Chrome 132+, Edge, Brave, Cromite) have
+  File System Access: saves go into the picked file or where *Save As* says, and folders can be
+  picked (copied to Linux, changes and new files written back; deletions are not).
+- Home screen icons carry Termux's badge (the launcher draws it on every app's shortcut), and
+  `lindroids remove` can only grey one out (Android lets only the launcher unpin).
 
 ## Install
 

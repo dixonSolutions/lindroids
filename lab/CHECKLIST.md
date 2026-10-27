@@ -43,9 +43,9 @@ from Android**, through the window page and Termux, never by giving the containe
 |---|---|---|
 | Open a file from Android (Files "Open with" / Share → Termux → Edit) in a Linux program | ✅ | `termux-file-editor` → `lindroids open --linux`; [demo](../media/demos/open-with.mp4); edits go to Termux's copy in `~/downloads` |
 | File > Open in a program shows Android's picker (Files, Camera) | ✅ | portal programs (GTK 4, Flatpak); straight to the picker after the tap; [demo](../media/demos/file-picker.mp4); older GTK 3 dialogs browse Termux's files |
-| Edits reach the picked original | ⛔ | Android browsers cannot write back to a picked file; Save As goes to Downloads |
-| Save (Save As) goes to Android's Downloads, again and again | ✅ | |
-| Folders (pick a folder) | ⛔ | no folder picker in Android browsers; `/sdcard` is there when Termux has storage access |
+| Edits reach the picked original | 🟡 | Chromium-based browsers (File System Access): Text Editor open → edit → Save wrote `/sdcard/Documents/meeting.txt`, one "Save changes?" prompt, later saves without one (b16, Cromite 153). ⛔ Firefox: a copy |
+| Save As goes where the user chose, again and again | 🟡 | Chromium-based: Android's save picker, then each save into that file (b16, Cromite). Firefox: to Downloads ✅ |
+| Folders (pick a folder) | 🟡 | Chromium-based: FileChooser `directory` → Android's folder picker; copied to Linux, a changed file and a new file in a new subfolder written back (b16, Cromite, via `gdbus`); deletions are not. ⛔ Firefox; `/sdcard` is there when Termux has storage access |
 | Linux files visible to Android apps | ✅ | Termux's storage provider in Files (`~/downloads`, Flatpak data under `~/.var/app`) |
 | Notifications are Android notifications | ✅ | posted as Termux, with the program's name and icon; tap brings back its window |
 | Requests reach the program's own window | ✅ | sound, pickers, links, notifications by pid → run |

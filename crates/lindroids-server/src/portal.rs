@@ -637,17 +637,23 @@ fn safe_name(name: &str) -> String {
 }
 
 /// Where a picked document is readable on the Linux side: its shared-storage path when this side
-/// can read it, else a copy fetched from the app.
-fn readable_path(request: u32, index: u32, f: &PickedFile) -> Result<PathBuf, String> {
+/// can read it, else a copy fetched from the app. True with a copy.
+fn readable_path(request: u32, index: u32, f: &PickedFile) -> Result<(PathBuf, bool), String> {
     if let Some(p) = &f.path {
         if std::fs::File::open(p).is_ok() {
-            return Ok(PathBuf::from(p));
+            return Ok((PathBuf::from(p), false));
         }
     }
     let dir = documents_dir(request);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let dest = dir.join(safe_name(&f.name));
-    let mut out = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
+    fetch(request, index, f, &dest)?;
+    Ok((dest, true))
+}
+
+/// Copy picked document `index` from the app into `dest`.
+fn fetch(request: u32, index: u32, f: &PickedFile, dest: &Path) -> Result<(), String> {
+    let mut out = std::fs::File::create(dest).map_err(|e| e.to_string())?;
     if shared().app_version.load(Ordering::SeqCst) < 3 {
         return Err("no browser page is linked (`lindroids pair`)".into());
     }
@@ -662,7 +668,7 @@ fn readable_path(request: u32, index: u32, f: &PickedFile) -> Result<PathBuf, St
                     break Err(e.to_string());
                 }
                 if last {
-                    break Ok(dest);
+                    break Ok(());
                 }
             }
             _ => break Err(format!("{}: the page stopped sending it", f.name)),
@@ -672,48 +678,123 @@ fn readable_path(request: u32, index: u32, f: &PickedFile) -> Result<PathBuf, St
     result
 }
 
-/// After a save into a copy, write it back into the picked document whenever it changes.
-fn write_back(pid: Option<u32>, staging: PathBuf, uri: String) {
+const DIRECTORY: &str = "inode/directory";
+
+/// Most of a picked folder copied to this side.
+const FOLDER_MAX: u64 = 1 << 30;
+
+/// A path inside a picked folder that stays inside it.
+fn safe_rel(rel: &str) -> Option<PathBuf> {
+    let parts: Vec<&str> = rel.split('/').collect();
+    (!rel.is_empty() && parts.iter().all(|p| !p.is_empty() && *p != "." && *p != ".." && !p.contains('\0'))).then(|| parts.iter().collect())
+}
+
+/// Copy a picked folder (`files[0]`, everything in it after) to this side; its root.
+fn copy_folder(request: u32, files: &[PickedFile]) -> Result<PathBuf, String> {
+    let total: u64 = files.iter().map(|f| f.size).sum();
+    if total > FOLDER_MAX {
+        return Err(format!("{}: {} MiB is more than a folder copied to Linux may hold", files[0].name, total >> 20));
+    }
+    let root = documents_dir(request).join(safe_name(&files[0].name));
+    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    for (i, f) in files.iter().enumerate().skip(1) {
+        let Some(rel) = f.rel.as_deref().and_then(safe_rel) else { continue };
+        let dest = root.join(rel);
+        if f.mime.as_deref() == Some(DIRECTORY) {
+            std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+        } else {
+            if let Some(d) = dest.parent() {
+                std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+            }
+            fetch(request, i as u32, f, &dest)?;
+        }
+    }
+    Ok(root)
+}
+
+type Stamp = Option<(Option<std::time::SystemTime>, u64)>;
+
+fn stamp(p: &Path) -> Stamp {
+    std::fs::symlink_metadata(p).ok().filter(|m| m.is_file()).map(|m| (m.modified().ok(), m.len()))
+}
+
+/// Files under `root` (by their path inside it), leaving out what editors write while saving.
+fn folder_files(root: &Path, rel: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(dir) = std::fs::read_dir(root.join(rel)) else { return };
+    for e in dir.flatten() {
+        let name = e.file_name();
+        let n = name.to_string_lossy();
+        if n.starts_with(".goutputstream-") || n.starts_with(".~lock.") {
+            continue;
+        }
+        match e.file_type() {
+            Ok(t) if t.is_dir() => folder_files(root, &rel.join(&name), out),
+            Ok(t) if t.is_file() => out.push(rel.join(&name)),
+            _ => {}
+        }
+    }
+}
+
+/// After a save into a copy, or into the copy of a document or folder the app can write to,
+/// write it back whenever it changes: `files` are (copy, document uri); in a copied folder
+/// (`folder`: its root and the picked folder's uri), files that appear go back too.
+fn write_back(pid: Option<u32>, files: Vec<(PathBuf, String)>, folder: Option<(PathBuf, String)>) {
     std::thread::spawn(move || {
-        let stamp = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.modified().ok(), m.len()));
-        let mut last = stamp(&staging);
+        let watched = || {
+            let mut all = files.clone();
+            if let Some((root, uri)) = &folder {
+                let mut rels = Vec::new();
+                folder_files(root, Path::new(""), &mut rels);
+                all.extend(rels.into_iter().map(|r| (root.join(&r), format!("{uri}/{}", r.to_string_lossy()))));
+            }
+            all
+        };
+        let mut last: HashMap<PathBuf, Stamp> = watched().into_iter().map(|(p, _)| (p.clone(), stamp(&p))).collect();
         let started = Instant::now();
         while started.elapsed() < Duration::from_secs(4 * 3600) {
             std::thread::sleep(Duration::from_secs(1));
-            let now = stamp(&staging);
-            if now == last || now.is_none() {
+            let changed: Vec<(PathBuf, String, Stamp)> = watched()
+                .into_iter()
+                .filter_map(|(p, uri)| {
+                    let now = stamp(&p);
+                    (now.is_some() && last.get(&p) != Some(&now)).then_some((p, uri, now))
+                })
+                .collect();
+            if changed.is_empty() {
                 continue;
             }
             // Let the writer finish.
             std::thread::sleep(Duration::from_millis(700));
-            if stamp(&staging) != now {
-                continue;
+            for (p, uri, now) in changed {
+                if stamp(&p) != now {
+                    continue;
+                }
+                last.insert(p.clone(), now);
+                send_file(pid, &p, &uri);
             }
-            last = now;
-            let Ok(data) = std::fs::read(&staging) else { continue };
-            let chunks: Vec<&[u8]> = if data.is_empty() { vec![&[][..]] } else { data.chunks(1 << 20).collect() };
-            let n = chunks.len();
-            let mut offset = 0u64;
-            let (r, rx) = match ask(pid, |r| {
-                let c = chunks[0];
-                (ToApp::WriteFile { request: r, uri: uri.clone(), offset: 0, last: n == 1, len: c.len() as u32 }, c.to_vec())
-            }) {
-                Some(x) => x,
-                None => continue,
-            };
-            offset += chunks[0].len() as u64;
-            for (i, c) in chunks.iter().enumerate().skip(1) {
-                to_app(pid, ToApp::WriteFile { request: r, uri: uri.clone(), offset, last: i + 1 == n, len: c.len() as u32 }, c.to_vec());
-                offset += c.len() as u64;
-            }
-            match rx.recv_timeout(Duration::from_secs(120)) {
-                Ok(Answer::Write(true, _)) => info!("saved {} into {uri}", staging.display()),
-                Ok(Answer::Write(false, m)) => warn!("saving into {uri}: {}", m.unwrap_or_default()),
-                _ => warn!("saving into {uri}: no answer"),
-            }
-            forget(r);
         }
     });
+}
+
+/// Write a file into a document of the app's.
+fn send_file(pid: Option<u32>, path: &Path, uri: &str) {
+    let Ok(data) = std::fs::read(path) else { return };
+    let chunks: Vec<&[u8]> = if data.is_empty() { vec![&[][..]] } else { data.chunks(1 << 20).collect() };
+    let n = chunks.len();
+    let Some((r, rx)) = ask(pid, |r| (ToApp::WriteFile { request: r, uri: uri.into(), offset: 0, last: n == 1, len: chunks[0].len() as u32 }, chunks[0].to_vec())) else {
+        return;
+    };
+    let mut offset = chunks[0].len() as u64;
+    for (i, c) in chunks.iter().enumerate().skip(1) {
+        to_app(pid, ToApp::WriteFile { request: r, uri: uri.into(), offset, last: i + 1 == n, len: c.len() as u32 }, c.to_vec());
+        offset += c.len() as u64;
+    }
+    match rx.recv_timeout(Duration::from_secs(120)) {
+        Ok(Answer::Write(true, _)) => info!("saved {} into {uri}", path.display()),
+        Ok(Answer::Write(false, m)) => warn!("saving into {uri}: {}", m.unwrap_or_default()),
+        _ => warn!("saving into {uri}: no answer"),
+    }
+    forget(r);
 }
 
 struct FileChooser;
@@ -762,17 +843,36 @@ impl FileChooser {
                         if std::fs::create_dir_all(&dir).is_err() || std::fs::File::create(&p).is_err() {
                             return respond(&sender, &h, 2, HashMap::new());
                         }
-                        write_back(pid, p.clone(), f.uri.clone());
+                        write_back(pid, vec![(p.clone(), f.uri.clone())], None);
                         p
                     }
                 };
                 uris.push(file_uri(&path));
+            } else if files[0].mime.as_deref() == Some(DIRECTORY) {
+                match copy_folder(request, &files) {
+                    Ok(root) => {
+                        if files[0].writable {
+                            write_back(pid, Vec::new(), Some((root.clone(), files[0].uri.clone())));
+                        }
+                        uris.push(file_uri(&root));
+                    }
+                    Err(e) => warn!("FileChooser: {e}"),
+                }
             } else {
+                let mut copies = Vec::new();
                 for (i, f) in files.iter().enumerate() {
                     match readable_path(request, i as u32, f) {
-                        Ok(p) => uris.push(file_uri(&p)),
+                        Ok((p, copy)) => {
+                            if copy && f.writable {
+                                copies.push((p.clone(), f.uri.clone()));
+                            }
+                            uris.push(file_uri(&p));
+                        }
                         Err(e) => warn!("FileChooser: {e}"),
                     }
+                }
+                if !copies.is_empty() {
+                    write_back(pid, copies, None);
                 }
             }
             if uris.is_empty() {
@@ -1183,6 +1283,24 @@ mod tests {
         assert_eq!(safe_name("../x/y"), ".._x_y");
         assert_eq!(safe_name(".."), "file");
         assert_eq!(strip_markup("<b>Hi</b> &amp; bye"), "Hi & bye");
+    }
+
+    #[test]
+    fn picked_folders() {
+        assert_eq!(safe_rel("notes/a b.txt"), Some(PathBuf::from("notes/a b.txt")));
+        for bad in ["", "/etc/passwd", "a/../../b", "./a", "a//b", "a/"] {
+            assert_eq!(safe_rel(bad), None, "{bad}");
+        }
+        let root = std::env::temp_dir().join(format!("lindroids-folder-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("sub/deeper")).unwrap();
+        for f in ["a.txt", "sub/b.txt", "sub/deeper/c", "sub/.goutputstream-X1", ".~lock.a.odt#"] {
+            std::fs::write(root.join(f), f).unwrap();
+        }
+        let mut found = Vec::new();
+        folder_files(&root, Path::new(""), &mut found);
+        found.sort();
+        assert_eq!(found, ["a.txt", "sub/b.txt", "sub/deeper/c"].map(PathBuf::from));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

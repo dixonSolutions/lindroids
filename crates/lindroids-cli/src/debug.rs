@@ -244,6 +244,7 @@ fn handle(m: ToApp, payload: Vec<u8>, wins: &mut HashMap<u32, Win>, writer: &Mut
                     path: (!copy).then(|| f.display().to_string()),
                     size: std::fs::metadata(f).map(|m| m.len()).unwrap_or(0),
                     mime: None,
+                    ..Default::default()
                 })
                 .collect();
             println!("pick-files {} {:?} -> {} file(s)", if p.save { "save" } else { "open" }, p.mime_types, picks.len());
