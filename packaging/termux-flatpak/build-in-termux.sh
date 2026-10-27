@@ -36,9 +36,10 @@ say "build tools and libraries (pkg)"
 # bubblewrap is in root-repo: only root uses it, but it is part of a complete Flatpak.
 yes | pkg install -y root-repo > /dev/null 2>&1 || true
 # xz-utils, tar and patch: the sources are .tar.xz, and a fresh Termux has no xz program.
+# libxau with xorgproto: Flatpak's configure looks xau up, and xau.pc needs xproto.pc.
 yes | pkg install -y build-essential xz-utils tar patch ninja pkg-config python python-pip bison gettext autoconf automake libtool \
   glib libarchive libcurl gpgme json-glib libxml2 libseccomp appstream gdk-pixbuf zstd libyaml \
-  libgpg-error libassuan liblzma libcap e2fsprogs libfuse3 dbus bubblewrap
+  libgpg-error libassuan liblzma libcap e2fsprogs libfuse3 dbus bubblewrap libxau xorgproto
 pip install --quiet meson pyparsing
 
 mkdir -p "$WORK"
