@@ -42,7 +42,11 @@ fn apt_has(pkg: &str) -> bool {
 fn manager(sb: &sandbox::Sandbox) -> Option<Manager> {
     let satellite_shipped = lindroids_server::x11::find_satellite().is_some();
     if sb.kind == sandbox::Kind::Termux {
-        // Xwayland is in Termux's x11 repository; satellite comes with Lindroids.
+        // Xwayland is in Termux's x11 repository; satellite comes with Lindroids. With the pacman
+        // bootstrap that repository is already in pacman.conf (there is no x11-repo to install).
+        if !sandbox::have("apt") && sandbox::have("pacman") {
+            return Some(Manager { name: "pacman", steps: vec![words("pacman -Sy --needed --noconfirm xwayland libxcb xcb-util-cursor dbus")] });
+        }
         return Some(Manager {
             name: "pkg",
             steps: vec![words("pkg install -y x11-repo"), words("pkg install -y xwayland libxcb xcb-util-cursor dbus")],

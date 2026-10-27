@@ -3,6 +3,7 @@
 //!
 //! - From the APT repository (Termux, Debian/Ubuntu): `apt-get update` and an upgrade of the
 //!   `lindroids` package, which carries the matching APK.
+//! - From the pacman repository (Termux with pacman, Arch): `pacman -Sy` of the package, likewise.
 //! - A static install: the published install script, which checks the release's SHA256SUMS, into
 //!   the same directory.
 //!
@@ -63,6 +64,8 @@ pub fn latest_version() -> Result<String, String> {
 enum Method {
     /// dpkg owns the binary: upgrade the package (Termux or Debian/Ubuntu).
     Apt { termux: bool },
+    /// pacman owns the binary: upgrade the package (Termux with pacman, or Arch).
+    Pacman { termux: bool },
     /// A static install in this directory.
     Static(PathBuf),
 }
@@ -80,6 +83,17 @@ fn method() -> Result<Method, String> {
             .map_or(false, |o| o.status.success() && String::from_utf8_lossy(&o.stdout).starts_with("lindroids:"));
         if owned {
             return Ok(Method::Apt { termux: sb.kind == sandbox::Kind::Termux });
+        }
+    }
+    if sandbox::have("pacman") {
+        let owned = Command::new("pacman")
+            .args(["-Qqo", &exe.display().to_string()])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .map_or(false, |o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "lindroids");
+        if owned {
+            return Ok(Method::Pacman { termux: sb.kind == sandbox::Kind::Termux });
         }
     }
     let dir = exe.parent().ok_or("where is this binary?")?.to_path_buf();
@@ -110,6 +124,8 @@ fn update_cli(m: &Method) -> Result<(), String> {
             run(&root("apt-get update"))?;
             run(&root("apt-get install --only-upgrade -y lindroids"))
         }
+        Method::Pacman { termux: true } => run(&["pacman".into(), "-Sy".into(), "--needed".into(), "--noconfirm".into(), "lindroids".into()]),
+        Method::Pacman { termux: false } => run(&root("pacman -Sy --needed --noconfirm lindroids")),
         Method::Static(dir) => {
             let script = fetch(&format!("{}/install.sh", repo_url()))?;
             println!("+ install.sh (static) into {}", dir.display());
@@ -162,6 +178,8 @@ pub fn cmd_update(args: &[String]) -> i32 {
     let how = match &m {
         Method::Apt { termux: true } => "Termux package".to_string(),
         Method::Apt { termux: false } => "APT package".to_string(),
+        Method::Pacman { termux: true } => "Termux pacman package".to_string(),
+        Method::Pacman { termux: false } => "pacman package".to_string(),
         Method::Static(d) => format!("static install in {}", d.display()),
     };
     println!("lindroids {current} ({how}); latest release {latest}");

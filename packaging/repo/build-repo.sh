@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build (or update) the static, signed Lindroids APT repository served by GitHub Pages.
+# Build (or update) the static, signed Lindroids APT and pacman repositories served by GitHub Pages.
 #
-#   packaging/repo/build-repo.sh <out-dir> [--debs dist/debs] [--keep 3]
+#   packaging/repo/build-repo.sh <out-dir> [--debs dist/debs] [--pacman dist/pacman] [--keep 3]
 #                                [--base-url URL] [--github-repo owner/repo]
 #                                [--public-key packaging/repo/lindroids.gpg]
 #
@@ -15,6 +15,9 @@
 #   dists/stable/{Release,InRelease,Release.gpg}
 #   dists/stable/main/binary-{arm64,armhf,amd64,i386}/Packages(.gz)
 #   pool/{termux,stable}/main/l/lindroids/lindroids_<version>_<arch>.deb
+#   pacman/termux/{aarch64,arm,x86_64,i686}/        Termux with pacman (packaging/build-pacman.sh)
+#   pacman/arch/{aarch64,armv7h,x86_64,i686}/       Arch Linux and derivatives
+#     lindroids.db{,.tar.gz}{,.sig}, lindroids-<version>-<rel>-<arch>.pkg.tar.xz{,.sig}
 #   lindroids.gpg (binary public key), lindroids.asc, install.sh, VERSION, index.html, .nojekyll
 #
 # Signing key, in this order:
@@ -24,13 +27,15 @@
 # --public-key, for tests), or nobody could verify the result; the script checks that, and
 # verifies its own signatures with that public key alone. The site gets that public key.
 #
-# Needs: dpkg-deb, gpg, gpgv, gzip, md5sum, sha1sum, sha256sum.
+# Needs: dpkg-deb, gpg, gpgv, gzip, md5sum, sha1sum, sha256sum; for the pacman repositories also
+# bsdtar (libarchive-tools) and base64.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 
 OUTDIR=
 DEBS=$ROOT/dist/debs
+PKGS=$ROOT/dist/pacman
 KEEP=3
 BASE_URL=${LINDROIDS_REPO_URL:-}
 GITHUB_REPO=${LINDROIDS_GITHUB_REPO:-}
@@ -38,6 +43,7 @@ PUBKEY=$HERE/lindroids.gpg
 while [ $# -gt 0 ]; do
   case "$1" in
     --debs) DEBS=$2; shift 2 ;;
+    --pacman) PKGS=$2; shift 2 ;;
     --keep) KEEP=$2; shift 2 ;;
     --base-url) BASE_URL=$2; shift 2 ;;
     --github-repo) GITHUB_REPO=$2; shift 2 ;;
@@ -47,7 +53,7 @@ while [ $# -gt 0 ]; do
     *) OUTDIR=$1; shift ;;
   esac
 done
-[ -n "$OUTDIR" ] || { echo "usage: build-repo.sh <out-dir> [--debs dir] [--keep N]" >&2; exit 2; }
+[ -n "$OUTDIR" ] || { echo "usage: build-repo.sh <out-dir> [--debs dir] [--pacman dir] [--keep N]" >&2; exit 2; }
 for tool in dpkg-deb gpg gpgv gzip md5sum sha1sum sha256sum; do
   command -v "$tool" >/dev/null || { echo "build-repo: $tool is required" >&2; exit 1; }
 done
@@ -196,6 +202,98 @@ build_suite termux $TERMUX_ARCHES
 # shellcheck disable=SC2086
 build_suite stable $DEBIAN_ARCHES
 
+# --- pacman repositories -------------------------------------------------------------------
+# pacman/<flavour>/<arch>/: the packages with detached binary signatures, and the database
+# lindroids.db (a gzipped tar of <name>-<version>/desc), signed too. pacman wants the signature of
+# every package (SigLevel Required); install.sh trusts the same key with pacman-key.
+pacman_desc() { # <pkg>: the database entry, from the package's .PKGINFO
+  local pkg=$1 info
+  info=$(bsdtar -xOf "$pkg" .PKGINFO)
+  val() { printf '%s\n' "$info" | sed -n "s/^$1 = //p"; }
+  section() { # <NAME> <values...>
+    local v printed=
+    for v in "${@:2}"; do
+      [ -n "$v" ] || continue
+      [ -n "$printed" ] || { echo "%$1%"; printed=1; }
+      echo "$v"
+    done
+    [ -z "$printed" ] || echo
+  }
+  local IFS=$'\n'
+  # shellcheck disable=SC2046
+  {
+    section FILENAME "$(basename "$pkg")"
+    section NAME $(val pkgname)
+    section BASE $(val pkgbase)
+    section VERSION $(val pkgver)
+    section DESC "$(val pkgdesc)"
+    section CSIZE "$(stat -c %s "$pkg")"
+    section ISIZE $(val size)
+    section MD5SUM "$(md5sum "$pkg" | cut -d' ' -f1)"
+    section SHA256SUM "$(sha256sum "$pkg" | cut -d' ' -f1)"
+    section PGPSIG "$(base64 -w0 "$pkg.sig")"
+    section URL $(val url)
+    section LICENSE $(val license)
+    section ARCH $(val arch)
+    section BUILDDATE $(val builddate)
+    section PACKAGER "$(val packager)"
+    section DEPENDS $(val depend)
+    section OPTDEPENDS $(val optdepend)
+  }
+}
+pacman_sign() { # <file>: <file>.sig, binary, checked with the committed key alone
+  "${GPG_SIGN[@]}" --detach-sign -o "$1.sig" "$1"
+  gpgv --quiet --keyring "$PUBKEY" "$1.sig" "$1" 2>/dev/null \
+    || { echo "build-repo: $1.sig does not verify with lindroids.gpg" >&2; exit 1; }
+}
+if [ -d "$PKGS" ] || [ -d "$OUTDIR/pacman" ]; then
+  for tool in bsdtar base64; do
+    command -v "$tool" >/dev/null || { echo "build-repo: $tool is required" >&2; exit 1; }
+  done
+  echo "==> pacman"
+  added=0
+  if [ -d "$PKGS" ]; then
+    while IFS= read -r pkg; do
+      rel=${pkg#"$PKGS"/}
+      mkdir -p "$OUTDIR/pacman/$(dirname "$rel")"
+      cp -f "$pkg" "$OUTDIR/pacman/$rel"
+      rm -f "$OUTDIR/pacman/$rel.sig"
+      added=$((added + 1))
+    done < <(find "$PKGS" -mindepth 3 -maxdepth 3 -name '*.pkg.tar.*' ! -name '*.sig' | sort)
+  fi
+  echo "    $added package(s) added from $PKGS"
+  for dir in "$OUTDIR"/pacman/*/*; do
+    [ -d "$dir" ] || continue
+    # Newest $KEEP versions (lindroids-<pkgver>-<pkgrel>-<arch>.pkg.tar.xz).
+    mapfile -t files < <(find "$dir" -maxdepth 1 -name 'lindroids-*.pkg.tar.*' ! -name '*.sig' -printf '%f\n' \
+      | awk '{v = $0; sub(/^lindroids-/, "", v); sub(/-[^-]*\.pkg\.tar\..*$/, "", v); print v "\t" $0}' \
+      | sort -V -k1,1 | cut -f2)
+    n=${#files[@]}
+    for ((i = 0; i < n - KEEP; i++)); do
+      echo "    prune ${files[$i]}"
+      rm -f "${dir:?}/${files[$i]}" "${dir:?}/${files[$i]}.sig"
+    done
+    db=$(mktemp -d)
+    for pkg in "$dir"/*.pkg.tar.*; do
+      case "$pkg" in *.sig) continue ;; esac
+      [ -e "$pkg" ] || continue
+      [ -f "$pkg.sig" ] || pacman_sign "$pkg"
+      entry=$(bsdtar -xOf "$pkg" .PKGINFO | awk -F' = ' '$1 == "pkgname" {n = $2} $1 == "pkgver" {v = $2} END {print n "-" v}')
+      mkdir -p "$db/$entry"
+      pacman_desc "$pkg" > "$db/$entry/desc"
+    done
+    rm -f "$dir"/lindroids.db* "$dir"/lindroids.files*
+    # shellcheck disable=SC2035
+    (cd "$db" && LANG=C bsdtar -czf "$dir/lindroids.db.tar.gz" --uid 0 --gid 0 --uname root --gname root *)
+    rm -rf "$db"
+    # GitHub Pages serves no symlinks: lindroids.db is a copy.
+    cp "$dir/lindroids.db.tar.gz" "$dir/lindroids.db"
+    pacman_sign "$dir/lindroids.db.tar.gz"
+    pacman_sign "$dir/lindroids.db"
+    echo "    pacman/${dir#"$OUTDIR"/pacman/}: $(bsdtar -tf "$dir/lindroids.db" | grep -c '/desc$' || true) package(s)"
+  done
+fi
+
 # --- site root -----------------------------------------------------------------------------
 cp "$PUBKEY" "$OUTDIR/lindroids.gpg"
 if [ "$PUBKEY" = "$HERE/lindroids.gpg" ]; then
@@ -203,14 +301,10 @@ if [ "$PUBKEY" = "$HERE/lindroids.gpg" ]; then
 else
   gpg --batch --armor --export "$WANT_FPR" > "$OUTDIR/lindroids.asc"
 fi
-sed_args=()
+sed_args=(-e "s|^DEFAULT_KEY_FPR=.*|DEFAULT_KEY_FPR=\"$WANT_FPR\"|")
 [ -n "$BASE_URL" ] && sed_args+=(-e "s|^DEFAULT_REPO_URL=.*|DEFAULT_REPO_URL=\"${BASE_URL%/}\"|")
 [ -n "$GITHUB_REPO" ] && sed_args+=(-e "s|^DEFAULT_GITHUB_REPO=.*|DEFAULT_GITHUB_REPO=\"$GITHUB_REPO\"|")
-if [ ${#sed_args[@]} -gt 0 ]; then
-  sed "${sed_args[@]}" "$ROOT/install.sh" > "$OUTDIR/install.sh"
-else
-  cp "$ROOT/install.sh" "$OUTDIR/install.sh"
-fi
+sed "${sed_args[@]}" "$ROOT/install.sh" > "$OUTDIR/install.sh"
 chmod 644 "$OUTDIR/install.sh"
 # VERSION: the newest version in the pool (the static installer downloads that release).
 latest=$(find "$OUTDIR/pool" -name '*.deb' -printf '%f\n' | awk -F_ '{print $2}' | sort -uV | tail -1)
@@ -221,7 +315,7 @@ site_url=${site_url%/}
 cat > "$OUTDIR/index.html" <<EOF
 <!doctype html>
 <meta charset="utf-8">
-<title>Lindroids APT repository</title>
+<title>Lindroids package repository</title>
 <style>body{font:16px/1.5 system-ui,sans-serif;max-width:46rem;margin:3rem auto;padding:0 1rem}code,pre{background:#f3f3f3;padding:.1rem .3rem}pre{padding:.8rem;overflow:auto}</style>
 <h1>Lindroids</h1>
 <p>Linux apps in Android windows. Latest version: <b>${latest:-none}</b>.</p>
@@ -232,5 +326,12 @@ cat > "$OUTDIR/index.html" <<EOF
 deb [signed-by=\$PREFIX/etc/apt/keyrings/lindroids.gpg] $site_url termux main
 # Debian / Ubuntu
 deb [signed-by=/etc/apt/keyrings/lindroids.gpg] $site_url stable main</pre>
+<p>pacman (after <code>pacman-key --add lindroids.asc &amp;&amp; pacman-key --lsign-key $WANT_FPR</code>):</p>
+<pre># Termux with pacman: \$PREFIX/etc/pacman.conf
+[lindroids]
+Server = $site_url/pacman/termux/\$arch
+# Arch Linux and derivatives: /etc/pacman.conf
+[lindroids]
+Server = $site_url/pacman/arch/\$arch</pre>
 EOF
 echo "==> repository ready in $OUTDIR (latest ${latest:-none}, key $WANT_FPR)"

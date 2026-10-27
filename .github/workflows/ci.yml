@@ -122,9 +122,10 @@ jobs:
           path: target/host-integration-last.png
           if-no-files-found: ignore
 
-  # The Debian flavour end to end with a throwaway signing key: static build, build-debs.sh (with
-  # the xwayland-satellite job's binaries), build-repo.sh, then install.sh against that repository
-  # in a Debian container, which must resolve the satellite's libraries through Recommends.
+  # The Debian and Arch flavours end to end with a throwaway signing key: static build,
+  # build-debs.sh (with the xwayland-satellite job's binaries), build-pacman.sh, build-repo.sh, then
+  # install.sh against that repository in a Debian container, which must resolve the satellite's
+  # libraries through Recommends, and in an Arch container (pacman, signed packages).
   package:
     needs: xwayland-satellite
     runs-on: ubuntu-latest
@@ -149,6 +150,7 @@ jobs:
 
       - name: Package smoke test
         run: |
+          command -v bsdtar >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q libarchive-tools; }
           eval "$(scripts/version.sh)"
           export LINDROIDS_BUILD_ID
           cargo build -p lindroids --release --target x86_64-unknown-linux-musl
@@ -159,11 +161,12 @@ jobs:
           packaging/build-debs.sh --version "$LINDROIDS_VERSION" --dist "$stage/dist" \
             --apk "$stage/dist/lindroids.apk" --out "$stage/debs" --arches amd64 \
             --xwls target/xwls/out
+          packaging/build-pacman.sh --debs "$stage/debs" --out "$stage/pacman"
           GNUPGHOME=$(mktemp -d)
           export GNUPGHOME
           gpg --batch --pinentry-mode loopback --passphrase '' --quick-generate-key "ci <ci@example.invalid>" ed25519 sign never
           gpg --export > "$stage/ci.gpg"
-          packaging/repo/build-repo.sh "$stage/site" --debs "$stage/debs" --public-key "$stage/ci.gpg" \
+          packaging/repo/build-repo.sh "$stage/site" --debs "$stage/debs" --pacman "$stage/pacman" --public-key "$stage/ci.gpg" \
             --base-url http://127.0.0.1:8790
           python3 -m http.server 8790 --bind 127.0.0.1 --directory "$stage/site" >/dev/null 2>&1 &
           server=$!
@@ -176,4 +179,9 @@ jobs:
             if ldd "$xwls" | grep "not found"; then exit 1; fi
             "$xwls" -help >/dev/null
             command -v Xwayland'
+          docker run --rm --network host archlinux:latest sh -ec '
+            curl -fsSL http://127.0.0.1:8790/install.sh | LINDROIDS_FLATPAK=no sh
+            lindroids version
+            pacman -Qi lindroids >/dev/null
+            /usr/libexec/lindroids/xwayland-satellite -help >/dev/null 2>&1 || test -x /usr/libexec/lindroids/xwayland-satellite'
           kill "$server" || true

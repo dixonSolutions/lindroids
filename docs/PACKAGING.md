@@ -13,9 +13,10 @@ Every push to `main` (unless the head commit message contains `[skip ci]`) is a 
 | `lindroids-<v>.apk` (4 ABIs, release-signed)    | GitHub Release; inside every `.deb`      |
 | `lindroids_<v>_{aarch64,arm,x86_64,i686}.deb`   | APT suite `termux`; GitHub Release       |
 | `lindroids_<v>_{arm64,armhf,amd64,i386}.deb`    | APT suite `stable`; GitHub Release       |
+| `lindroids-<v>-1-<arch>.pkg.tar.xz` (from the `.deb`s) | pacman repositories `pacman/termux` (aarch64, arm, x86_64, i686) and `pacman/arch` (aarch64, armv7h, x86_64, i686) |
 | `lindroids-<v>-<arch>-linux-musl.tar.gz`        | GitHub Release (static installs): `bin/lindroids` + `libexec/lindroids/xwayland-satellite` |
 | `SHA256SUMS`                                    | GitHub Release                           |
-| APT repository + `install.sh`                   | `gh-pages` → https://dixonsolutions.github.io/lindroids/ |
+| APT and pacman repositories + `install.sh`      | `gh-pages` → https://dixonsolutions.github.io/lindroids/ |
 
 ### Two builds of the CLI
 
@@ -140,7 +141,8 @@ packaging/repo/build-repo.sh .scratch/repo --debs dist/debs
 
 Pieces can be run on their own: `scripts/fetch-proot.sh`, `scripts/build-apk.sh`,
 `scripts/build-xwayland-satellite.sh`,
-`packaging/build-debs.sh --version <v> [--arches "x86_64 amd64"] [--xwls target/xwls/out]`.
+`packaging/build-debs.sh --version <v> [--arches "x86_64 amd64"] [--xwls target/xwls/out]`,
+`packaging/build-pacman.sh [--debs dist/debs] [--out dist/pacman]` (needs `bsdtar`).
 
 ### Testing a repository before publishing
 
@@ -151,6 +153,11 @@ python3 -m http.server 8790 --bind 0.0.0.0 --directory .scratch/repo &
 # Debian/Ubuntu
 podman run --rm --network host docker.io/library/debian:stable sh -ec '
   apt-get update -q && apt-get install -y -q curl
+  curl -fsSL http://127.0.0.1:8790/install.sh | LINDROIDS_REPO_URL=http://127.0.0.1:8790 sh
+  lindroids version'
+
+# Arch Linux (pacman repository)
+podman run --rm --network host docker.io/library/archlinux:latest sh -ec '
   curl -fsSL http://127.0.0.1:8790/install.sh | LINDROIDS_REPO_URL=http://127.0.0.1:8790 sh
   lindroids version'
 
@@ -177,8 +184,19 @@ dists/stable/{Release,InRelease,Release.gpg}
 dists/stable/main/binary-{arm64,armhf,amd64,i386}/Packages{,.gz}
 pool/termux/main/l/lindroids/lindroids_<v>_<arch>.deb
 pool/stable/main/l/lindroids/lindroids_<v>_<arch>.deb
+pacman/{termux,arch}/<arch>/lindroids.db{,.tar.gz}{,.sig}
+pacman/{termux,arch}/<arch>/lindroids-<v>-1-<arch>.pkg.tar.xz{,.sig}
 lindroids.gpg   lindroids.asc   install.sh   VERSION   index.html   .nojekyll
 ```
+
+- The pacman packages are made from the `.deb`s by
+  [`packaging/build-pacman.sh`](../packaging/build-pacman.sh) (same files; `.PKGINFO` and `.MTREE`
+  as makepkg writes them; the Termux ones keep the `data/data/com.termux/files/usr` paths, as
+  Termux's own pacman packages do). `build-repo.sh` signs every package and the database with the
+  same key (binary detached signatures; `%PGPSIG%` in the database) and keeps the newest 3 per
+  architecture. `lindroids.db` is a copy of `lindroids.db.tar.gz`: GitHub Pages serves no
+  symlinks. install.sh trusts the key with `pacman-key --add`/`--lsign-key`; the fingerprint it
+  expects is stamped into it by `build-repo.sh` (`DEFAULT_KEY_FPR`).
 
 - `Release` carries MD5Sum/SHA1/SHA256 for every index; `InRelease` (clearsigned) and
   `Release.gpg` (detached) are signed with SHA-512. No `Valid-Until`, so the repository does not

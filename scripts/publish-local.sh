@@ -67,7 +67,7 @@ if git fetch -q --depth 1 origin gh-pages 2>/dev/null; then
 else
   echo "no gh-pages branch yet: starting an empty repository"
 fi
-LINDROIDS_GNUPGHOME="$KEYS/gnupg" packaging/repo/build-repo.sh "$SITE" --debs dist/debs --keep 3 \
+LINDROIDS_GNUPGHOME="$KEYS/gnupg" packaging/repo/build-repo.sh "$SITE" --debs dist/debs --pacman dist/pacman --keep 3 \
   --base-url "$BASE_URL" --github-repo "$REPO"
 
 if [ $DRY = 1 ]; then

@@ -1,6 +1,7 @@
 # Every push to main is a release: v<major>.<minor>.<commit count> (scripts/version.sh).
 # Builds the CLI for 8 targets, xwayland-satellite (8 builds, cached by its pin), the APK, the
-# .debs and tarballs (scripts/build-release.sh), publishes the signed APT repository to gh-pages
+# .debs, pacman packages and tarballs (scripts/build-release.sh), publishes the signed APT and
+# pacman repositories to gh-pages
 # and a GitHub Release with the artifacts.
 # Commits whose message contains "[skip ci]" do not release. See docs/PACKAGING.md.
 name: release
@@ -91,7 +92,7 @@ jobs:
       - name: Packaging tools
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q patchelf dpkg-dev foot fonts-dejavu-core libclang-dev pkg-config patch
+          sudo apt-get install -y -q patchelf dpkg-dev foot fonts-dejavu-core libclang-dev pkg-config patch libarchive-tools
 
       - name: Cache proot debs
         uses: actions/cache@v4
@@ -149,7 +150,7 @@ jobs:
             echo "no gh-pages branch yet: starting an empty repository"
           fi
 
-      - name: Build the APT repository
+      - name: Build the APT and pacman repositories
         if: steps.build.outputs.publish == 'true'
         env:
           LINDROIDS_GPG_PRIVATE_KEY: ${{ secrets.LINDROIDS_GPG_PRIVATE_KEY }}
@@ -160,7 +161,7 @@ jobs:
           fi
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           repo="${GITHUB_REPOSITORY#*/}"
-          packaging/repo/build-repo.sh site --debs dist/debs --keep 3 \
+          packaging/repo/build-repo.sh site --debs dist/debs --pacman dist/pacman --keep 3 \
             --base-url "https://$owner.github.io/$repo" --github-repo "$GITHUB_REPOSITORY"
 
       - name: GitHub Release

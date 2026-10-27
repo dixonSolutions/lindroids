@@ -90,10 +90,11 @@ The installer is [`install.sh`](install.sh) in this repository (the same file is
 site above and from `https://raw.githubusercontent.com/dixonSolutions/lindroids/main/install.sh`).
 Later, `lindroids update` brings the CLI and the app to the newest release.
 
-This adds the Lindroids APT repository, so `pkg upgrade` keeps both the CLI and the app current
-(the package carries the matching APK). The same line works in **Debian/Ubuntu under proot**
-(proot-distro, UserLAnd, Andronix) and on desktop Linux; anywhere else it installs a static
-binary. The app alone is on the [releases page](https://github.com/dixonSolutions/lindroids/releases/latest).
+This adds the Lindroids APT repository (or, with Termux's pacman bootstrap, the pacman one), so
+`pkg upgrade` keeps both the CLI and the app current (the package carries the matching APK). The
+same line works in **Debian/Ubuntu and Arch under proot** (proot-distro, UserLAnd, Andronix) and on
+desktop Linux; anywhere else (Fedora, Alpine, openSUSE, …) it installs a static binary. It also
+offers Flatpak with whichever package manager the system has. The app alone is on the [releases page](https://github.com/dixonSolutions/lindroids/releases/latest).
 Details: [docs/INSTALL.md](docs/INSTALL.md).
 
 The first time, the app asks for the 6-digit pairing code that `lindroids setup` (or

@@ -10,22 +10,26 @@ One command installs or updates the CLI anywhere:
 curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh | sh
 ```
 
-What it does depends on where it runs:
+It finds the package manager in use and installs the way that fits it:
 
-| Where                                      | How                                                        | Build                     |
-| ------------------------------------------ | ---------------------------------------------------------- | ------------------------- |
-| Termux (`$PREFIX` contains `com.termux`)   | adds the Lindroids APT repository, suite `termux`          | bionic (Android libc)     |
-| Debian, Ubuntu and derivatives, incl. proot | adds the Lindroids APT repository, suite `stable`         | static musl               |
-| anything else (Alpine, Arch, Fedora, …)    | downloads the static binary into `~/.local/bin`           | static musl               |
+| Where                                        | How                                                        | Build                     |
+| -------------------------------------------- | ---------------------------------------------------------- | ------------------------- |
+| Termux with apt (the default)                | adds the Lindroids APT repository, suite `termux`          | bionic (Android libc)     |
+| Termux with pacman (the pacman bootstrap)    | adds the Lindroids pacman repository `pacman/termux`       | bionic (Android libc)     |
+| Debian, Ubuntu and derivatives, incl. proot  | adds the Lindroids APT repository, suite `stable`          | static musl               |
+| Arch Linux and derivatives, incl. proot      | adds the Lindroids pacman repository `pacman/arch`         | static musl               |
+| anything else (Fedora, Alpine, openSUSE, Void, …) | downloads the static binary into `~/.local/bin`       | static musl               |
 
-Both APT packages also carry the APK, so the app is updated together with the CLI.
+Every package also carries the APK, so the app is updated together with the CLI.
 
 The installer can be read first: `curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh | less`.
-It honours these variables: `LINDROIDS_METHOD` (`apt-termux`, `apt-debian` or `static`),
+It honours these variables: `LINDROIDS_METHOD` (`apt-termux`, `pacman-termux`, `apt-debian`,
+`pacman-arch` or `static`),
 `LINDROIDS_INSTALL_DIR` (static installs), `LINDROIDS_VERSION` (static installs; default: latest)
 and `LINDROIDS_REPO_URL` (a mirror or a local test repository).
 
-It also checks for Flatpak and, when it is missing, asks whether to install it with Flathub. Termux
+It also checks for Flatpak and, when it is missing, asks whether to install it with Flathub, with
+the package manager it found: apt, pacman, dnf, yum, zypper, apk or xbps. Termux
 has no flatpak package, so there it would go into a proot-distro distro (Debian unless
 `LINDROIDS_DISTRO` names another), where `lindroids run <app-id>` finds its apps on its own. That
 downloads a whole distro, and Lindroids does not need it for Termux programs, so in Termux the
@@ -47,6 +51,10 @@ Optional packages: `pkg install proot-distro` to run programs from a Debian/Ubun
 (`lindroids run --distro debian …`). For X11 programs, `lindroids setup x11` installs Xwayland
 (from Termux's x11-repo); xwayland-satellite, which gives every X11 window its own Android window,
 comes with Lindroids. Anywhere else, `lindroids setup x11` uses that system's package manager.
+
+Programs installed inside a proot-distro distro (`proot-distro login debian`, then `apt install
+xournalpp`) run from Termux as they are: `lindroids run xournalpp` finds that `xournalpp` is not in
+Termux but in `debian`, and runs it there, as `lindroids run --distro debian xournalpp` would.
 
 **Update:** `pkg upgrade` (or `apt update && apt install lindroids`). The package always carries
 the matching APK; to update the app, open `$PREFIX/share/lindroids/lindroids.apk` again with
@@ -71,6 +79,24 @@ rm -rf ~/.local/share/lindroids        # pairing secret and exported-app records
 ```
 
 and uninstall the Lindroids app from Android.
+
+### Termux with pacman
+
+With Termux's pacman bootstrap the installer trusts the repository key with `pacman-key` and adds a
+`[lindroids]` repository to `$PREFIX/etc/pacman.conf`, whose settings it keeps in
+`$PREFIX/etc/pacman.d/lindroids.conf`. The package is the same as the `.deb` (same files, same
+APK). **Update:** `pkg upgrade` (or `pacman -Syu`). By hand:
+
+```sh
+curl -fsSL https://dixonsolutions.github.io/lindroids/lindroids.asc -o lindroids.asc
+pacman-key --add lindroids.asc && pacman-key --lsign-key CF71814EDB63C911B430479C6FFD91C90F43BF7B
+printf '\n[lindroids]\nServer = https://dixonsolutions.github.io/lindroids/pacman/termux/$arch\n' \
+  >> $PREFIX/etc/pacman.conf
+pacman -Sy lindroids
+```
+
+**Uninstall:** `pacman -R lindroids`, then remove the `[lindroids]` section from
+`$PREFIX/etc/pacman.conf` and `$PREFIX/etc/pacman.d/lindroids.conf`.
 
 ## Debian and Ubuntu, including proot-distro, UserLAnd and Andronix
 
@@ -109,6 +135,14 @@ rm /etc/apt/sources.list.d/lindroids.list /etc/apt/keyrings/lindroids.gpg
 rm -rf ~/.local/share/lindroids
 ```
 
+## Arch Linux and derivatives, including proot-distro
+
+The same as Termux with pacman, in `/etc`: the key goes into pacman's keyring, `[lindroids]` into
+`/etc/pacman.conf` (settings in `/etc/pacman.d/lindroids.conf`), and the package is the static CLI
+with xwayland-satellite and the APK, for `x86_64`, `aarch64` (Arch Linux ARM), `armv7h` and
+`i686`. Run as root or with `sudo`. **Update:** `pacman -Syu`, or run the installer again. By hand,
+as above with `/etc/pacman.conf` and `.../pacman/arch/$arch`.
+
 ## Other distributions and plain Linux
 
 The installer downloads `lindroids-<version>-<arch>-linux-musl.tar.gz` from the latest
@@ -143,5 +177,8 @@ Check a downloaded key with `gpg --show-keys lindroids.gpg`. The same key is in 
 ## Troubleshooting
 
 - `NO_PUBKEY` or `not signed` from apt: the key file is missing or stale; run the installer again.
+- `unknown trust` or `invalid or corrupted package (PGP signature)` from pacman: the key is not
+  trusted in pacman's keyring; run the installer again (it runs `pacman-key --add` and
+  `--lsign-key`).
 - `apt update` cannot reach the repository from a proot distro: install `ca-certificates`.
 - `lindroids doctor` shows what the CLI found (sandbox, proot, Xwayland, xwayland-satellite, server, app, the X display).

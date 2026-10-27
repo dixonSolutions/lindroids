@@ -8,6 +8,7 @@
 #   dist/xwayland-satellite/{termux,debian}-<arch>/     xwayland-satellite, 4 bionic + 4 glibc
 #   dist/lindroids-VERSION.apk                          the app, all 4 ABIs, with proot
 #   dist/debs/lindroids_VERSION_<arch>.deb              Termux and Debian packages
+#   dist/pacman/{termux,arch}/<arch>/*.pkg.tar.xz       the same as pacman packages
 #   dist/lindroids-VERSION-<arch>-linux-musl.tar.gz     static CLI (bin/lindroids) + the glibc
 #                                                       libexec/lindroids/xwayland-satellite
 #   dist/SHA256SUMS, dist/VERSION
@@ -117,6 +118,9 @@ else
 fi
 
 packaging/build-debs.sh --version "$VER" --dist "$DIST" --apk "$APK" --out "$DIST/debs" --xwls "$XWLS"
+echo "==> pacman packages"
+rm -rf "${DIST:?}/pacman"
+packaging/build-pacman.sh --debs "$DIST/debs" --out "$DIST/pacman"
 
 echo "==> tarballs"
 : "${SOURCE_DATE_EPOCH:=$(git log -1 --format=%ct 2>/dev/null || date +%s)}"
