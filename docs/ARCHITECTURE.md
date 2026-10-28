@@ -267,10 +267,69 @@ arguments, with the distro found pinned) and pins a shortcut — with no app of 
   and hands every other URL to the opener the user had (kept in
   `~/.local/share/lindroids/termux-url-opener.before`). `lindroids launch` is `lindroids run` with
   the recorded arguments: it starts the server if needed and opens the program's window. If the
-  program is already running (`<runtime>/launched/<id>.pid`), it brings back its window instead.
+  program is already running (the server's `Instances` of its app), it brings back the window
+  used last instead; see [Several instances](#several-instances).
 - **Where it does not work.** On x86 images with an ARM translation layer, `app_process` is
   killed by seccomp (see above), so no shortcut is made; `lindroids launch <id>` still works. On
   a desktop, an exported program gets a `.desktop` file instead.
+
+## Several instances
+
+Any number of programs run at once, each in a window of its own (a Custom Tab per run, as above),
+and so can several instances of one app.
+
+- **Which app.** `lindroids run` registers each run (`CliRequest::Launch`, protocol 6) with the app
+  it is an instance of: the Flatpak's id, or `<place>.<program>` (`termux.foot`,
+  `debian.xournalpp`), as `export` names it. The server numbers an app's instances with the lowest
+  free number (`VSCodium`, `VSCodium 2`); the second and later show their number in their window's
+  title (`VSCodium 2 — main.rs`), name and notification. A launch remembers its process's start
+  time (field 22 of `/proc/<pid>/stat`), so a pid used again by another process is not it.
+- **Tapping an icon** (`lindroids launch <id>`) asks the server for the app's instances, most
+  recently used first (a window focused, its page come on screen), and opens that one's window
+  again; it starts a program only if none runs. Another window: `lindroids launch --new <id>`,
+  `lindroids run --new <command>`, a second icon from `lindroids export --new-window <id>`
+  ("<name> (new window)"), or the ＋ in a window's tools (`ToServer::NewInstance`: the server runs
+  what the run registered as its way to start one more). `lindroids instances` lists what runs;
+  `lindroids show <pid|app>` brings one back. Long-pressing the icon is Termux's (the shortcut is
+  Termux's), so it offers nothing of Lindroids'.
+- **Instances share everything** of their app by default: its `/tmp`, the runtime dir, the
+  session bus, the display and its data, as on a desktop. The app's own single-instance mechanism
+  (Electron's singleton socket, GApplication on the session bus, GIMP) then works, and two copies
+  never write the same files at once. With `--new`, the app is asked for a new window: its desktop
+  entry's `new-window` / `new-empty-window` / `new-instance` / `new` action, else a known option
+  (`crates/lindroids-cli/src/instances.rs`: VSCodium `--new-window`, GIMP `--new-instance`,
+  Mousepad `--opening-mode=window`), else it is just started again.
+- **Handed-over windows.** A second VSCodium or Mousepad passes its arguments to the first and
+  exits 0 at once; the new window belongs to the first one's process. A run that ends cleanly
+  within 5 s while its app has another instance sends `CliRequest::Claim`: the server gives it
+  the newest toplevel of that app made since the run started (not a dialog: no parent; not one
+  claimed already; `claim_target`), waiting up to 3 s (`LINDROIDS_CLAIM_WAIT`, ms). That window
+  moves to the claiming run's own page, and the run lives as long as it holds windows: when the
+  last one closes, its page gets `RunEnded` and closes. If no window comes (an app that only
+  raises its one window), the run's page closes and the instance that runs is brought forward.
+  Programs that start a process per window (foot, GNOME Calculator 51 under Lindroids) are simply
+  two runs.
+- **Closing.** Closing a claimed run's window asks its windows to close (`xdg_toplevel.close`); it
+  never ends the process, which is another instance's. Closing the first instance's window while
+  its process also shows a claimed window does the same for its own windows. A program of its own
+  ends as before (SIGTERM, SIGKILL 5 s later). VSCodium ignores `xdg_toplevel.close` (tested on
+  b16): closing *VSCodium 2*'s window hides it, and the run stays (its notification, its icon or
+  `lindroids show` bring it back); VSCodium's own ✕ or File > Close Window closes it for good.
+- **Lost runs.** Every 2 s the server looks for runs whose process is gone without `RunEnded`
+  (their `lindroids run` was killed): after 3 s their page is told the program ended (code -1) and
+  their number is free again.
+- **Limits.** Before starting a process, `lindroids run` reads `MemAvailable`: below 700 MB it
+  warns, below 300 MB it refuses (Android would close something for it, most likely the browser
+  showing the windows). At most 8 programs (`LINDROIDS_MAX_RUNS`), 6 instances of one app
+  (`LINDROIDS_MAX_INSTANCES`) and 3 processes of one app (`LINDROIDS_MAX_APP_RUNS`); `--force`
+  passes all of these. Android 12 and later also kill an app's child processes beyond 32 in all
+  apps (the "phantom process" limit, `max_phantom_processes`), and a program here is several
+  (proot, the program, its helpers: VSCodium is about 15): that limit, not these caps, is what
+  stops many programs on a phone. It can be lifted with `adb shell device_config put
+  activity_manager max_phantom_processes 2147483647` (or Android 14's developer option "Disable
+  child process restrictions"). The lab images have it lifted already, so the 32 is not tested.
+- **Protocol 6.** The CLI and the server must speak the same protocol; a CLI finding a server of
+  another one restarts it when it shows no window, and otherwise says to run `lindroids stop`.
 
 ## Programs under proot
 

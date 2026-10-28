@@ -200,6 +200,195 @@ wait_window() { # <notes before>
   return 1
 }
 
+# ------------------------------------------------------------------ several instances
+# LAB_MODE=instances: two instances of one app at once, one closed, the icon tapped again, the end
+# cleaned up, the limits. LAB_MAIN: a pgrep -f pattern for the app's main process (one per
+# process of its own); LAB_EXPECT: "claim" (the second hands over: one process, two windows),
+# "two" (two processes, two windows), "focus" (one window, brought forward).
+#   LAB_MODE=instances LAB_EXPECT=claim LAB_MAIN='[/]app/share/codium/com.vscodium.codium --ext' \
+#     LAB_PROC='[/]app/share/codium/' lab/test-windows.sh b16 com.vscodium.codium
+MAIN=${LAB_MAIN:-$PROC}
+mains() { tsh "pgrep -f '$MAIN' | wc -l" | tr -d '\r ' ; }
+# The instances `lindroids instances` lists for this app: "pid ordinal name..." lines.
+instances() { tsh "lindroids instances $KEY 2>/dev/null" | tr -d '\r' | grep -E '^[0-9]+ +[0-9]+ ' ; }
+# Recents tasks showing one of this app's instances (or the given runs).
+tasks_of() { local recents n=0 p; recents=$(sh_ 'dumpsys activity recents'); for p in "$@"; do grep -qE "window&run=$p([^0-9]|$)" <<<"$recents" && n=$((n+1)); done; echo $n; }
+
+# Start A, then B with --new; what B became.
+check_two_instances() {
+  local before
+  tsh "lindroids stop >/dev/null 2>&1; pkill -f '$PROC'; true"
+  sleep 2
+  n=$(notes)
+  tsh "cd ~; (nohup lindroids run $APP > ~/inst-a.log 2>&1 </dev/null &); true"
+  wait_window "$n" || { R[two]="no: the first instance has no window"; return 1; }
+  A=$RUN
+  sleep 5
+  KEYLINE=$(tsh "lindroids instances" | tr -d '\r' | grep -E "^$A ")
+  [[ -n $KEYLINE ]] || { R[two]="no: run $A not in lindroids instances"; return 1; }
+  before=$(mains)
+  tsh "cd ~; (nohup lindroids run --new $APP > ~/inst-b.log 2>&1 </dev/null &); true"
+  sleep "${LAB_WAIT_B:-30}"
+  tsh "cat ~/inst-b.log; lindroids instances" | tr -d '\r' >"$OUT/two-b.txt"
+  "$VM" "$NAME" screenshot "$OUT/two-b.png" >/dev/null 2>&1
+  mapfile -t PIDS < <(instances | awk '{print $1}')
+  B=$(instances | awk -v a="$A" '$1 != a {print $1; exit}')
+  local nproc ntask
+  nproc=$(mains); ntask=$(tasks_of "${PIDS[@]}")
+  R[two]="instances: $(instances | awk '{$1=""; print}' | paste -sd ';'); main processes $before -> $nproc; window tasks $ntask"
+  case ${LAB_EXPECT:-two} in
+    claim) [[ ${#PIDS[@]} == 2 && $nproc == "$before" && $ntask == 2 ]] && grep -q 'a window of another' <<<"$(instances)" && R[two]="yes (handed over, claimed): ${R[two]}" || R[two]="no: ${R[two]}" ;;
+    two) [[ ${#PIDS[@]} == 2 && $nproc -gt $before && $ntask == 2 ]] && R[two]="yes (two processes): ${R[two]}" || R[two]="no: ${R[two]}" ;;
+    focus) [[ ${#PIDS[@]} == 1 && $ntask == 1 ]] && R[two]="yes (one window, brought forward): ${R[two]}" || R[two]="no: ${R[two]}" ;;
+  esac
+  log "two instances: ${R[two]}"
+}
+
+# The newest window (B's, on top) closed with its ✕: A and its process stay.
+check_close_one() {
+  local xy="" left
+  [[ -n ${B:-} ]] || { R[close-one]="skipped (one instance)"; return; }
+  sh_ 'input tap 640 400'
+  sleep 2
+  for i in 1 2 3; do
+    sh_ 'input keyevent KEYCODE_BACK'
+    sleep 1.5
+    xy=$(ui_find '(?i)^(close tab|return to previous app)$|:id/close_button$') && break
+  done
+  [[ -n $xy ]] || { R[close-one]="no ✕ found"; return; }
+  sh_ "input tap $xy"
+  sleep 10
+  left=$(instances | awk '{print $1}' | paste -sd ' ')
+  if [[ $left == "$A" ]] && [[ $(mains) -ge 1 ]] && [[ $(tasks_of "$A") == 1 && $(tasks_of "$B") == 0 ]]; then
+    R[close-one]="yes: instance 2 gone, instance 1 (run $A) and its process kept"
+  else
+    R[close-one]="no: instances left [$left], main processes $(mains), tasks A $(tasks_of "$A") B $(tasks_of "$B")"
+  fi
+  "$VM" "$NAME" screenshot "$OUT/close-one.png" >/dev/null 2>&1
+  log "close one: ${R[close-one]}"
+}
+
+# The program's icon again (`lindroids launch <id>`, what the shortcut runs) while it runs: its
+# window comes back, nothing new starts. Then --new adds one, which goes again.
+check_tap_again() {
+  local p0 t0 p1 t1
+  tsh "lindroids export $APP >/dev/null 2>&1; true"
+  sh_ 'input keyevent KEYCODE_HOME'
+  sleep 2
+  p0=$(mains); mapfile -t PIDS < <(instances | awk '{print $1}'); t0=$(tasks_of "${PIDS[@]}")
+  TSH_TIMEOUT=60 tsh "lindroids launch $KEY" >"$OUT/tap-again.txt" 2>&1
+  sleep 4
+  p1=$(mains); mapfile -t P2 < <(instances | awk '{print $1}'); t1=$(tasks_of "${P2[@]}")
+  local top; top=$(sh_ 'dumpsys activity activities' | grep -m1 topResumedActivity)
+  if [[ $p0 == "$p1" && ${#PIDS[@]} == "${#P2[@]}" && $t0 == "$t1" ]] && grep -q -i 'customtab\|firefox' <<<"$top"; then
+    R[tap-again]="yes: window back in front, processes $p0, instances ${#P2[@]}, tasks $t1"
+  else
+    R[tap-again]="no: processes $p0 -> $p1, instances ${#PIDS[@]} -> ${#P2[@]}, tasks $t0 -> $t1, top: $top"
+  fi
+  log "tap again: ${R[tap-again]}"
+}
+
+# Limits: a third with LINDROIDS_MAX_INSTANCES=1 is refused, with a reason; --force passes.
+check_limits() {
+  local out rc
+  out=$(tsh "LINDROIDS_MAX_INSTANCES=1 lindroids run --new $APP 2>&1; echo rc=\$?" | tr -d '\r')
+  rc=$(sed -n 's/^rc=//p' <<<"$out")
+  if [[ $rc == 1 ]] && grep -q 'LINDROIDS_MAX_INSTANCES=1' <<<"$out"; then
+    R[limits]="refused: $(grep -m1 lindroids: <<<"$out")"
+  else
+    R[limits]="no: rc $rc, $(head -c 300 <<<"$out")"
+  fi
+  log "limits: ${R[limits]}"
+}
+
+# The program ending (killed): every instance goes from `lindroids instances`, and their
+# notifications and windows go.
+check_cleanup() {
+  local left notes_left
+  tsh "pkill -f '$PROC'; true"
+  sleep 12
+  left=$(instances | wc -l)
+  notes_left=$(sh_ 'dumpsys notification --noredact' | grep -c 'com.termux.*Running. Tap')
+  if [[ $left == 0 && $(tasks_of "$A" ${B:-}) == 0 ]]; then
+    R[cleanup]="yes: no instances, no window tasks ($notes_left running notifications left)"
+  else
+    R[cleanup]="no: $left instances, tasks $(tasks_of "$A" ${B:-}), notifications $notes_left"
+  fi
+  log "cleanup: ${R[cleanup]}"
+}
+
+# The home screen icon tapped twice: the first tap starts the program, the second brings its
+# window back (nothing new starts); the "(new window)" icon (export --new-window) adds one.
+check_shortcut_taps() {
+  local label="$1" t1 i1 p1 t2 i2 p2 top
+  tsh "lindroids stop >/dev/null 2>&1; pkill -f '$PROC'; true"
+  sleep 2
+  sh_ 'input keyevent KEYCODE_HOME'
+  sleep 2
+  icon() { local xy re; re=$(sed 's/[][().*+?^$|\\]/\\&/g' <<<"$1"); xy=$(ui_find "^$re\$") || { sh_ 'input swipe 1000 400 200 400 300'; sleep 1; xy=$(ui_find "^$re\$"); } || return 1; sh_ "input tap $xy"; }
+  icon "$label" || { R[taps]="icon $label not on the home screen"; return; }
+  n=$(notes); wait_window "$n" || { R[taps]="no window after the first tap"; return; }
+  sleep 5
+  mapfile -t P < <(instances | awk '{print $1}'); i1=${#P[@]}; t1=$(tasks_of "${P[@]}"); p1=$(mains)
+  sh_ 'input keyevent KEYCODE_HOME'; sleep 2
+  icon "$label"
+  sleep 12
+  mapfile -t P < <(instances | awk '{print $1}'); i2=${#P[@]}; t2=$(tasks_of "${P[@]}"); p2=$(mains)
+  top=$(sh_ 'dumpsys activity activities' | grep -m1 topResumedActivity)
+  "$VM" "$NAME" screenshot "$OUT/second-tap.png" >/dev/null 2>&1
+  if [[ $i1 == 1 && $i2 == 1 && $t1 == "$t2" && $p1 == "$p2" ]] && grep -qi 'customtab' <<<"$top"; then
+    R[taps]="yes: tap 1 started it, tap 2 brought it back (instances $i2, tasks $t2, processes $p2)"
+  else
+    R[taps]="no: instances $i1 -> $i2, tasks $t1 -> $t2, processes $p1 -> $p2, top $top"
+  fi
+  log "two taps: ${R[taps]}"
+  # The "(new window)" icon.
+  tsh "lindroids export --new-window $KEY 2>&1" >"$OUT/export-new-window.txt"
+  local xy; xy=$(ui_find '(?i)^add( to home screen)?$') && sh_ "input tap $xy"
+  sleep 2
+  sh_ 'input keyevent KEYCODE_HOME'; sleep 2
+  icon "$label (new window)" || { R[new-icon]="icon \"$label (new window)\" not on the home screen ($(cat "$OUT/export-new-window.txt" | head -2))"; return; }
+  sleep "${LAB_WAIT_B:-30}"
+  mapfile -t P < <(instances | awk '{print $1}')
+  "$VM" "$NAME" screenshot "$OUT/new-window-icon.png" >/dev/null 2>&1
+  [[ ${#P[@]} == 2 && $(tasks_of "${P[@]}") == 2 ]] && R[new-icon]="yes: a second instance, its own window ($(instances | awk '{$1="";print}' | paste -sd ';'))" ||
+    R[new-icon]="no: instances ${#P[@]}, tasks $(tasks_of "${P[@]}")"
+  log "new-window icon: ${R[new-icon]}"
+}
+
+if [[ ${LAB_MODE:-} == taps ]]; then
+  "$VM" "$NAME" wait-boot 60 >/dev/null || exit 1
+  OUT=$REPO/lab/results/$NAME/taps-${APP//\//_}
+  rm -rf "$OUT"; mkdir -p "$OUT"
+  if [[ $APP == *.*.* ]]; then KEY=$APP; else KEY=termux.$APP; fi
+  tsh "lindroids export $APP >/dev/null 2>&1; true"
+  xy=$(ui_find '(?i)^add( to home screen)?$') && sh_ "input tap $xy"
+  label=$(tsh "lindroids list 2>/dev/null" | tr -d '\r' | awk -v a="$KEY" '$1 == a' | sed -E 's/^[^ ]+ +//; s/  +.*//' | head -1)
+  check_shortcut_taps "${label:-$APP}"
+  { for k in taps new-icon; do [[ -n ${R[$k]:-} ]] && printf '%-12s %s\n' "$k" "${R[$k]}"; done; } | tee "$OUT/result.txt"
+  exit 0
+fi
+
+if [[ ${LAB_MODE:-} == instances ]]; then
+  "$VM" "$NAME" wait-boot 60 >/dev/null || exit 1
+  OUT=$REPO/lab/results/$NAME/instances-${APP//\//_}
+  rm -rf "$OUT"; mkdir -p "$OUT"
+  # Its key: the Flatpak id, or termux.<program>.
+  if [[ $APP == *.*.* ]]; then KEY=$APP; else KEY=termux.$APP; fi
+  sh_ 'input keyevent KEYCODE_HOME'
+  check_two_instances && {
+    if [[ ${LAB_EXPECT:-two} != focus ]]; then check_tap_again; check_close_one; fi
+    check_limits
+    check_cleanup
+  }
+  {
+    for k in two tap-again close-one limits cleanup; do
+      [[ -n ${R[$k]:-} ]] && printf '%-12s %s\n' "$k" "${R[$k]}"
+    done
+  } | tee "$OUT/result.txt"
+  exit 0
+fi
+
 "$VM" "$NAME" wait-boot 60 >/dev/null || exit 1
 # No server left over (Termux force-stopped does not take it): the new one needs its port.
 tsh 'lindroids stop >/dev/null 2>&1; pkill -f "[l]indroids server"; sleep 2; true'
