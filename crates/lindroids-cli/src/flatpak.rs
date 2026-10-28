@@ -244,10 +244,12 @@ const SKELETON_DIRS: &[&str] = &["usr", "app", "etc", "proc", "dev", "sys", "tmp
 /// Per-app writable dirs under `~/.var/app/<id>`.
 const VAR_DIRS: &[&str] = &["data", "config", "cache/tmp", ".local/state"];
 
-fn passwd(uid: u32, user: &str, home: &str) -> String {
-    let mut s = String::from("root:x:0:0:root:/root:/bin/sh\n");
+/// `shell`: the user's login shell, which terminals in the app start (VSCodium's: a bare
+/// `sh-5.3$` with /bin/sh). Flatpak gives the host user's shell when the sandbox has it.
+fn passwd(uid: u32, user: &str, home: &str, shell: &str) -> String {
+    let mut s = format!("root:x:0:0:root:/root:{shell}\n");
     if uid != 0 {
-        s += &format!("{user}:x:{uid}:{uid}:{user}:{home}:/bin/sh\n");
+        s += &format!("{user}:x:{uid}:{uid}:{user}:{home}:{shell}\n");
     }
     s + "nobody:x:65534:65534:Nobody:/:/sbin/nologin\n"
 }
@@ -400,7 +402,8 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
     // /etc is the runtime's, with the files flatpak takes from the host (or makes) on top.
     let etc = base.join("etc");
     mkdirs(&etc)?;
-    std::fs::write(etc.join("passwd"), passwd(uid, &user, &home)).map_err(|e| io_err(&etc, e))?;
+    let shell = if rtd.files().join("bin/bash").exists() { "/bin/bash" } else { "/bin/sh" };
+    std::fs::write(etc.join("passwd"), passwd(uid, &user, &home, shell)).map_err(|e| io_err(&etc, e))?;
     std::fs::write(etc.join("group"), group(gid, &user)).map_err(|e| io_err(&etc, e))?;
     let prefix = std::env::var("PREFIX").ok().filter(|p| !p.is_empty());
     let host_etc = |name: &str| -> Vec<PathBuf> {
@@ -458,6 +461,13 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
         std::fs::write(&p, ZYPAK_HELPER).map_err(|e| io_err(&p, e))?;
         std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o755)).map_err(|e| io_err(&p, e))?;
         binds.push((p, "/app/bin/zypak-helper".into()));
+    }
+    // The runtime's bwrap "works" under proot and leaves glycin's image loaders without a
+    // filesystem: GTK then cannot load an icon and GIMP aborts at start (GNOME 51, where
+    // gdk-pixbuf loads through glycin). This one says it cannot, and glycin loads unsandboxed.
+    if rtd.files().join("bin/bwrap").exists() {
+        lindroids_proto::write_proot_bin(&base).map_err(|e| io_err(&base, e))?;
+        binds.push((base.join("bwrap"), "/usr/bin/bwrap".into()));
     }
     if let Some(l) = localtime {
         binds.push((l, "/etc/localtime".into()));
