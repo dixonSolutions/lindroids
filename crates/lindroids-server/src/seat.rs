@@ -34,13 +34,71 @@ pub struct Seat {
     emulating: Option<i32>,
     mods_depressed: u32,
     mods_locked: u32,
+    /// The on-screen keyboard follows taps, as on Android, never comes up without one (apps
+    /// enable text input for a field focused at start: the keyboard came up on its own), and:
+    /// - apps that ask for it (GTK enables text input again on a tap into a field: text-input-v3's
+    ///   way to ask) get it when a tap is answered that way, and lose it on a tap that is not
+    ///   (Calculator's buttons, which keep its entry focused);
+    /// - apps that never ask (Chromium and Electron: nothing on a tap) get it on a tap while
+    ///   their text input is enabled.
+    tapped: Option<std::time::Instant>,
+    /// When a tap with no text-input answer hides the keyboard, if it is still unanswered then.
+    pub(crate) kb_check: Option<std::time::Instant>,
+    tap_answered: bool,
+    /// Where and when each touch went down: a tap is short and stays put (not a scroll).
+    touch_down: HashMap<i32, (f32, f32, std::time::Instant)>,
 }
+
+/// How long after a tap the app's text-input answer counts as answering it.
+const TAP_ANSWER: std::time::Duration = std::time::Duration::from_millis(1500);
+/// How long a tap waits for that answer before the keyboard goes.
+const TAP_WAIT: std::time::Duration = std::time::Duration::from_millis(700);
 
 #[derive(Default)]
 pub struct TextInputState {
     enabled: bool,
     pending: Option<bool>,
     commits: u32,
+    /// It enabled text input again while enabled: it asks for the keyboard that way.
+    asks: bool,
+}
+
+/// A tap (touch or button released) on a window: the keyboard waits for the app's answer.
+fn tapped(state: &mut State) {
+    let now = std::time::Instant::now();
+    state.seat.tapped = Some(now);
+    state.seat.tap_answered = false;
+    // The focused app's text input: enabled, and whether it asks for the keyboard itself.
+    let Some(surface) = state.seat.kb_focus.clone() else { return };
+    let ti = state.seat.text_inputs.iter().filter(|t| same_client(*t, &surface)).find_map(|t| {
+        t.data::<Mutex<TextInputState>>().map(|d| {
+            let d = d.lock().unwrap();
+            (d.enabled, d.asks)
+        })
+    });
+    match ti {
+        Some((true, false)) => {
+            state.seat.tap_answered = true;
+            if let Some(win) = state.seat.focus_win {
+                state.send_win(win, &ToApp::Keyboard { win, show: true });
+            }
+        }
+        _ => state.seat.kb_check = Some(now + TAP_WAIT),
+    }
+}
+
+/// Called from the server's loop: a tap nothing answered hides the keyboard.
+pub fn keyboard_due(state: &mut State) {
+    let Some(at) = state.seat.kb_check else { return };
+    if std::time::Instant::now() < at {
+        return;
+    }
+    state.seat.kb_check = None;
+    if !state.seat.tap_answered {
+        if let Some(win) = state.seat.focus_win {
+            state.send_win(win, &ToApp::Keyboard { win, show: false });
+        }
+    }
 }
 
 pub fn register_globals(dh: &DisplayHandle) {
@@ -215,22 +273,38 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, Mutex<TextInputState>> for Stat
         _: &mut DataInit<'_, State>,
     ) {
         let mut st = data.lock().unwrap();
+        log::debug!("text input: {request:?}");
         match request {
             zwp_text_input_v3::Request::Enable => st.pending = Some(true),
             zwp_text_input_v3::Request::Disable => st.pending = Some(false),
             zwp_text_input_v3::Request::Commit => {
                 st.commits = st.commits.wrapping_add(1);
-                if let Some(en) = st.pending.take() {
-                    if en != st.enabled {
-                        st.enabled = en;
-                        drop(st);
-                        let focused = state.seat.kb_focus.as_ref().map_or(false, |s| same_client(res, s));
-                        if focused {
-                            if let Some(win) = state.seat.focus_win {
-                                state.send_win(win, &ToApp::Keyboard { win, show: en });
-                            }
+                // Text input answering a tap: enabled, or enabled again (GTK's way to ask for the
+                // keyboard on a field that has the focus already).
+                let mut answer = false;
+                let mut gone = false;
+                match st.pending.take() {
+                    Some(true) => {
+                        if st.enabled {
+                            st.asks = true;
                         }
+                        st.enabled = true;
+                        answer = true;
                     }
+                    Some(false) if st.enabled => {
+                        st.enabled = false;
+                        gone = true;
+                    }
+                    _ => {}
+                }
+                drop(st);
+                let focused = state.seat.kb_focus.as_ref().map_or(false, |s| same_client(res, s));
+                let Some(win) = state.seat.focus_win.filter(|_| focused) else { return };
+                if gone {
+                    state.send_win(win, &ToApp::Keyboard { win, show: false });
+                } else if answer && state.seat.tapped.is_some_and(|t| t.elapsed() < TAP_ANSWER) {
+                    state.seat.tap_answered = true;
+                    state.send_win(win, &ToApp::Keyboard { win, show: true });
                 }
             }
             _ => {}
@@ -336,6 +410,9 @@ fn pointer_motion(state: &mut State, win: u32, lx: f64, ly: f64, time: u32) {
 }
 
 fn pointer_button(state: &mut State, button: u32, pressed: bool, time: u32) {
+    if !pressed {
+        tapped(state);
+    }
     let Some(surface) = state.seat.ptr_focus.clone() else { return };
     let serial = state.next_serial();
     let st = if pressed { wl_pointer::ButtonState::Pressed } else { wl_pointer::ButtonState::Released };
@@ -402,6 +479,22 @@ pub fn scroll(state: &mut State, _win: u32, dx: f32, dy: f32, time: u32) {
 // ------------------------------------------------------------------ touch
 
 pub fn touch(state: &mut State, win: u32, action: TouchAction, id: i32, x: f32, y: f32, time: u32) {
+    match action {
+        TouchAction::Down => {
+            state.seat.touch_down.insert(id, (x, y, std::time::Instant::now()));
+        }
+        TouchAction::Up => {
+            if let Some((x0, y0, t0)) = state.seat.touch_down.remove(&id) {
+                if (x - x0).hypot(y - y0) < 24.0 && t0.elapsed() < std::time::Duration::from_millis(600) {
+                    tapped(state);
+                }
+            }
+        }
+        TouchAction::Cancel => {
+            state.seat.touch_down.remove(&id);
+        }
+        TouchAction::Move => {}
+    }
     let (lx, ly) = to_logical(state, win, x, y);
     if action == TouchAction::Down && !shell::in_popup(state, win, lx, ly) {
         shell::dismiss_popups(state, win);

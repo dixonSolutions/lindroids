@@ -1339,7 +1339,11 @@ pub fn run(cfg: Config) -> i32 {
                 end_launches(run);
             }
         }
+        seat::keyboard_due(&mut state);
         let mut timeout = if state.frame_due.is_empty() { 1000 } else { 16 };
+        if let Some(at) = state.seat.kb_check {
+            timeout = timeout.min(at.saturating_duration_since(Instant::now()).as_millis() as i32 + 1);
+        }
         if let Some(t) = x11.as_ref().and_then(|x| x.wants_timeout()) {
             timeout = timeout.min(t.as_millis() as i32);
         }

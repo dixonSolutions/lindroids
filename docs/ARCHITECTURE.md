@@ -208,6 +208,17 @@ and an `xdg-open` first on PATH that runs `lindroids open`. Programs under proot
 root, so EXTERNAL authentication cannot work for them; the bus also takes ANONYMOUS, which is safe
 because its socket is in the runtime dir only this uid can enter. Distro and Flatpak runs see the
 runtime dir at the server's path too, so the paths the FileChooser hands out are valid there.
+Each portal interface publishes its `version` property under that name (zbus would say `Version`):
+Chromium and Electron read it to decide whether there is a portal, and without it showed their own
+GTK dialogs instead of Android's picker *(tested: VSCodium's Open Folder now opens Android's
+folder picker and the folder)*.
+
+The soft keyboard follows taps as on Android (`seat.rs`). It never comes up without a tap; apps
+enable text input for a field that has the focus at start, and it used to pop up then. An app that
+asks for it (GTK enables text input again on a tap into a field) gets it when a tap is answered
+that way, and loses it on a tap that is not *(tested: Mousepad)*. An app that never asks
+(Chromium, Electron: nothing on a tap) gets it on a tap while its text input is enabled
+*(tested: VSCodium)*. The keyboard button shows it whenever wanted.
 
 ## Flatpak
 

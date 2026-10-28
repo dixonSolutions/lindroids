@@ -459,7 +459,9 @@ impl Settings {
     #[zbus(signal)]
     async fn setting_changed(emitter: &SignalEmitter<'_>, namespace: &str, key: &str, value: Value<'_>) -> zbus::Result<()>;
 
-    #[zbus(property)]
+    // The portals' property is `version`; zbus would publish `Version`, which Chromium's
+    // portal probe does not find (it then used its own GTK dialogs, never Android's picker).
+    #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
         2
     }
@@ -538,7 +540,9 @@ impl OpenUri {
         handle
     }
 
-    #[zbus(property)]
+    // The portals' property is `version`; zbus would publish `Version`, which Chromium's
+    // portal probe does not find (it then used its own GTK dialogs, never Android's picker).
+    #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
         4
     }
@@ -895,7 +899,9 @@ impl FileChooser {
         Self::pick(&hdr, title, options, true)
     }
 
-    #[zbus(property)]
+    // The portals' property is `version`; zbus would publish `Version`, which Chromium's
+    // portal probe does not find (it then used its own GTK dialogs, never Android's picker).
+    #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
         3
     }
@@ -1090,7 +1096,9 @@ impl PortalNotification {
     #[zbus(signal)]
     async fn action_invoked(emitter: &SignalEmitter<'_>, id: &str, action: &str, parameter: Vec<Value<'_>>) -> zbus::Result<()>;
 
-    #[zbus(property)]
+    // The portals' property is `version`; zbus would publish `Version`, which Chromium's
+    // portal probe does not find (it then used its own GTK dialogs, never Android's picker).
+    #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
         1
     }
@@ -1192,7 +1200,9 @@ impl Inhibit {
 
     fn query_end_response(&self, _session_handle: OwnedObjectPath) {}
 
-    #[zbus(property)]
+    // The portals' property is `version`; zbus would publish `Version`, which Chromium's
+    // portal probe does not find (it then used its own GTK dialogs, never Android's picker).
+    #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
         3
     }
@@ -1207,7 +1217,9 @@ impl MemoryMonitor {
     #[zbus(signal)]
     async fn low_memory_warning(emitter: &SignalEmitter<'_>, level: u8) -> zbus::Result<()>;
 
-    #[zbus(property)]
+    // The portals' property is `version`; zbus would publish `Version`, which Chromium's
+    // portal probe does not find (it then used its own GTK dialogs, never Android's picker).
+    #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
         1
     }
@@ -1252,7 +1264,9 @@ impl NetworkMonitor {
     #[zbus(signal)]
     async fn changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 
-    #[zbus(property)]
+    // The portals' property is `version`; zbus would publish `Version`, which Chromium's
+    // portal probe does not find (it then used its own GTK dialogs, never Android's picker).
+    #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
         3
     }
@@ -1267,7 +1281,9 @@ impl PowerProfileMonitor {
         system().is_some_and(|s| s.power_saver)
     }
 
-    #[zbus(property)]
+    // The portals' property is `version`; zbus would publish `Version`, which Chromium's
+    // portal probe does not find (it then used its own GTK dialogs, never Android's picker).
+    #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
         1
     }
@@ -1276,6 +1292,14 @@ impl PowerProfileMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portal_version_property_is_lowercase() {
+        // What Chromium reads: Properties.Get("org.freedesktop.portal.FileChooser", "version").
+        let mut xml = String::new();
+        zbus::object_server::Interface::introspect_to_writer(&FileChooser, &mut xml, 0);
+        assert!(xml.contains("<property name=\"version\""), "{xml}");
+    }
 
     #[test]
     fn uris_and_names() {
