@@ -4,7 +4,10 @@
 #   - Recents: the window's task label and icon (the TaskDescription its browser set), and a
 #     screenshot of Recents;
 #   - the window's ✕ ends the program;
-#   - the program ending closes the window (Chromium; Firefox keeps it, with its end screen).
+#   - the program ending closes the window (Chromium; Firefox keeps it, with its end screen);
+#   - (run) another app in front and Android killing the browser's page process, as a phone does to
+#     a browser in the background: the program keeps running, and its Recents card brings the
+#     window back, linked to it again.
 #
 #   lab/test-windows.sh <vm> [flatpak-app-id]     (default org.gnome.Calculator, installed in Termux)
 #
@@ -107,6 +110,37 @@ check_close_window() { # <tag>
   log "$tag ✕ ends the program: ${R[$tag-close-window]}"
 }
 
+# Another app in front, then the window's page process killed (what Android does to a browser in
+# the background, for memory): the program keeps running, and the window's Recents card brings it
+# back, linked to the program again.
+check_background() { # <tag>
+  local tag=$1 links
+  sh_ 'am start -a android.settings.SETTINGS' >/dev/null
+  sleep 5
+  sh_ "for p in \$(ps -A -o PID,NAME | grep -E '$BROWSER:(sandboxed|tab)' | awk '{print \$1}'); do kill -9 \$p; done"
+  sleep 15
+  if ! running; then
+    R[$tag-background]="no: the program ended when the page was killed"
+    log "$tag in the background: ${R[$tag-background]}"
+    return
+  fi
+  links=$(tsh 'grep -c "linked again" $TMPDIR/lindroids-$(id -u)/server.log' | tr -d '\r')
+  # Recents: Settings in the middle, the window to its left.
+  sh_ 'input keyevent KEYCODE_APP_SWITCH'
+  sleep 2
+  "$VM" "$NAME" screenshot "$OUT/$tag-background-recents.png" >/dev/null 2>&1
+  sh_ 'input tap 90 190'
+  R[$tag-background]="kept running; the window came back without linking ($tag-background-back.png)"
+  for i in $(seq 1 15); do
+    sleep 1
+    [[ $(tsh 'grep -c "linked again" $TMPDIR/lindroids-$(id -u)/server.log' | tr -d '\r') -gt $links ]] && running &&
+      { R[$tag-background]="kept running; back from Recents, linked again in ${i}s"; break; }
+  done
+  sleep 2
+  "$VM" "$NAME" screenshot "$OUT/$tag-background-back.png" >/dev/null 2>&1
+  log "$tag in the background: ${R[$tag-background]}"
+}
+
 # The program ending closes its window (its task leaves Recents).
 check_program_ends() { # <tag> <run>
   local tag=$1 run=$2
@@ -124,15 +158,17 @@ check_program_ends() { # <tag> <run>
   log "$tag program ending closes the window: ${R[$tag-program-ends]}"
 }
 
-notes() { tsh 'wc -l < $TMPDIR/lindroids-$(id -u)/windows 2>/dev/null || echo 0' | tr -d '\r '; }
-# Until the program runs and `lindroids` noted a window opened after <notes count before>, and that
+# The newest note (`lindroids run` keeps the last 64, so their count stops growing): a new window
+# makes a new one, with its run's ticket.
+notes() { tsh 'tail -1 $TMPDIR/lindroids-$(id -u)/windows 2>/dev/null' | tr -d '\r' | cut -d' ' -f1; }
+# Until the program runs and `lindroids` noted a window opened after <the newest note before>, and that
 # window (its run) is in Recents. Sets RUN.
 wait_window() { # <notes before>
   local before=${1:-0} now
   RUN=""
   for i in $(seq 1 40); do
     now=$(notes)
-    if running && [[ ${now:-0} -gt $before ]]; then
+    if running && [[ -n $now && $now != "$before" ]]; then
       RUN=$(last_window | grep -oE 'run=[0-9]+' | cut -d= -f2)
       # Not `| grep -q`: with pipefail, grep leaving early fails the pipe on a match.
       grep -qE "window&run=$RUN([^0-9]|$)" <<<"$(sh_ 'dumpsys activity recents')" && { sleep 3; return 0; }
@@ -162,6 +198,7 @@ R[browser]=$BROWSER
 log "window in $BROWSER"
 "$VM" "$NAME" screenshot "$OUT/run-window.png" >/dev/null 2>&1
 check_recents run
+check_background run
 check_close_window run
 n=$(notes)
 tsh "cd ~; (nohup lindroids run $APP > ~/windows-run.log 2>&1 </dev/null &); true"
@@ -215,7 +252,7 @@ else
 fi
 
 {
-  for k in browser run-recents run-close-window run-program-ends export-browser export-recents export-close-window export-program-ends export; do
+  for k in browser run-recents run-background run-close-window run-program-ends export-browser export-recents export-close-window export-program-ends export; do
     [[ -n ${R[$k]:-} ]] && printf '%-24s %s\n' "$k" "${R[$k]}"
   done
 } | tee "$OUT/result.txt"

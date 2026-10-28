@@ -375,8 +375,9 @@ pub struct State {
     pub frame_due: Vec<ObjectId>,
     pub running: bool,
     /// Pages that went away, by the run they showed (None: the page showing everything else):
-    /// what was started into them ends when the grace is over, unless a page for it links again.
-    unlinked: Vec<(Option<u32>, Instant, Duration)>,
+    /// what was started into them ends when the grace is over (None: never), unless a page for it
+    /// links again.
+    unlinked: Vec<(Option<u32>, Instant, Option<Duration>)>,
     clis: Vec<CliConn>,
     next_request: u32,
     clients: u32,
@@ -935,6 +936,11 @@ impl State {
                     l.closing = true;
                 }
             }
+            ToServer::Shown { shown } => {
+                if let Some(l) = self.links.iter_mut().find(|l| l.id == from) {
+                    l.hidden_since = if shown { None } else { l.hidden_since.or(Some(Instant::now())) };
+                }
+            }
             ToServer::Close { win } => {
                 if let Some(w) = self.windows.get(&win) {
                     w.toplevel.close();
@@ -1323,9 +1329,10 @@ pub fn run(cfg: Config) -> i32 {
         for fd in x11.as_ref().map(|x| x.poll_fds()).unwrap_or_default() {
             fds.push(pfd(fd));
         }
-        let due: Vec<Option<u32>> = state.unlinked.iter().filter(|(_, since, grace)| since.elapsed() >= *grace).map(|(r, ..)| *r).collect();
+        let over = |since: &Instant, grace: &Option<Duration>| grace.is_some_and(|g| since.elapsed() >= g);
+        let due: Vec<Option<u32>> = state.unlinked.iter().filter(|(_, since, grace)| over(since, grace)).map(|(r, ..)| *r).collect();
         if !due.is_empty() {
-            state.unlinked.retain(|(_, since, grace)| since.elapsed() < *grace);
+            state.unlinked.retain(|(_, since, grace)| !over(since, grace));
             for run in due {
                 end_launches(run);
             }
@@ -1459,19 +1466,39 @@ pub fn run(cfg: Config) -> i32 {
                 }
             }
             if !alive {
-                // Closed on purpose (the page said so: its window was closed, or it reloads), or
-                // lost (the browser died: swiped away with its last window, or killed for memory,
-                // and then it reloads the page when the user comes back). Either way a page that
-                // links again in time keeps the programs; otherwise they end with their window.
+                // How long what the page showed outlives it, by how it went:
+                // - Closed by the user: the page said so (pagehide: closed, swiped away, a reload),
+                //   or the browser took it down (1001) while it was on screen or had only just
+                //   left it (Chrome closes a Custom Tab without a pagehide). 5 s.
+                // - Dropped in the background: lost while out of sight for a while, without a
+                //   word. Android kills a background page's process for memory (the browser then
+                //   closes its link with 1001 too) and the browser loads the page again when the
+                //   user comes back to the window. Kept until a page links for it again (the
+                //   program's notification brings the window back) or the program ends.
+                // - Lost on screen (the browser crashed or was killed): `linger()`.
+                // A page that links again in time keeps the programs; otherwise they end.
                 let Some(l) = state.links.iter().find(|l| l.id == id) else { continue };
-                let (run, grace) = (l.run, if l.closing { Duration::from_secs(5) } else { linger() });
+                let away = l.hidden_since.is_some_and(|t| t.elapsed() >= Duration::from_secs(3));
+                let grace = if l.closing || (!away && l.close_frame == Some(Some(1001))) {
+                    Some(Duration::from_secs(5))
+                } else if away {
+                    None
+                } else {
+                    Some(linger())
+                };
+                let run = l.run;
                 let how = match l.close_frame {
                     Some(Some(c)) => format!("close {c}"),
                     Some(None) => "close, no code".into(),
-                    None if l.closing => "said it was closing, no close frame".into(),
                     None => "no close frame".into(),
                 };
-                info!("page for {} closed ({how}); what was started into it ends in {}s unless it links again", run.map_or("the rest".into(), |r| format!("run {r}")), grace.as_secs());
+                let said = if l.closing { ", said it was closing" } else { "" };
+                let hidden = l.hidden_since.map_or(String::new(), |t| format!(", out of sight {}s", t.elapsed().as_secs()));
+                let what = run.map_or("the rest".into(), |r| format!("run {r}"));
+                match grace {
+                    Some(g) => info!("page for {what} closed ({how}{said}{hidden}); what was started into it ends in {}s unless it links again", g.as_secs()),
+                    None => info!("page for {what} lost in the background ({how}{hidden}); what was started into it runs until a page links for it again"),
+                }
                 state.drop_link(id);
                 if !state.links.iter().any(|l| l.run == run) {
                     state.unlinked.push((run, Instant::now(), grace));

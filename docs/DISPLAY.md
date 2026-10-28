@@ -109,7 +109,7 @@ whole replies.
 | Home screen | The exported program's own icon and name, as an adaptive icon (the program's drawing on a backdrop of its colour), on a shortcut pinned for Termux. The launcher adds a small Termux badge. Exporting again updates it in place *(tested)*. |
 | Status bar and shade | While the program runs: its one-colour (`-symbolic`) icon in the status bar, its name and icon in a notification the helper posts as Termux; a tap brings back its window *(tested)*. Its own notifications show the same way. |
 | The window | The page's favicon and title are the program's. While it starts, and after it ends, the page shows the program's icon and name full size *(tested: "Calculator closed." under the Calculator icon)*. |
-| Recents | Chromium-based browsers: **the program's icon and name** *(tested, Cromite)*, where the launcher draws a task's own icon. Samsung's One UI launcher draws the browser's icon on every Chrome window's card instead *(reported, Chrome on a Samsung phone)*: the same Chromium code sets the program's icon on the task in Cromite, and the card's name is the program's, so it is the launcher that draws the app's icon over the task's. Only an installed app of the program's own would change that. Chromium sets the page's title, favicon (32 dp or more; the program's is 192 px, at `/run-icon/<run>.png`: a `data:` favicon is not taken) and theme colour on a Custom Tab in a task of its own (`CustomTabTaskDescriptionHelper`). Firefox: **the browser's icon** *(tested)*, with a live thumbnail of the program; it sets a task's icon only for web apps installed through it, which are rejected above. |
+| Recents | Chromium-based browsers: **the program's icon and name** *(tested, Cromite)*, where the launcher draws a task's own icon. Samsung's One UI launcher draws the browser's icon on every Chrome window's card instead *(reported twice, Chrome on a Samsung phone)*. It is the launcher's choice: for a Custom Tab in a task of its own (`NEW_TASK`/`NEW_DOCUMENT`), Chromium's `CustomTabTaskDescriptionHelper` always sets a task icon, the favicon or, failing that, a generated letter icon (`CustomTabTaskDescriptionIconGenerator`), never null; a launcher that drew it would show the program's icon or a letter, not Chrome's logo. One UI draws the task's app icon (as its icon themes need). Nothing a page or an intent sends changes that; only an installed app of the program's own would. Chromium sets the page's title, favicon (32 dp or more; the program's is 192 px, at `/run-icon/<run>.png`: a `data:` favicon is not taken) and theme colour on a Custom Tab in a task of its own (`CustomTabTaskDescriptionHelper`). Firefox: **the browser's icon** *(tested)*, with a live thumbnail of the program; it sets a task's icon only for web apps installed through it, which are rejected above. |
 
 ## The parts
 
@@ -307,10 +307,12 @@ shared page keeps "newest wins".
 ### Run states
 
 ```
- started ──its page links──▶ shown ──page closed (Closing, then close 1001)── 5 s ──▶ ended
-    │                         │  ▲                                                   ▲
-    │                         │  └──its page links again (within the grace)──┐       │
-    │                         └──link lost without Closing──▶ detached ──────┴─ 60 s ┘
+ started ──its page links──▶ shown ──page closed (Closing, or 1001 on screen)── 5 s ──▶ ended
+    │                         │  ▲                                                     ▲
+    │                         │  └──its page links again (within the grace)──┐         │
+    │                         ├──link lost on screen, without Closing──▶ detached ─ 60 s ┘
+    │                         └──link lost out of sight, without Closing──▶ in the background
+    │                                (no limit: until its page links again)
  any state ──program exited / Ctrl+C / SIGHUP──▶ ended
 ```
 
@@ -335,18 +337,32 @@ shared page keeps "newest wins".
 |---|---|---|
 | Program exited | the supervisor's `wait` returns | end |
 | Back, the close button, or swiped away while the browser keeps running | `Closing`, then close frame **1001** | window closed: end in 5 s |
+| Chrome's close button (no `pagehide`) | close frame **1001** while on screen, or out of sight under 3 s | window closed: end in 5 s |
+| Another app in front, then Android kills the page's process for memory | `Shown: false`, then later close frame **1001** (the browser closes the link of a page whose process died), and no `Closing` | dropped in the background: **keeps running** until its page links again; the browser loads the page again when the user comes back to the window *(tested, Cromite: kept, and back from Recents in 1 s)* |
+| Another app in front, then the browser killed for memory | `Shown: false`, then **EOF** | the same *(tested)* |
 | A reload (Firefox reloads a raised window) | `Closing`, then a new link within a second | the same window: keeps running |
-| Swiped away, and it was the browser's last task | **EOF**, no close frame, ~1 s later: Android killed the browser | lost: end in 60 s |
-| Browser killed for memory, force-stopped or crashed | **EOF** at once | lost: end in 60 s |
-| Window in the background | `visibilitychange: hidden`; timers keep running, throttled | still shown; frames held back |
+| Swiped away, and it was the browser's last task | **EOF**, no close frame, ~1 s later: Android killed the browser | lost: end in 60 s, or kept if the page had been out of sight 3 s |
+| Browser crashed or killed on screen | **EOF** at once | lost: end in 60 s |
+| Window in the background | `Shown: false` (`visibilitychange`); timers keep running, throttled; a frozen browser (Android's app freezer) keeps its link *(tested: 2 minutes frozen)* | still shown; frames held back |
 
-**The grace period.** A lost connection is ambiguous: swiping the browser's last window away
-looks exactly like a memory kill. After a memory kill, the browser reloads the page when the user
-comes back to that window; the page links to its run again (the run is in its URL), and nothing
-was lost. The default grace is 60 seconds (`LINDROIDS_LINGER`, in seconds):
+**The grace period.** A lost connection is ambiguous: the close code does not tell a closed window
+from a killed page (Chromium sends 1001 for both). What does is whether the page was on screen:
+the page tells the relay when it leaves the screen and comes back (`Shown`).
 
-- A swiped window's program outlives it by at most a minute.
-- A memory-killed browser has a minute to come back.
+- **Out of sight for 3 s or more, and lost without a word:** the browser dropped it in the
+  background. Phones do this all the time: the user switches to another app, and Android kills
+  the browser's page process, or the whole browser, for memory. When the user comes back to the
+  window, the browser loads the page again, and the page links to its run again (the ticket is in
+  its history entry). The program runs on until then, with no limit: its notification brings
+  the window back. Before, it ended 5 s later, and the window, back, said it had closed
+  *(reported on a Samsung phone; reproduced on b16 by killing Cromite's page process)*.
+- **Closed by the user:** `Closing` (pagehide: the close button, Back, swiped from Recents with
+  the page alive) or 1001 on screen: 5 s.
+- **Lost on screen** (the browser crashed): 60 seconds (`LINDROIDS_LINGER`, in seconds).
+
+The cost: a window swiped from Recents *after* its page was dropped has no page left to say so,
+and its program runs on until it ends, Ctrl+C in Termux, or its window is brought back from the
+notification and closed.
 
 **The page links again by itself** when its link is lost while its program runs, also unseen in
 the background *(tested: a dropped link, a reload, both relinked to the running Calculator)*. It

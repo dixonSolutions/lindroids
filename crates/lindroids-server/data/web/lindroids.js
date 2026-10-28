@@ -267,6 +267,7 @@ async function handle(m, payload) {
       if (m.stats) enableStats();
       ready = true;
       everLinked = true;
+      if (document.hidden) send({ t: 'shown', shown: false });
       if (relinking) {
         plog(`linked again after the browser dropped the link (${lostLink})`);
         relinking = 0;
@@ -1445,6 +1446,10 @@ if (navigator.getBattery) {
     sendSystem();
   }).catch(() => {});
 }
+
+// Whether the page is on screen: a page the browser drops while it is out of sight (Android kills
+// a background page's process) was not closed, and its program keeps running until it is back.
+document.addEventListener('visibilitychange', () => { if (ready) send({ t: 'shown', shown: !document.hidden }); });
 
 // The page is going away for good (its window closed, or a reload): say so, so the server does
 // not wait a minute for a browser that might come back. A page put in the back/forward cache

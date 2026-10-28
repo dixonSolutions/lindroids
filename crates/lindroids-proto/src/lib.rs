@@ -387,6 +387,9 @@ pub enum ToServer {
     /// The page is going away: its window was closed, or it is reloading. What `lindroids run`
     /// started ends unless a page links again within moments.
     Closing,
+    /// The page came on screen or left it (visibilitychange). A page lost while out of sight was
+    /// dropped by its browser (Android killed its process in the background), not closed.
+    Shown { shown: bool },
     Clipboard { text: String },
     FolderPicked { request: u32, path: Option<String> },
     /// Sound flow control: the app has room for this many more bytes of a stream.
