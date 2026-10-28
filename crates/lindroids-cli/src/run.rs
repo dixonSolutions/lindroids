@@ -186,7 +186,8 @@ pub enum Target {
 
 /// `flatpak run [options] <app> [args]`: the app and its arguments (Flatpak's own options left
 /// out).
-pub fn flatpak_run(cmd: &[String]) -> Option<(String, Vec<String>)> {
+#[cfg(test)]
+fn flatpak_run(cmd: &[String]) -> Option<(String, Vec<String>)> {
     flatpak_run_from(cmd).map(|(id, args, _)| (id, args))
 }
 
@@ -224,14 +225,31 @@ pub fn resolve(o: &Opts) -> Result<Target, String> {
     // as `lindroids run <app>` does.
     if sandbox::on_android() && !is_shell_line(&o.command) {
         if let Some((id, args, remote)) = flatpak_run_from(&o.command) {
-            if let Some(r) = remote {
-                eprintln!("lindroids: running {id} (`flatpak run` takes no remote: `{r}` is for `flatpak install`)");
-            }
             let root = o.distro.as_deref().map(distro_rootfs).unwrap_or_else(|| PathBuf::from("/"));
             return match flatpak::find(&root, &id) {
-                Some(app) => Ok(Target::Flatpak(app, args)),
-                None => Err(format!("{id} is not installed{}", o.distro.as_ref().map(|d| format!(" in {d}")).unwrap_or_default())),
+                Some(app) => {
+                    if let Some(r) = remote {
+                        eprintln!("lindroids: running {id} (`flatpak run` takes no remote: `{r}` is for `flatpak install`)");
+                    }
+                    Ok(Target::Flatpak(app, args))
+                }
+                None if o.distro.is_some() => Err(format!("{id} is not installed in {}", o.distro.as_deref().unwrap_or_default())),
+                None => Err(format!("{id} is not installed: flatpak --user install {} {id}", remote.as_deref().unwrap_or("flathub"))),
             };
+        }
+        // Any other `flatpak` command is no program with a window, and Flatpak's own `run`
+        // cannot work here: say so in the terminal, with no window. (It used to run, and its
+        // window, named after the first exported Flatpak's desktop entry, showed "Calculator
+        // could not start".)
+        if program_of(&o.command) == "flatpak" {
+            let words: Vec<&str> = o.command.iter().skip(1).map(String::as_str).collect();
+            return Err(match words.first() {
+                Some(&"run") => match words.iter().skip(1).find(|w| !w.starts_with('-')) {
+                    Some(w) => format!("{w} is not a Flatpak app id (like org.gnome.Calculator): `lindroids run flatpak run [options] <app-id>`, or `lindroids run <app-id>`"),
+                    None => "which app? `lindroids run flatpak run <app-id>`, or `lindroids run <app-id>`".into(),
+                },
+                _ => format!("`flatpak {}` has no window: run it in Termux as it is", words.join(" ")),
+            });
         }
     }
     let first = &o.command[0];
@@ -464,16 +482,34 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
     }
     let icon_b64 = Some(base64::engine::general_purpose::STANDARD.encode(icon));
     let symbolic_b64 = symbolic(&o, &target).map(|s| base64::engine::general_purpose::STANDARD.encode(s));
+    let pid = child.id();
     let register = |window: bool| {
-        let req = CliRequest::Launch { pid: child.id(), name: name.clone(), icon_png_b64: icon_b64.clone(), symbolic_png_b64: symbolic_b64.clone(), window };
+        let req = CliRequest::Launch { pid, name: name.clone(), icon_png_b64: icon_b64.clone(), symbolic_png_b64: symbolic_b64.clone(), window };
         let _ = client::request(&rt, &req, Duration::from_secs(3));
     };
     register(own_window);
-    if own_window && !crate::open_run_window(&sb, &rt, child.id()) {
+    // `lindroids run` in a terminal: a program that ends at once (a wrong option, a missing file,
+    // a crash on start) has said why in the terminal, and gets no window only to show that it
+    // could not start. From a home screen icon (`launch`), its window is where its error shows.
+    let mut early = None;
+    if own_window && launched.is_none() {
+        let t0 = std::time::Instant::now();
+        while early.is_none() && t0.elapsed() < Duration::from_secs(1) {
+            match child.try_wait() {
+                Ok(Some(st)) => early = Some(st),
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(_) => break,
+            }
+        }
+    }
+    if own_window && early.is_none() && !crate::open_run_window(&sb, &rt, child.id()) {
         register(false);
         crate::ensure_display(&sb, &rt, false);
     }
-    let waited = child.wait();
+    let waited = match early {
+        Some(st) => Ok(st),
+        None => child.wait(),
+    };
     if let Some(m) = &marker {
         let _ = std::fs::remove_file(m);
     }
@@ -492,6 +528,9 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
             Vec::new()
         };
         let _ = client::request(&rt, &CliRequest::RunEnded { pid: child.id(), code, output }, Duration::from_secs(2));
+    }
+    if early.is_some() && code != 0 {
+        eprintln!("lindroids: {} ended at once (exit code {code}): no window", program_of(&o.command));
     }
     match signal_watch.and_then(|t| t.join().ok()).flatten() {
         Some(sig) => {
@@ -611,6 +650,7 @@ mod tests {
             Some(("com.vscodium.codium".into(), s(&["a.txt"]), Some("flathub".into())))
         );
         assert_eq!(flatpak_run(&s(&["flatpak", "run", "some/path", "org.x.Y"])), None);
+        assert_eq!(flatpak_run(&s(&["flatpak", "run", "flathub", "nonsense"])), None);
         assert_eq!(flatpak_run(&s(&["foot"])), None);
     }
 

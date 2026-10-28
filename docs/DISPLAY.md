@@ -383,7 +383,10 @@ a dead one and end its program.
 
 1. Make sure the relay is up.
 2. Fork the program, keeping the terminal as its stdio.
-3. Register it with the relay: name, icon, and "a window of its own".
+3. Register it with the relay: name, icon, and "a window of its own". A program that ends within
+   a second (a wrong option, a crash on start) has said why in the terminal: it gets no window,
+   and `run` reports its exit code *(tested: wrong options to Mousepad and Calculator)*. A
+   `launch` from a home screen icon still opens its window, which is where its error shows.
 4. Open the window:
    - Ask the relay for this run's ticket.
    - The helper (`shortcut.dex open`, run with `app_process` as Termux) sends the Custom Tab

@@ -63,6 +63,9 @@ pub fn parse(path: &Path) -> Option<Entry> {
     (!e.name.is_empty()).then_some(e)
 }
 
+/// Programs that desktop entries run to start another program: they are not that program.
+const LAUNCHERS: &[&str] = &["flatpak", "env", "sh", "bash", "dash", "proot", "proot-distro", "sudo", "pkexec", "xdg-open", "gtk-launch", "dbus-launch"];
+
 /// The desktop entry for a program: by desktop id, or by the command it runs.
 pub fn find(dirs: &[PathBuf], program: &str) -> Option<Entry> {
     let base = Path::new(program).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -88,7 +91,9 @@ pub fn find(dirs: &[PathBuf], program: &str) -> Option<Entry> {
             let exec = e.exec.clone().unwrap_or_default();
             let mut words = exec.split_whitespace().filter(|w| !w.contains('=') || w.starts_with('-'));
             let exec0 = words.next().map(|w| Path::new(w).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()).unwrap_or_default();
-            if exec0 != base {
+            // An entry that runs the program as a launcher of something else (the exported
+            // Flatpaks' `flatpak run <app>`, `env`, a shell) is that something else's.
+            if exec0 != base || LAUNCHERS.contains(&base.as_str()) {
                 continue;
             }
             let extra_args = words.filter(|w| !w.starts_with('%')).count() as i32;
@@ -250,6 +255,9 @@ mod tests {
         let e = find(&[dir.join("share")], "foo").unwrap();
         assert_eq!(e.name, "Foo Editor");
         assert_eq!(e.id, "org.example.Foo");
+        // An exported Flatpak's entry runs `flatpak`, but it is the app's, not flatpak's.
+        std::fs::write(apps.join("org.gnome.Calculator.desktop"), "[Desktop Entry]\nName=Calculator\nExec=/usr/bin/flatpak run --branch=stable --command=gnome-calculator org.gnome.Calculator\n").unwrap();
+        assert!(find(&[dir.join("share")], "flatpak").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

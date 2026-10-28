@@ -218,7 +218,9 @@ codecs), and builds the same filesystem view with proot: runtime at `/usr`, app 
 extensions at their mount points, a generated `/etc/passwd`, `~/.var/app/<id>` as the XDG dirs,
 and `$XDG_RUNTIME_DIR/app/<id>`, where apps keep their sockets. `flatpak run [options] <app-id>`
 works the same, also with a remote name before the app (`flatpak run flathub <app-id>`), which
-`flatpak run` itself does not take.
+`flatpak run` itself does not take. Any other `flatpak` command, or `flatpak run` without an
+installed app, is an error in the terminal, with no window: Flatpak's own runner cannot work
+here, and its command line is no program with a window.
 
 What else differs from `flatpak run` *(tested on b16: Calculator, VSCodium)*:
 
