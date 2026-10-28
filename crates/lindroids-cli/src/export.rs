@@ -86,13 +86,18 @@ pub fn cmd_export(args: &[String]) -> i32 {
     if new_window {
         return export_new_window(&rest);
     }
+    export(args, "")
+}
+
+/// `export`, its shortcut named with `suffix` after the program's name.
+fn export(args: &[String], suffix: &str) -> i32 {
     // `lindroids export <id>` of something exported before: again, as it was (its icon is updated
     // in place), rather than a new export of a command named like the id.
     if let [one] = args {
         if let Some(rec) = lindroids_server::load_exported(one).filter(|r| r.run.first() != Some(one) || r.run.len() > 1) {
             let mut again = vec!["--id".to_string(), rec.id.clone()];
             again.extend(rec.run);
-            return cmd_export(&again);
+            return export(&again, suffix);
         }
     }
     let mut o = match run::parse(args) {
@@ -106,6 +111,7 @@ pub fn cmd_export(args: &[String]) -> i32 {
         Err(e) => return crate::fail(&e),
     };
     let (name, icon) = run::identify(&o, &target);
+    let name = format!("{name}{suffix}");
     let id = o.id.clone().unwrap_or_else(|| default_id(&o, &target, &sb));
     let Some(path) = lindroids_server::exported_path(&id) else {
         return crate::fail(&format!("{id:?} cannot be an id: use letters, digits, '.', '-' and '_'"));
@@ -164,15 +170,9 @@ fn export_new_window(args: &[String]) -> i32 {
     if !run.iter().any(|a| a == "--new") {
         run.insert(0, "--new".into());
     }
-    let id = format!("{base_id}.new-window");
-    let o = run::parse(&run).unwrap_or_default();
-    let name = match run::resolve(&o) {
-        Ok(t) => run::identify(&o, &t).0,
-        Err(e) => return crate::fail(&e),
-    };
-    let mut again = vec!["--id".to_string(), id, "--name".into(), format!("{name} (new window)")];
+    let mut again = vec!["--id".to_string(), format!("{base_id}.new-window")];
     again.extend(run);
-    cmd_export(&again)
+    export(&again, " (new window)")
 }
 
 /// `lindroids launch [--new] <id>`: what an exported program's shortcut runs (through Termux).
