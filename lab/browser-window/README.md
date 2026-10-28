@@ -17,7 +17,7 @@ get without an APK, and what a relay sees when they open and close.
   -p <browser> --cct -f 18080000`.
 - `TaskProbe.java` — what Recents draws for each task: the activity that owns it and the
   TaskDescription (label, icon) that activity set; run as adb's shell:
-  `adb shell CLASSPATH=/data/local/tmp/taskprobe.dex app_process /system/bin probe.TaskProbe`.
+  `adb shell CLASSPATH=/data/local/tmp/taskprobe.dex app_process /system/bin probe.TaskProbe`; `probe.TaskProbe remove <task id>…` removes tasks (`lab/test-recents.sh` uses both).
 - `b16-2026-10-27.log`, `b16-2026-10-27-customtabs.log` — the probe's logs from the runs below,
   without heartbeats.
 

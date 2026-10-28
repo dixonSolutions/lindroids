@@ -120,6 +120,31 @@ whole replies.
 | The window | The page's favicon and title are the program's. While it starts, and after it ends, the page shows the program's icon and name full size *(tested: "Calculator closed." under the Calculator icon)*. |
 | Recents | Chromium-based browsers: **the program's icon and name** *(tested, Cromite)*, where the launcher draws a task's own icon. Samsung's One UI launcher draws the browser's icon on every Chrome window's card instead *(reported twice, Chrome on a Samsung phone)*. It is the launcher's choice: for a Custom Tab in a task of its own (`NEW_TASK`/`NEW_DOCUMENT`), Chromium's `CustomTabTaskDescriptionHelper` always sets a task icon, the favicon or, failing that, a generated letter icon (`CustomTabTaskDescriptionIconGenerator`), never null; a launcher that drew it would show the program's icon or a letter, not Chrome's logo. One UI draws the task's app icon (as its icon themes need). Nothing a page or an intent sends changes that; only an installed app of the program's own would. Chromium sets the page's title, favicon (32 dp or more; the program's is 192 px, at `/run-icon/<run>.png`: a `data:` favicon is not taken) and theme colour on a Custom Tab in a task of its own (`CustomTabTaskDescriptionHelper`). Firefox: **the browser's icon** *(tested)*, with a live thumbnail of the program; it sets a task's icon only for web apps installed through it, which are rejected above. |
 
+#### The Recents icon on One UI: every route, and why none works without an APK
+
+Re-examined 2026-10-28 (`lab/test-recents.sh`, b16 with Launcher3, Cromite 153, Firefox 158;
+neither Chrome nor One UI is in the lab).
+
+A launcher draws a card from what Android keeps for the task: the TaskDescription (label, icon)
+its activities set, and the components it runs (root and top activity). It can draw either the
+TaskDescription icon or an installed component's icon; nothing else is linked to a task (a pinned
+shortcut's icon is not). One UI draws the program's **name** on Chrome's windows (reported), and
+that name comes from the same TaskDescription, set in the same call as the icon by
+`CustomTabTaskDescriptionHelper`. So One UI gets the program's icon and draws the root activity's
+app icon instead. Chromium hit the same thing with WebAPKs: "the icon shown in the recents is the
+application icon of the root activity in the task stack", so it made the WebAPK's own activity the
+task's root (Chromium change 2762873003, 2017). Under One UI only the package at the root of the
+task decides the icon, which means an installed package with the program's icon.
+
+| Route | Result |
+|---|---|
+| Other intent shapes: `NEW_TASK\|NEW_DOCUMENT` (Lindroids'), `NEW_TASK`, `NEW_TASK\|MULTIPLE_TASK` | Same in all three *(tested)*. Cromite: a task of its own, root `CustomTabActivity`, TaskDescription with the page's title and favicon (the icon file Android keeps is the page's icon). Firefox: root `ExternalAppBrowserActivity`, no label, no icon. The root is always the browser's activity. |
+| Firefox's web app window (`VIEW_PWA`, the only Firefox window that sets a task icon) | Its filter takes https only: `VIEW_PWA` for `http://*.localhost` resolves to nothing *(tested)*. Sent to `IntentReceiverActivity` by name it opens an ordinary tab (`HomeActivity`) *(tested)*: Firefox opens it only for a manifest it stored when the user installed the site (`WebAppIntentProcessor`), and it installs only pages with a valid TLS certificate (`installableManifest()` needs `securityInfo.isSecure`). |
+| Setting a browser task's TaskDescription from Termux | `ActivityClientController.setTaskDescription(token, …)` does not check the caller (Android 13), but it needs that activity's token, which only the activity's own process holds; no call open to Termux returns a browser activity's token. `IAppTask` reaches only Termux's own tasks, whose root would draw Termux's icon. And it would not help One UI, which ignores the TaskDescription icon Chrome already sets. |
+| An activity with the program's icon at the task's root (Chromium's WebAPK fix) | Needs an installed package with that icon: an APK. |
+| Chrome's WebAPK, an APK Chrome has Google's server build and installs | The one route under One UI that does not need an APK from Lindroids. Not tested: it needs Chrome with Google Play services (the lab has microG). The user installs it from Chrome, once per program (rejected above, and offered and declined on 2026-10-28). Chromium's client allows any manifest URL without a user name or password (`IsUrlWebApkCompatible`), but whether Google's server builds one for `http://<label>.localhost:<port>` is not known. |
+
+
 ## The parts
 
 ```
