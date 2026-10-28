@@ -50,7 +50,7 @@ from Android**, through the window page and Termux, never by giving the containe
 | Criterion | Status | Evidence / notes |
 |---|---|---|
 | Open a file from Android (Files "Open with" / Share → Termux → Edit) in a Linux program | ✅ | `termux-file-editor` → `lindroids open --linux`; [demo](../media/demos/open-with.mp4); edits go to Termux's copy in `~/downloads` |
-| File > Open in a program shows Android's picker (Files, Camera) | ✅ | portal programs (GTK 4, Flatpak); straight to the picker after the tap; [demo](../media/demos/file-picker.mp4); older GTK 3 dialogs browse Termux's files |
+| File > Open in a program shows Android's picker (Files, Camera) | ✅ | portal programs (GTK 4, Flatpak); straight to the picker after the tap; [demo](../media/demos/file-picker.mp4). GTK 3's own dialogs too, through `liblindroids-gtk.so`: Mousepad Open/Save As, Xournal++ in Debian Open; VSCodium Open File/Save/Open Folder (b16, `lab/test-file-picker.sh`, 2026-10-28) |
 | Edits reach the picked original | 🟡 | Chromium-based browsers (File System Access): Text Editor open → edit → Save wrote `/sdcard/Documents/meeting.txt`, one "Save changes?" prompt, later saves without one (b16, Cromite 153). ⛔ Firefox: a copy |
 | Save As goes where the user chose, again and again | 🟡 | Chromium-based: Android's save picker, then each save into that file (b16, Cromite). Firefox: to Downloads ✅ |
 | Folders (pick a folder) | 🟡 | Chromium-based: FileChooser `directory` → Android's folder picker; copied to Linux, a changed file and a new file in a new subfolder written back (b16, Cromite, via `gdbus`); deletions are not. ⛔ Firefox; `/sdcard` is there when Termux has storage access |

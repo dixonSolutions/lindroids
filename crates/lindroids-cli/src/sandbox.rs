@@ -85,8 +85,34 @@ pub fn integration_env(runtime: &Path, inside: &Path) -> Vec<(String, String)> {
         if std::env::var_os("QT_QPA_PLATFORMTHEME").is_none() {
             v.push(("QT_QPA_PLATFORMTHEME".into(), "xdgdesktopportal".into()));
         }
+        // GTK 3's own file dialogs (GtkFileChooserDialog) never ask the portal: this library
+        // makes them. LD_PRELOAD here is only it; run.rs adds what the program would have had.
+        if let Some(name) = write_gtk_preload(&runtime.join("lib")) {
+            v.push(("LD_PRELOAD".into(), inside.join("lib").join(name).display().to_string()));
+        }
     }
     v
+}
+
+/// liblindroids-gtk.so for this CPU (third_party/gtkpicker), empty where it could not be built.
+const GTK_SO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/liblindroids-gtk.so"));
+
+/// Writes liblindroids-gtk.so into `dir` (the runtime dir's lib/, which every run sees at the
+/// server's path or its own) and returns its file name. LINDROIDS_GTK_DIALOGS=1 leaves GTK's
+/// own dialogs.
+pub fn write_gtk_preload(dir: &Path) -> Option<&'static str> {
+    if GTK_SO.is_empty() || std::env::var("LINDROIDS_GTK_DIALOGS").as_deref() == Ok("1") {
+        return None;
+    }
+    std::fs::create_dir_all(dir).ok()?;
+    let p = dir.join("liblindroids-gtk.so");
+    if std::fs::read(&p).ok().as_deref() != Some(GTK_SO) {
+        // A new file, then renamed: programs running have the old one mapped.
+        let tmp = dir.join(format!(".liblindroids-gtk.so.{}", std::process::id()));
+        std::fs::write(&tmp, GTK_SO).ok()?;
+        std::fs::rename(&tmp, &p).ok()?;
+    }
+    Some("liblindroids-gtk.so")
 }
 
 /// XDG_DATA_DIRS with `<runtime>/share` first (the portal's GTK 3 dark theme), as the program
@@ -289,4 +315,42 @@ pub fn native_bridge() -> bool {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .map_or(false, |v| !v.is_empty() && v != "0")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gtk_dialogs_preloaded_with_the_portal() {
+        let rt = std::env::temp_dir().join(format!("lindroids-gtk-preload-{}", std::process::id()));
+        std::fs::create_dir_all(&rt).unwrap();
+        // No bus: no portal, nothing preloaded.
+        assert!(!integration_env(&rt, Path::new("/run/user/1")).iter().any(|(k, _)| k == "LD_PRELOAD"));
+        std::fs::write(rt.join("bus"), "").unwrap();
+        let env = integration_env(&rt, Path::new("/run/user/1"));
+        let preload = env.iter().find(|(k, _)| k == "LD_PRELOAD").map(|(_, v)| v.as_str());
+        if GTK_SO.is_empty() {
+            eprintln!("liblindroids-gtk.so was not built (no clang): skipped");
+            assert_eq!(preload, None);
+        } else {
+            // At the path the program sees, and written where the server's runtime dir is.
+            assert_eq!(preload, Some("/run/user/1/lib/liblindroids-gtk.so"));
+            assert_eq!(std::fs::read(rt.join("lib/liblindroids-gtk.so")).unwrap(), GTK_SO);
+            assert_eq!(&GTK_SO[..4], b"\x7fELF");
+            // Written once: the same file again leaves it be.
+            let before = std::fs::metadata(rt.join("lib/liblindroids-gtk.so")).unwrap().modified().unwrap();
+            write_gtk_preload(&rt.join("lib")).unwrap();
+            assert_eq!(std::fs::metadata(rt.join("lib/liblindroids-gtk.so")).unwrap().modified().unwrap(), before);
+        }
+        std::fs::remove_dir_all(&rt).unwrap();
+    }
+
+    #[test]
+    fn preloads_add_to_the_programs_own() {
+        assert_eq!(preload_with("/rt/lib/a.so", Some("/termux/libtermux-exec.so")), "/rt/lib/a.so /termux/libtermux-exec.so");
+        assert_eq!(preload_with("/rt/lib/a.so", Some("/rt/lib/a.so /x.so")), "/rt/lib/a.so /x.so");
+        assert_eq!(preload_with("/rt/lib/a.so", Some("  ")), "/rt/lib/a.so");
+        assert_eq!(preload_with("/rt/lib/a.so", None), "/rt/lib/a.so");
+    }
 }

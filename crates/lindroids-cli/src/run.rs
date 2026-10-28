@@ -308,12 +308,21 @@ pub fn build_command(o: &Opts, target: &Target, rt: &Path) -> Result<Command, St
                 };
                 env.push(("PATH".into(), path));
             }
+            // LD_PRELOAD: what the program would have had (Termux's own; nothing in a distro),
+            // then liblindroids-compat.so under proot, then integration_env's GTK library.
+            let mut preload = if o.distro.is_some() { None } else { std::env::var("LD_PRELOAD").ok().filter(|p| !p.trim().is_empty()) };
             if under_proot {
                 if let Some(name) = sandbox::write_compat_preload(&rt.join("proot-bin")) {
                     let lib = rt_inside.join("proot-bin").join(name).display().to_string();
-                    let own = if o.distro.is_some() { None } else { std::env::var("LD_PRELOAD").ok() };
-                    env.push(("LD_PRELOAD".into(), sandbox::preload_with(&lib, own.as_deref())));
+                    preload = Some(sandbox::preload_with(&lib, preload.as_deref()));
                 }
+            }
+            if let Some(i) = env.iter().position(|(k, _)| k == "LD_PRELOAD") {
+                let (_, gtk) = env.remove(i);
+                preload = Some(sandbox::preload_with(&gtk, preload.as_deref()));
+            }
+            if let Some(p) = preload {
+                env.push(("LD_PRELOAD".into(), p));
             }
             let (x11_env, integrated_x11) = sandbox::x11_env(rt);
             env.extend(x11_env);
