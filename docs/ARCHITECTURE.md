@@ -191,7 +191,7 @@ with what a browser knows:
 |---|---|
 | Settings (`org.freedesktop.appearance`, GNOME's `gtk-theme`/`color-scheme`/`icon-theme`) | `prefers-color-scheme`, the CSS `AccentColor` (Android's accent), `prefers-contrast`, `prefers-reduced-motion`; changes signalled live. Answered from the start (the last state is kept on disk) with GNOME's defaults for the rest: libadwaita gives up on a portal that fails at startup, and GTK 4 fills keys a namespace lacks with stand-ins (icon theme "gnome") |
 | OpenURI | links open in a new tab (after a tap, if the browser wants one); files are offered to open or save |
-| FileChooser | Android's picker through the browser (Files, Camera…), at once after the tap that asked; contents fetched into the runtime dir. With File System Access (Chromium 132+): the copy of a picked file is written back into it when it changes (the browser asks "Save changes?" once), *Save As* writes where the user chose, and a picked folder is copied and its changed and new files written back. Without it (Firefox): copies, saves become downloads, no folders |
+| FileChooser | A closable sheet first asks where the file is: the Linux container's own files (the page browses them through `GET /ls`, a listing of one directory by the secret token in the page, and the program gets the picked path directly — no copy), the home directory, or Android. Android's picker (Files, Camera…) comes at once after the tap that asked; contents are fetched into the runtime dir. With File System Access (Chromium 132+): the copy of a picked file is written back into it when it changes (the browser asks "Save changes?" once), *Save As* writes where the user chose, and a picked folder is copied and its changed and new files written back. Without it (Firefox): copies, saves become downloads, no folders |
 | Notification, fdo Notifications | Android notifications, posted by the `app_process` helper as Termux (program name and icon, a tap brings back its window), and notices in the page with their buttons |
 | NetworkMonitor | `navigator.onLine` |
 | Inhibit (idle, suspend) | a screen wake lock while the program's request lives; `CreateMonitor` answers "running" |
@@ -208,6 +208,10 @@ and an `xdg-open` first on PATH that runs `lindroids open`. Programs under proot
 root, so EXTERNAL authentication cannot work for them; the bus also takes ANONYMOUS, which is safe
 because its socket is in the runtime dir only this uid can enter. Distro and Flatpak runs see the
 runtime dir at the server's path too, so the paths the FileChooser hands out are valid there.
+Because the Linux side of the picker is the server's own filesystem, Lindroids installed in a
+proot distro serves that distro's files, and the programs it starts run there too: the shell and
+the data belong in the same container as the server. Android's files stay outside it, through the
+browser, as before.
 Each portal interface publishes its `version` property under that name (zbus would say `Version`):
 Chromium and Electron read it to decide whether there is a portal, and without it showed their own
 GTK dialogs instead of Android's picker *(tested: VSCodium's Open Folder now opens Android's

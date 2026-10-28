@@ -10,6 +10,8 @@
 //! Nothing here needs an Android app or permission: any browser on the phone can open
 //! `http://127.0.0.1:<port>/`, and Termux opens it with `termux-open-url`.
 
+use std::path::{Path, PathBuf};
+
 use base64::Engine;
 use sha1::{Digest, Sha1};
 
@@ -138,6 +140,17 @@ pub fn answer(req: &Request, port: u16) -> Answer {
     if !req.header("Host").map_or(false, |h| our_host(h, port)) {
         return Answer::Close(response(421, "text/plain", b"wrong host\n"));
     }
+    if req.path == "/ls" {
+        let token = picker_token();
+        if query_value(&req.query, "t").as_deref() != Some(token.as_str()) {
+            return Answer::Close(response(403, "text/plain", b"forbidden\n"));
+        }
+        let (status, body) = match list_dir(&req.query) {
+            Ok(json) => (200, json),
+            Err(e) => (200, serde_json::json!({ "error": e }).to_string()),
+        };
+        return Answer::Close(response(status, "application/json", body.as_bytes()));
+    }
     if req.path == LINK_PATH {
         if !req.has_token("Upgrade", "websocket") || !req.has_token("Connection", "upgrade") {
             return Answer::Close(response(426, "text/plain", b"WebSocket only\n"));
@@ -156,7 +169,10 @@ pub fn answer(req: &Request, port: u16) -> Answer {
     }
     let (ctype, body): (&str, std::borrow::Cow<[u8]>) = match req.path.as_str() {
         "/" | "/index.html" => ("text/html; charset=utf-8", index_html(&req.query).into_bytes().into()),
-        "/lindroids.js" => ("text/javascript; charset=utf-8", CLIENT_JS.replace("@BUILD@", page_build()).into_bytes().into()),
+        "/lindroids.js" => (
+            "text/javascript; charset=utf-8",
+            CLIENT_JS.replace("@BUILD@", page_build()).replace("@PICKER_TOKEN@", &picker_token()).into_bytes().into(),
+        ),
         "/icon.svg" => ("image/svg+xml", ICON_SVG.as_bytes().into()),
         "/mic-worklet.js" => ("text/javascript; charset=utf-8", MIC_WORKLET_JS.as_bytes().into()),
         p if p.starts_with("/app/") => match app_file(p, &req.query, port) {
@@ -170,6 +186,120 @@ pub fn answer(req: &Request, port: u16) -> Answer {
         _ => return Answer::Close(response(404, "text/plain", b"not found\n")),
     };
     Answer::Close(response(200, ctype, &body))
+}
+
+/// A secret only the page this server served knows: `/ls` lists directories for its picker. It
+/// comes from the origin label (kept across restarts), so a page left open over a server restart
+/// can still browse.
+fn picker_token() -> String {
+    format!("{}-picker", crate::origin_label())
+}
+
+/// One `key=value` of a query, percent-decoded (no `+`: a path may have one).
+fn query_value(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|kv| {
+        let (k, v) = kv.split_once('=')?;
+        (k == key).then(|| percent_decode(v))
+    })
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let hex = |c: u8| (c as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// What the picker means by "Linux environment": Termux's prefix, else the container's root.
+fn env_root() -> PathBuf {
+    let prefix = std::env::var("PREFIX").unwrap_or_default();
+    let on_android = Path::new("/system/build.prop").exists() || Path::new("/system/bin/app_process").exists();
+    if prefix.contains("/com.termux")
+        || (on_android && std::env::var_os("TERMUX_VERSION").is_some() && Path::new(lindroids_proto::TERMUX_PREFIX).exists())
+    {
+        PathBuf::from(prefix)
+    } else {
+        PathBuf::from("/")
+    }
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME").map(PathBuf::from).filter(|p| p.is_dir()).unwrap_or_else(env_root)
+}
+
+/// This process may write here (the picker's Save belongs in such a directory).
+fn writable(p: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    std::ffi::CString::new(p.as_os_str().as_bytes()).is_ok_and(|c| unsafe { libc::access(c.as_ptr(), libc::W_OK) } == 0)
+}
+
+/// `GET /ls?t=<token>&path=<path>`: a directory for the page's picker. `path` is an absolute
+/// path, `~` (the home), `~/...`, or `root` (the Linux environment: Termux's prefix or the
+/// container's `/`). Only names, sizes and kinds: the page picks paths, and the server hands them
+/// to the program as they are.
+fn list_dir(query: &str) -> Result<String, String> {
+    let root = env_root();
+    let home = home_dir();
+    let asked = query_value(query, "path").unwrap_or_default();
+    let p = match asked.as_str() {
+        "" | "~" => home.clone(),
+        "root" => root.clone(),
+        _ if asked.starts_with("~/") => home.join(&asked[2..]),
+        _ => PathBuf::from(&asked),
+    };
+    if !p.is_absolute() {
+        return Err(format!("{}: not an absolute path", p.display()));
+    }
+    let path = std::fs::canonicalize(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    if !path.is_dir() {
+        return Err(format!("{}: not a directory", path.display()));
+    }
+    let mut entries = Vec::new();
+    let dir = std::fs::read_dir(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    for e in dir.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let meta = std::fs::metadata(e.path()).or_else(|_| e.metadata()).ok();
+        let is_dir = meta.as_ref().map_or(false, |m| m.is_dir());
+        let size = meta.as_ref().map_or(0, |m| m.len());
+        let entry_path = e.path();
+        entries.push(serde_json::json!({
+            "name": name,
+            "dir": is_dir,
+            "hidden": name.starts_with('.'),
+            "size": size,
+            "writable": writable(&entry_path),
+        }));
+        if entries.len() >= 5000 {
+            break;
+        }
+    }
+    entries.sort_by(|a, b| {
+        let (ad, an) = (a["dir"].as_bool().unwrap_or(false), a["name"].as_str().unwrap_or(""));
+        let (bd, bn) = (b["dir"].as_bool().unwrap_or(false), b["name"].as_str().unwrap_or(""));
+        bd.cmp(&ad).then_with(|| an.to_lowercase().cmp(&bn.to_lowercase())).then_with(|| an.cmp(bn))
+    });
+    let parent = path.parent().filter(|p| *p != path.as_path()).map(|p| p.to_string_lossy().into_owned());
+    Ok(serde_json::json!({
+        "path": path.to_string_lossy(),
+        "parent": parent,
+        "home": home.to_string_lossy(),
+        "root": root.to_string_lossy(),
+        "writable": writable(&path),
+        "entries": entries,
+    })
+    .to_string())
 }
 
 /// The run a window's URL is for (`?window&run=<pid>`).
@@ -390,6 +520,30 @@ pub fn unframe(buf: &mut Vec<u8>) -> Unframed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_a_query_and_lists_a_directory() {
+        assert_eq!(percent_decode("a%20b%2Fc"), "a b/c");
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(query_value("t=x&path=%2Ftmp", "path").as_deref(), Some("/tmp"));
+        assert_eq!(query_value("path=a+b", "path").as_deref(), Some("a+b"));
+        let dir = std::env::temp_dir().join(format!("lindroids-ls-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.txt"), b"hi").unwrap();
+        let enc: String = dir
+            .to_string_lossy()
+            .bytes()
+            .map(|b| if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+            .collect();
+        let j: serde_json::Value = serde_json::from_str(&list_dir(&format!("path={enc}")).unwrap()).unwrap();
+        assert_eq!(j["path"], dir.to_string_lossy().as_ref());
+        assert_eq!(j["entries"][0]["name"], "sub");
+        assert_eq!(j["entries"][0]["dir"], true);
+        assert_eq!(j["entries"][1]["name"], "a.txt");
+        assert_eq!(j["entries"][1]["size"], 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn close_codes() {

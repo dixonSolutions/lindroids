@@ -807,6 +807,7 @@ impl FileChooser {
     fn pick(hdr: &Header<'_>, title: String, options: HashMap<String, OwnedValue>, save: bool) -> OwnedObjectPath {
         let (handle, sender) = request_path(hdr, &options);
         let h = handle.clone();
+        let log_title = title.clone();
         let req = PickFiles {
             request: 0,
             title,
@@ -853,14 +854,25 @@ impl FileChooser {
                 };
                 uris.push(file_uri(&path));
             } else if files[0].mime.as_deref() == Some(DIRECTORY) {
-                match copy_folder(request, &files) {
-                    Ok(root) => {
-                        if files[0].writable {
-                            write_back(pid, Vec::new(), Some((root.clone(), files[0].uri.clone())));
+                // A folder the picker browsed on this side is already here: no copy (and no
+                // write-back). Android's picker sends everything in the folder, so more than the
+                // folder itself means a copy.
+                let local = (files.len() == 1)
+                    .then(|| files[0].path.as_ref().map(PathBuf::from))
+                    .flatten()
+                    .filter(|p| p.is_dir());
+                if let Some(root) = local {
+                    uris.push(file_uri(&root));
+                } else {
+                    match copy_folder(request, &files) {
+                        Ok(root) => {
+                            if files[0].writable {
+                                write_back(pid, Vec::new(), Some((root.clone(), files[0].uri.clone())));
+                            }
+                            uris.push(file_uri(&root));
                         }
-                        uris.push(file_uri(&root));
+                        Err(e) => warn!("FileChooser: {e}"),
                     }
-                    Err(e) => warn!("FileChooser: {e}"),
                 }
             } else {
                 let mut copies = Vec::new();
@@ -882,6 +894,7 @@ impl FileChooser {
             if uris.is_empty() {
                 return respond(&sender, &h, 2, HashMap::new());
             }
+            info!("FileChooser {log_title:?}: {}", uris.join(", "));
             let results: HashMap<&str, Value> = [("uris", Value::from(uris))].into_iter().collect();
             respond(&sender, &h, 0, results);
         });

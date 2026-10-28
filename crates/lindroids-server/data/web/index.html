@@ -44,6 +44,41 @@
   .toast small { color: var(--dim); }
   .dialog { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 6; min-width: 260px; text-align: center; }
   .dialog .ghost { background: none; color: var(--fg); border: 1px solid #334; }
+  /* The picker: a sheet from the bottom, over the program. The source choices are a line each. */
+  .picker { position: fixed; inset: 0; z-index: 7; display: flex; align-items: flex-end; justify-content: center;
+    background: #0009; overscroll-behavior: contain; }
+  .picker .sheet { display: flex; flex-direction: column; width: min(540px, 100%); max-height: min(86vh, calc(100% - 12px));
+    padding: 8px 14px calc(12px + env(safe-area-inset-bottom)); background: #141C26; color: var(--fg);
+    border: 1px solid #334; border-bottom: 0; border-radius: 16px 16px 0 0; box-shadow: 0 -10px 40px #000a; }
+  .picker .head { display: flex; align-items: center; gap: 8px; padding: 2px 0 8px; }
+  .picker .head h2 { flex: 1; min-width: 0; margin: 0; font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picker .x { flex: none; padding: 4px 10px; border: 0; background: none; color: var(--dim); font: 20px/1 system-ui, sans-serif; cursor: pointer; }
+  .picker .sources { border-top: 1px solid #334; }
+  .picker .sources button { display: block; width: 100%; padding: 14px 6px; border: 0; border-bottom: 1px solid #334;
+    background: none; color: var(--fg); font: inherit; text-align: left; cursor: pointer; }
+  .picker .sources button:hover, .picker .sources button:focus-visible { background: #1B2430; }
+  .picker .sources small { display: block; margin-top: 3px; color: var(--dim); }
+  .picker .where { display: flex; align-items: center; gap: 6px; padding: 7px 0; border-bottom: 1px solid #334; }
+  .picker .where .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--dim); font: 12px/1.4 monospace; direction: ltr; text-align: left; }
+  .picker .where button { flex: none; padding: 5px 9px; border: 1px solid #334; border-radius: 6px; background: none;
+    color: var(--fg); font: inherit; cursor: pointer; }
+  .picker .list { flex: 1; min-height: 90px; overflow: auto; overscroll-behavior: contain; }
+  .picker .row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 6px; border: 0;
+    border-bottom: 1px solid #26313d; background: none; color: var(--fg); font: inherit; text-align: left; cursor: pointer; }
+  .picker .row:hover, .picker .row:focus-visible { background: #1B2430; }
+  .picker .row.sel { background: #3DDC8422; }
+  .picker .row .i { flex: none; width: 20px; color: var(--accent); text-align: center; }
+  .picker .row .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picker .row .s { flex: none; color: var(--dim); font-size: 12px; }
+  .picker .err { padding: 12px 4px; color: #ff8a80; line-height: 1.45; }
+  .picker .empty { padding: 16px 4px; color: var(--dim); text-align: center; }
+  .picker .foot { display: flex; align-items: center; gap: 8px; padding-top: 10px; border-top: 1px solid #334; }
+  .picker .foot input { flex: 1; min-width: 0; padding: 9px 10px; border: 1px solid #334; border-radius: 6px;
+    background: #0F1720; color: var(--fg); font: inherit; }
+  .picker .foot button { flex: none; padding: 9px 14px; border: 0; border-radius: 6px; background: var(--accent);
+    color: #0F1720; font: inherit; cursor: pointer; }
+  .picker .foot button.ghost { border: 1px solid #334; background: none; color: var(--fg); }
   /* A window of its own showing one program: the program has the whole window; the tools wait
      behind a small handle at the top. */
   #handle { display: none; }

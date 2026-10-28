@@ -10,6 +10,7 @@
 'use strict';
 
 const BUILD = '@BUILD@';
+const PICKER_TOKEN = '@PICKER_TOKEN@';
 const PROTOCOL_VERSION = 6;
 // What pages kept before keys (protocol 4): gone, it no longer proves anything.
 try { localStorage.removeItem('lindroids.secret'); } catch (e) { /* storage off */ }
@@ -1374,7 +1375,189 @@ const writes = new Map(); // uri -> the write going on (a promise of its stream;
 let lastTap = -1e9;
 addEventListener('pointerup', () => { lastTap = performance.now(); }, { capture: true });
 
+// A program's file dialog first asks where the file is: in the Linux container (browsed here, the
+// program reads the path directly) or in Android (Android's own picker).
 function pickFiles(p) {
+  const title = p.title || (p.directory ? 'A Linux program wants a folder' : p.save ? 'Save' : 'A Linux program wants a file');
+  const cancel = () => send({ t: 'files_picked', request: p.request, files: [] });
+  pickerSheet(title, [
+    ['Linux environment', 'Programs and files in the container', () => browseLinux(p, 'root')],
+    ['Home directory', 'Your home in the container', () => browseLinux(p, '~')],
+    ['Android files', 'Photos, downloads and folders from Android', () => pickAndroid(p)],
+  ], cancel);
+}
+
+function pickerSheet(title, options, cancel) {
+  const el = document.createElement('div');
+  el.className = 'picker';
+  el.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">
+    <div class="head"><h2>${esc(title)}</h2><button class="x" aria-label="Close">✕</button></div>
+    <div class="sources"></div></div>`;
+  let settled = false;
+  const close = () => { if (settled) return; settled = true; el.remove(); cancel(); };
+  el.querySelector('.x').onclick = close;
+  el.onclick = (e) => { if (e.target === el) close(); };
+  for (const [label, sub, fn] of options) {
+    const b = document.createElement('button');
+    b.innerHTML = `${esc(label)}<small>${esc(sub)}</small>`;
+    b.onclick = () => { if (settled) return; settled = true; el.remove(); fn(); };
+    el.querySelector('.sources').appendChild(b);
+  }
+  document.body.appendChild(el);
+  addEventListener('keydown', function esc_(e) {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    removeEventListener('keydown', esc_, true);
+    close();
+  }, true);
+  return el;
+}
+
+// The Linux side's own files: the server lists a directory (`/ls`), the program gets the path.
+function browseLinux(p, start) {
+  const el = document.createElement('div');
+  el.className = 'picker';
+  el.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">
+    <div class="head"><h2>${esc(p.title || (p.save ? 'Save' : p.directory ? 'Choose a folder' : 'Choose a file'))}</h2><button class="x" aria-label="Close">✕</button></div>
+    <div class="where"><button class="up" title="Up" aria-label="Up">↑</button><span class="path"></span><button class="home">Home</button></div>
+    <div class="list"></div><div class="foot"></div></div>`;
+  document.body.appendChild(el);
+  const pathEl = el.querySelector('.path'), listEl = el.querySelector('.list'), footEl = el.querySelector('.foot');
+  const upBtn = el.querySelector('.up');
+  let here = null, selected = new Set(), done = false, actionBtn = null, nameInput = null, footBuilt = false;
+  const cancel = () => { if (!done) send({ t: 'files_picked', request: p.request, files: [] }); };
+  const close = () => { done = true; el.remove(); cancel(); };
+  el.querySelector('.x').onclick = close;
+  el.onclick = (e) => { if (e.target === el) close(); };
+  upBtn.onclick = () => { if (here && here.parent) go(here.parent); };
+  el.querySelector('.home').onclick = () => go('~');
+
+  function join(dir, name) { return (dir.endsWith('/') ? dir : dir + '/') + name; }
+  function picked(path, name, mime, size) {
+    return { uri: 'linux:' + path, name, path, mime, size: size || 0, writable: true, ...(mime === 'inode/directory' ? { rel: '' } : {}) };
+  }
+  function choose(files) {
+    if (done || !files.length) return;
+    done = true;
+    el.remove();
+    send({ t: 'files_picked', request: p.request, files });
+  }
+  function chooseDir() { if (here) choose([picked(here.path, here.path.split('/').filter(Boolean).pop() || '/', 'inode/directory')]); }
+  function chooseSave() {
+    if (!here) return;
+    const name = (nameInput.value || '').trim().replace(/[/\0]/g, '_');
+    if (!name || name === '.' || name === '..') { nameInput.focus(); return; }
+    choose([picked(join(here.path, name), name)]);
+  }
+  function chooseSelected() { choose([...selected].sort().map((n) => picked(join(here.path, n), n))); }
+
+  function buildFoot() {
+    if (footBuilt) return;
+    footBuilt = true;
+    const add = (label, fn, ghost) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      if (ghost) b.className = 'ghost';
+      b.onclick = fn;
+      footEl.appendChild(b);
+      return b;
+    };
+    if (p.directory) {
+      actionBtn = add('Use this folder', chooseDir);
+    } else if (p.save) {
+      nameInput = document.createElement('input');
+      nameInput.value = p.name || 'file';
+      nameInput.setAttribute('aria-label', 'File name');
+      nameInput.onkeydown = (e) => { if (e.key === 'Enter') chooseSave(); };
+      footEl.appendChild(nameInput);
+      actionBtn = add('Save here', chooseSave);
+      actionBtn.disabled = !here.writable;
+    } else if (p.multiple) {
+      actionBtn = add('Choose', chooseSelected);
+    } else {
+      footEl.hidden = true;
+    }
+  }
+  function updateFoot() {
+    if (actionBtn && p.save) actionBtn.disabled = !here.writable;
+    if (actionBtn && p.multiple && !p.directory && !p.save) {
+      actionBtn.textContent = selected.size ? `Choose ${selected.size}` : 'Choose';
+      actionBtn.disabled = !selected.size;
+    }
+  }
+
+  async function go(path) {
+    listEl.innerHTML = '<div class="empty">…</div>';
+    try {
+      const r = await fetch(`/ls?t=${encodeURIComponent(PICKER_TOKEN)}&path=${encodeURIComponent(path)}`);
+      const j = await r.json();
+      if (j.error) {
+        listEl.innerHTML = `<div class="err">${esc(j.error)}</div>`;
+        return;
+      }
+      here = j;
+      selected = new Set();
+      pathEl.textContent = j.path;
+      pathEl.title = j.path;
+      upBtn.disabled = !j.parent;
+      buildFoot();
+      updateFoot();
+      render();
+    } catch (e) {
+      listEl.innerHTML = `<div class="err">${esc(e)}</div>`;
+    }
+  }
+
+  function sizeText(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
+    if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+    return (n / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+  }
+
+  function render() {
+    listEl.textContent = '';
+    if (!here.entries.length) {
+      listEl.innerHTML = '<div class="empty">This folder is empty</div>';
+      return;
+    }
+    for (const e of here.entries) {
+      const row = document.createElement('button');
+      row.className = 'row' + (selected.has(e.name) ? ' sel' : '');
+      row.innerHTML = `<span class="i">${e.dir ? '▸' : ''}</span><span class="n"></span><span class="s">${e.dir ? '' : sizeText(e.size)}</span>`;
+      row.querySelector('.n').textContent = e.name;
+      if (e.hidden) row.style.color = 'var(--dim)';
+      row.onclick = () => {
+        if (e.dir) {
+          go(join(here.path, e.name));
+        } else if (p.save) {
+          nameInput.value = e.name;
+        } else if (p.directory) {
+          return;
+        } else if (p.multiple) {
+          if (selected.has(e.name)) selected.delete(e.name);
+          else selected.add(e.name);
+          row.classList.toggle('sel');
+          updateFoot();
+        } else {
+          choose([picked(join(here.path, e.name), e.name, e.mime, e.size)]);
+        }
+      };
+      listEl.appendChild(row);
+    }
+  }
+
+  addEventListener('keydown', function esc_(e) {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    removeEventListener('keydown', esc_, true);
+    close();
+  }, true);
+  go(start);
+}
+
+// Android's picker: the one the browser has, over Android's documents (it needs a tap).
+function pickAndroid(p) {
   const cancel = () => send({ t: 'files_picked', request: p.request, files: [] });
   if (fsa) return pickHandles(p, cancel);
   if (p.directory) return cancel();
