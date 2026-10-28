@@ -17,8 +17,14 @@ self.addEventListener('activate', (e) => {
     .then(() => self.clients.claim()));
 });
 
+// A page that cannot be loaded gets the offline page, and the offline page its script and icon
+// (with or without the icon's ?v=).
 self.addEventListener('fetch', (e) => {
-  if (e.request.mode !== 'navigate') return;
-  e.respondWith(fetch(e.request).catch(() => caches.open(CACHE).then((c) => c.match('offline')))
+  if (e.request.method !== 'GET') return;
+  const navigate = e.request.mode === 'navigate';
+  const path = new URL(e.request.url).pathname;
+  if (!navigate && !OFFLINE.some((f) => path === new URL(f, self.registration.scope).pathname)) return;
+  e.respondWith(fetch(e.request)
+    .catch(() => caches.open(CACHE).then((c) => c.match(navigate ? 'offline' : e.request, { ignoreSearch: true })))
     .then((r) => r || Response.error()));
 });
