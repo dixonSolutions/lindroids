@@ -915,17 +915,40 @@ addEventListener('pointerup', watchBack, { capture: true });
 
 // Once each time the window comes on screen: a user who left full screen (Back, Esc) meant it, and
 // asking on every tap took the taps (the resize closed the menu a tap opened).
-let wantFull = true;
+// When: the earliest input the browser lets ask. Measured in Custom Tabs of Cromite 153 and Firefox
+// 158 (lab/browser-window/fsprobe.py, docs/DISPLAY.md): never before the user's first input (not
+// while loading, not from the intent that opened the window, not after the page scrolls itself),
+// never on a touch's start (pointerdown, touchstart: refused), first on its end (pointerup); a
+// mouse button counts from its press, a key from its press. Coming back from Home or Recents, the
+// browser has left full screen: the next input asks again. A refused request is asked again on the
+// next input, until one is granted.
+let wantFull = true, askingFull = false, fullRefusals = 0;
 document.addEventListener('visibilitychange', () => { if (!document.hidden) wantFull = true; });
-if (new URLSearchParams(location.search).has('window')) {
+// A key that may ask: a plain key typed on a hardware keyboard, not one of the on-screen
+// keyboard's (its window resizes with the screen and would close), nor a shortcut (Ctrl+V needs
+// the key's activation for the clipboard).
+const fullKey = (e) => !e.isComposing && e.key !== 'Unidentified' && e.key !== 'Process' && e.key !== 'Escape' &&
+  !e.ctrlKey && !e.altKey && !e.metaKey && document.activeElement !== ime;
+if (OWN_WINDOW) {
   const full = (e) => {
     // Not once the program has ended: the browser's close button is the way out then.
     if (ended !== null && !windows.size) return;
     if (e.target instanceof Element && e.target.closest('.dialog, .toast')) return;
-    if (!wantFull || document.fullscreenElement) return;
-    document.documentElement.requestFullscreen({ navigationUI: 'hide' }).then(() => { wantFull = false; }).catch(() => {});
+    if (!wantFull || askingFull || document.fullscreenElement) return;
+    if (e.type === 'pointerdown' && e.pointerType !== 'mouse') return;
+    if (e.type === 'keydown' && !fullKey(e)) return;
+    askingFull = true;
+    document.documentElement.requestFullscreen({ navigationUI: 'hide' }).then(() => {
+      wantFull = false;
+      trace(`full screen asked on ${e.type}`);
+    }, (err) => {
+      if (fullRefusals++ < 5) trace(`full screen refused on ${e.type}: ${err && err.message}`);
+    }).finally(() => { askingFull = false; });
   };
-  for (const ev of ['pointerup', 'touchend', 'click']) addEventListener(ev, full, { capture: true });
+  for (const ev of ['pointerdown', 'pointerup', 'touchend', 'click', 'keydown']) addEventListener(ev, full, { capture: true });
+  // What the window looked like when it came: the lab checks it opens out of full screen (no
+  // browser allows more) and that the first tap takes it.
+  addEventListener('load', () => setTimeout(() => trace(`opened ${document.fullscreenElement ? 'in' : 'out of'} full screen, ${innerWidth}x${innerHeight} of ${screen.width}x${screen.height}`), 1000));
 }
 $('fs').onclick = () => {
   if (document.fullscreenElement) document.exitFullscreen();

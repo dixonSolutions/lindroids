@@ -28,6 +28,7 @@ lab/vm.sh b16 wait-boot
 lab/provision.sh b16                  # setup wizard off, Termux + openssh + foot + lab key, sshd
 lab/test-lindroids.sh b16             # CLI + window + typing + closing + second run + shortcut -> lab/results/b16/<mode>/
 lab/test-windows.sh b16               # a Flatpak's window, run and from its exported icon: Recents icon, kept in the background, ✕ ends it, its end closes it
+lab/test-fullscreen.sh b16            # each browser: is the window full screen when it opens (no), and after one tap
 lab/vm.sh b16 stop                    # adb `reboot -p`, then QMP quit
 ```
 

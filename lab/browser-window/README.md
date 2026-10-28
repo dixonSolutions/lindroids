@@ -18,6 +18,12 @@ get without an APK, and what a relay sees when they open and close.
 - `TaskProbe.java` — what Recents draws for each task: the activity that owns it and the
   TaskDescription (label, icon) that activity set; run as adb's shell:
   `adb shell CLASSPATH=/data/local/tmp/taskprobe.dex app_process /system/bin probe.TaskProbe`.
+- `fsprobe.py` — full screen without a tap: `python fsprobe.py 48200` in Termux; `/p/<name>?<flags>`
+  tries `requestFullscreen` at load, on every input, after scrolling itself, with a manifest…, and
+  logs what it got to `~/fsprobe.log` (`/state/<name>` for the last report).
+- `FsOpen.java` — a Custom Tab with extras (TWA, `ImmersiveMode`, a `PendingIntent` session id,
+  any `--ez/--ei/--es`), and `--bind` to try binding the browser's `CustomTabsService`, from
+  `app_process`: `app_process -Djava.class.path=fsopen.dex /system/bin probe.FsOpen com.termux <url> <browser> [opts]`.
 - `b16-2026-10-27.log`, `b16-2026-10-27-customtabs.log` — the probe's logs from the runs below,
   without heartbeats.
 
@@ -47,6 +53,7 @@ get without an APK, and what a relay sees when they open and close.
 | Back in the Custom Tab, one history entry | `input keyevent 4` | the task goes to the back, alive and still in recents |
 | Android's accent colour | CSS `AccentColor` in Firefox | the system accent (`#824c76` on b16); `prefers-color-scheme` follows the system's dark mode |
 | Raise a Custom Tab | same intent, `NEW_DOCUMENT` without `MULTIPLE_TASK` | the existing task comes to the front; the page reloads |
+| Full screen without a tap (2026-10-28) | `fsprobe.py` pages in Cromite 153 and Firefox 158 Custom Tabs, from `Open`/`FsOpen` | never: refused at load and on every lifecycle event, no user activation from the intent; on a tap `touchstart`/`pointerdown` refused, `pointerup` the first granted; a page scrolling itself keeps the bar (both, 160 and 280 dpi); manifest `display: fullscreen` ignored; Chromium's media-viewer/minimal UI extras ignored (first-party only); TWA + `ImmersiveMode` with a `PendingIntent` session id → ordinary Custom Tab; `bindService` from `app_process` → `SecurityException: Unable to find app for caller`; both leave full screen when hidden (Home, back from Recents) |
 | Closing Firefox's window from outside (2026-10-28) | the window's own intent again, with `FLAG_ACTIVITY_CLEAR_TASK` and the session extra (`am start -f 0x10088000`) | nothing changes: Fenix's `IntentReceiverActivity` strips `CLEAR_TASK`, and each Custom Tab intent gets a new tab, so `ExternalAppBrowserActivity` always has one |
 | Chromium's Custom Tabs (2026-10-28) | Cromite 153 as the default browser with Settings → Privacy → *Allow custom tab intents*; `lindroids run org.gnome.Calculator`, its home screen icon | `CustomTabActivity` in a task of its own; bar with the title (`TITLE_VISIBILITY`), the toolbar colour, no share; full screen on the first tap; Recents: the program's name and icon (TaskDescription from the page's title and favicon; a `data:` favicon is ignored, the task got Lindroids' own icon until the page linked `/run-icon/<run>.png`); the program's ✕ → `window.close()` → task gone; the tab's ✕ → the program ends |
 | Whose icon Recents shows (2026-10-28) | `TaskProbe` on a running Calculator window; Firefox's manifest (`aapt2 dump xmltree`) | the task's activity is `org.mozilla.firefox/…customtabs.ExternalAppBrowserActivity`; its TaskDescription has no label and no icon (Firefox does not pass the page's title or favicon on); that activity declares no icon of its own, so Android uses Firefox's application icon (`@0x7f100000`, label "Firefox") |

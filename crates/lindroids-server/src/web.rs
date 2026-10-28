@@ -407,6 +407,23 @@ mod tests {
     }
 
     #[test]
+    fn own_windows_ask_for_full_screen_on_the_inputs_browsers_allow() {
+        // Measured in Custom Tabs (docs/DISPLAY.md, "Full screen"): a touch's start is refused,
+        // its end granted; a mouse press and a key press count from the press. Not asking on a
+        // touch's end would leave the bar until a second tap.
+        let line = CLIENT_JS
+            .lines()
+            .find(|l| l.contains("addEventListener(ev, full,"))
+            .expect("own windows ask for full screen");
+        for ev in ["'pointerdown'", "'pointerup'", "'touchend'", "'click'", "'keydown'"] {
+            assert!(line.contains(ev), "{ev} missing: {line}");
+        }
+        assert!(!line.contains("touchstart"), "{line}");
+        assert!(CLIENT_JS.contains("e.type === 'pointerdown' && e.pointerType !== 'mouse'"));
+        assert!(CLIENT_JS.contains("trace(`opened ${document.fullscreenElement ? 'in' : 'out of'} full screen"));
+    }
+
+    #[test]
     fn frames_use_the_right_length_form() {
         assert_eq!(frame(2, &[0; 5])[1], 5);
         assert_eq!(frame(2, &[0; 200])[1], 126);

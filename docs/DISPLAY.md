@@ -111,6 +111,38 @@ puts them before the reply, and reading them throws outside an app (`SyncNotedAp
 helper turns the sampling off (`AppOpsManager.sConfig`, a config that never expires) and gets
 whole replies.
 
+### Full screen: from the first input, not before *(tested 2026-10-28, b16)*
+
+A window opens with the browser's thin bar and Android's status and navigation bars, and takes
+the whole screen on the user's first input. Nothing tried makes it full screen before that, in
+Cromite 153 or Firefox 158 Custom Tabs, opened from Termux's uid like Lindroids' windows
+(`lab/browser-window/fsprobe.py` for the page, `FsOpen.java` for the intent, `lab/test-fullscreen.sh`
+for Lindroids' own windows):
+
+| Route | Result |
+|---|---|
+| `requestFullscreen` with no input: when the script runs, `DOMContentLoaded`, `load`, `pageshow`, `focus`, `visibilitychange`, `resize`, rAF, 0/0.5/2 s | refused in both. `navigator.userActivation` is empty at load: the intent that opened the window gives the page no activation |
+| On a tap: `touchstart`, `pointerdown` | refused in both |
+| On a tap: `pointerup` | granted in both, the earliest event that is; `touchend` and `click` after it too |
+| A finger scroll (`touchend` after a drag) | refused |
+| A page taller than the window scrolling itself (`scrollTo`, smooth scroll, `scrollIntoView`, a `#fragment`) | the bar stays, in both, at the VM's density (1280×800, 160 dpi) and at phone density (280 dpi, 457 dp wide). A finger scroll did not hide it either on b16 |
+| A manifest with `display: fullscreen` and `display_override`, `theme-color`, `viewport-fit=cover` | no change: Custom Tabs do not apply manifests |
+| Chromium's own extras: `EXTRA_UI_TYPE` (media viewer, minimal UI), `EXTRA_ENABLE_EMBEDDED_MEDIA_EXPERIENCE`, `ENABLE_URLBAR_HIDING` | no change: Chromium honours the first two only from Google's own apps (`isTrustedCustomTab`); URL bar hiding is on by default and acts on scrolls only |
+| Trusted Web Activity with `ImmersiveMode` (`LAUNCH_AS_TRUSTED_WEB_ACTIVITY`, `DISPLAY_MODE`, a `PendingIntent` as `EXTRA_SESSION_ID` so Chromium sees a session) | an ordinary Custom Tab with its bar. A TWA needs the client's package from a session made through the browser's bound `CustomTabsService`, then Digital Asset Links; `bindService` from `app_process` fails: `SecurityException: Unable to find app for caller` (Android binds only for processes it started). Firefox has no TWAs |
+| Window Management (`getScreenDetails`) | Cromite: `NotAllowedError`; Firefox: absent |
+| Keyboard Lock | Cromite grants it, but it only applies in full screen |
+| Coming back from Home or Recents | both browsers leave full screen when the window is hidden; it comes back on the next input |
+
+So the page asks on the first input browsers allow, anywhere in the window except its own
+dialogs and toasts: a touch's end (`pointerup`; `touchend` and `click` as fallbacks), a mouse
+button's press, a plain key on a hardware keyboard. A refused request is asked again on the next
+input, and after the window comes back on screen. The page traces "opened out of full screen" and
+which input took it ("full screen asked on pointerup") into the server's log *(lab/test-fullscreen.sh
+on b16 with the page from before this change: Cromite and Firefox open out of full screen, one tap
+in the middle takes it)*. A tap on the browser's own bar does not reach the page. Not verified
+here: Chrome and Samsung Internet (no Play Store on the lab images), and phones in portrait,
+where Chromium's bar may hide on a finger scroll.
+
 ### The program's icon
 
 | Where | Icon |
@@ -482,7 +514,7 @@ has a developer option to turn it off. Lindroids keeps its own process count low
 | Everything in the container, one package | Yes. The relay, CLI, page, helper, keys and records are all in the package and in `$HOME`. |
 | No root, no APK, no special permission or setting | Yes. Lindroids uses intents to the browser and to Termux's share receiver, and pinned shortcuts: nothing else. |
 | Any Android version and vendor | Yes, with a browser that has Custom Tabs, which every major one does. Without one, the windows fall back to a plain browser tab. |
-| A window of its own, not a tab, not installed through the browser | Yes. A Custom Tab in its own task per program, opened and raised by Lindroids. Full screen from the first tap; before that, a thin bar with close, title and menu. |
+| A window of its own, not a tab, not installed through the browser | Yes. A Custom Tab in its own task per program, opened and raised by Lindroids. Full screen from the first tap (no browser allows it sooner, see *Full screen*); before that, a thin bar with close, title and menu. |
 | The program's icon | Yes on the home screen, in the status bar and notifications, in the window, as the favicon, and on the start and end screens. In recents too with a Chromium-based browser, except on Samsung's launcher; Firefox shows its own icon there. |
 | Single run tied to its process | Window gone: the program ends 5 s later, or 60 s later if the browser died. Program gone: `run` exits and the window closes itself (Chromium), or shows its end screen until ✕ (Firefox does not let a page close a Custom Tab). |
 | Export works with Termux closed | Yes. A Termux-owned shortcut with the program's icon, through the share receiver; 2 s to the window in the lab. |
