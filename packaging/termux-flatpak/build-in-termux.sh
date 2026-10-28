@@ -105,14 +105,22 @@ STAMPS=$PREFIX/share/lindroids/termux-flatpak
 built() { [ -z "${LINDROIDS_REBUILD:-}$PKGDIR" ] && [ "$(cat "$STAMPS/$1" 2>/dev/null)" = "$2 $KIT_REV" ]; }
 stamp() { mkdir -p "$STAMPS" && echo "$2 $KIT_REV" > "$STAMPS/$1"; }
 
-# The last step of every run: Flatpak's bubblewrap and the Flathub remote.
-finish() {
-  # Flatpak's bubblewrap: `lindroids bwrap` (the Termux package ships this too).
+# Flatpak's bubblewrap: `lindroids bwrap` (the Termux package ships this too). meson runs its
+# `--version` when Flatpak is configured, before the CLI is installed (the build container has none).
+bwrap_shim() {
   if [ ! -x "$PREFIX/libexec/lindroids/bwrap" ]; then
     mkdir -p "$PREFIX/libexec/lindroids"
-    printf '#!%s/bin/sh\nexec %s/bin/lindroids bwrap "$@"\n' "$PREFIX" "$PREFIX" > "$PREFIX/libexec/lindroids/bwrap"
+    cat > "$PREFIX/libexec/lindroids/bwrap" <<EOF
+#!$PREFIX/bin/sh
+if [ "\$1" = --version ] && [ ! -x "$PREFIX/bin/lindroids" ]; then echo "bubblewrap (lindroids)"; exit 0; fi
+exec "$PREFIX/bin/lindroids" bwrap "\$@"
+EOF
     chmod 755 "$PREFIX/libexec/lindroids/bwrap"
   fi
+}
+
+# The last step of every run: the Flathub remote.
+finish() {
   say "Flathub (per user)"
   flatpak --user remote-add --if-not-exists flathub "$FLATHUB"
   say "$(flatpak --version) is installed"
@@ -177,6 +185,7 @@ if built flatpak "$FLATPAK_VERSION"; then
   say "flatpak $FLATPAK_VERSION: built already"
 else
   say "flatpak $FLATPAK_VERSION (logs: $WORK/flatpak-*.log)"
+  bwrap_shim
   rm -rf "flatpak-$FLATPAK_VERSION"
   tar xf "flatpak-$FLATPAK_VERSION.tar.xz"
   cd "flatpak-$FLATPAK_VERSION"

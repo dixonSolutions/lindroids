@@ -49,7 +49,7 @@ jobs:
           docker run --rm --privileged \
             -v "$PWD/packaging/termux-flatpak:/kit:ro" -v "$PWD/out:/out" \
             "termux/termux-docker:${{ matrix.arch }}" \
-            bash -c 'cp -r /kit ~/kit && LINDROIDS_BUILD_JOBS=$(nproc) sh ~/kit/build-in-termux.sh --package /out'
+            bash -c 'cp -r /kit ~/kit && LD_PRELOAD=$PREFIX/lib/libtermux-exec.so LINDROIDS_BUILD_JOBS=$(nproc) sh ~/kit/build-in-termux.sh --package /out'
           ls -l out
 
       - uses: actions/upload-artifact@v4

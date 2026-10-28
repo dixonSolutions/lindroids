@@ -158,8 +158,11 @@ R[offline_page]=$(cdp eval "/app/$ID/" "document.body.innerText" | tr -d '"' | s
 grep -q 'not running now' <<<"${R[offline_page]}" || fail "offline page: ${R[offline_page]}"
 shot offline
 cdp eval "/app/$ID/" "document.getElementById('start').click(); 1" >/dev/null
-sleep 3
-if ui_find '^Termux$' >/dev/null; then R[share_sheet]="lists Termux"; else R[share_sheet]="no Termux in it"; fi
+R[share_sheet]="no Termux in it"
+for _ in $(seq 1 10); do
+  if ui_find '^Termux$' >/dev/null; then R[share_sheet]="lists Termux"; break; fi
+  sleep 1
+done
 shot share-sheet
 sh_ 'input keyevent KEYCODE_BACK'
 log "offline: ${R[offline_page]}; share sheet ${R[share_sheet]}"
