@@ -127,16 +127,15 @@ Termux does not have. Long-pressing the app's icon also offers it.
 
 **Tested on a real phone (2026-10-29):** Samsung SM-X306B, Android 16 (SDK 36), Chrome installed
 for the user but hidden from Termux's package lookups (`getPackageInfo`/`queryIntentActivities`
-return nothing; an explicit intent to `com.android.chrome` opens it). `lindroids export --webapk`
-opened Chrome's install page; Chrome installed a **home-screen shortcut, not a WebAPK**:
-`getInstalledRelatedApps()` reported no `webapp`, the icon stayed Chrome's, and the page opened in
-an ordinary tab with the other tabs. So the answer to the open question is no: Chrome's WebAPK
-minter does not build one for an `http://<label>.localhost:<port>` page. On such a phone the export
-falls back to a shortcut. A WebAPK would need a public HTTPS origin (which the local-only design
-does not have) or a real APK.
+return nothing; an explicit intent to `com.android.chrome` opens it). Chrome's install page made a
+**WebAPK** when **Install app** was chosen: `lindroids list` showed `app` and the WebAPK icon was
+there beside the old Lindroids shortcut. Choosing **Add to Home screen** instead makes a shortcut,
+not an app; the install page now reports only a real `webapp` (`getInstalledRelatedApps`) and
+rejects a shortcut. So Chrome can mint a WebAPK for `http://<label>.localhost:<port>`; the earlier
+shortcut came from the shortcut path.
 
-**Still open:** whether Recents shows a WebAPK's program icon on One UI (no WebAPK was installed);
-Samsung Internet's apps at all (no Galaxy Store on this tablet).
+**Still open:** whether Recents shows the WebAPK's program icon on One UI; Samsung Internet's apps
+at all (no Galaxy Store on this tablet).
 
 The package lookups now use the public `PackageManager` and, for a known browser, an explicit
 intent even when Android hides its package. The install page reports a real installed web app
