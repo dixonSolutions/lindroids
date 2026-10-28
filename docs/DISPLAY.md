@@ -386,7 +386,7 @@ Each window traces what happens to it into the server's log (shown and hidden, f
 pagehide, its link closing and how, its program's last window going, the end it shows, closing
 itself), with what it noted while unlinked sent once linked again. `lindroids log` prints
 that, and how each page left (below), with the time of day: what a phone's browser does can only
-be seen there. The page logs how the link was lost (`linked again after the browser dropped the link (code …,
+be seen there. `lindroids log --copy` puts it (the last 200 KB) on Android's clipboard instead, to paste into a bug report (`--all` for the server's whole log). The page logs how the link was lost (`linked again after the browser dropped the link (code …,
 hidden|shown)`) and the server how each page went (`close 1001`, `no close frame`…), in
 `<runtime>/server.log`.
 

@@ -314,11 +314,14 @@ fn cmd_stop() -> i32 {
 }
 
 /// The server's log, for a report: by default what happened to windows and runs (pages linking,
-/// leaving and how, runs ending, the pages' own trace), with the time of day.
+/// leaving and how, runs ending, the pages' own trace), with the time of day. `--copy` puts it on
+/// Android's clipboard (its last 200 KB) instead of printing it, to paste into a report.
 fn cmd_log(args: &[String]) -> i32 {
     let path = sandbox::runtime_dir().join("server.log");
     let Ok(bytes) = std::fs::read(&path) else { return fail(&format!("no log yet ({})", path.display())) };
     let all = args.iter().any(|a| a == "--all");
+    let copy = args.iter().any(|a| a == "--copy");
+    let mut out = String::new();
     const ABOUT: [&str; 14] = [
         "page for ", "linked", "lost in the background", "ended", "mapped", "unmapped", "moves from", "page ", "the window is gone",
         "failed to authenticate", "stands down", "already has its window", "lindroids-server ready", "closed",
@@ -336,9 +339,30 @@ fn cmd_log(args: &[String]) -> i32 {
             unsafe { libc::localtime_r(&tt, &mut tm) };
             Some(format!("{:02}:{:02}:{:02}.{:03} {msg}", tm.tm_hour, tm.tm_min, tm.tm_sec, ((secs.fract()) * 1000.0) as u32))
         });
-        println!("{}", shown.unwrap_or_else(|| line.to_string()));
+        out.push_str(&shown.unwrap_or_else(|| line.to_string()));
+        out.push('\n');
     }
-    0
+    if !copy {
+        print!("{out}");
+        return 0;
+    }
+    const MAX: usize = 200 * 1024;
+    if out.len() > MAX {
+        let mut from = out.len() - MAX;
+        while !out.is_char_boundary(from) {
+            from += 1;
+        }
+        // Whole lines: from the next line start.
+        from = out[from..].find('\n').map_or(from, |n| from + n + 1);
+        out.drain(..from);
+    }
+    match shortcut::copy_to_clipboard(&out) {
+        Ok(()) => {
+            println!("{} lines copied to the clipboard: paste them where you report the problem.", out.lines().count());
+            0
+        }
+        Err(e) => fail(&format!("could not copy to the clipboard ({e}); `lindroids log` prints it instead")),
+    }
 }
 
 fn cmd_status() -> i32 {

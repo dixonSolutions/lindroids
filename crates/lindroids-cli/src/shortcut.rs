@@ -189,6 +189,16 @@ fn helper(args: &[&str]) -> Result<String, String> {
     Err(msg)
 }
 
+/// Puts `text` on Android's clipboard (the helper does it as the terminal app; Android takes at
+/// most about 1 MB through one call, so callers keep it shorter).
+pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    let file = lindroids_server::state_dir().join("clip.txt");
+    std::fs::write(&file, text).map_err(|e| format!("{}: {e}", file.display()))?;
+    let r = helper(&["clip", &package(), &file.display().to_string()]).map(|_| ());
+    let _ = std::fs::remove_file(&file);
+    r
+}
+
 /// Termux's home as this process sees it.
 fn termux_home(sb: &Sandbox) -> Option<PathBuf> {
     match sb.kind {

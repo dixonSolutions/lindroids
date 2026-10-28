@@ -38,6 +38,7 @@ import java.util.concurrent.TimeUnit;
  *   app_process ... lindroids.Shortcut notify &lt;package&gt; &lt;id&gt; &lt;program&gt; &lt;title&gt; &lt;text&gt; &lt;icon.png&gt; &lt;small-icon.png&gt; &lt;url&gt; &lt;browser&gt;...
  *   app_process ... lindroids.Shortcut running &lt;package&gt; &lt;id&gt; &lt;program&gt; &lt;title&gt; &lt;text&gt; &lt;icon.png&gt; &lt;small-icon.png&gt; &lt;url&gt; &lt;browser&gt;...
  *   app_process ... lindroids.Shortcut cancel &lt;package&gt; &lt;id&gt;
+ *   app_process ... lindroids.Shortcut clip &lt;package&gt; &lt;text file&gt;
  *   app_process ... lindroids.Shortcut device
  * </pre>
  *
@@ -79,6 +80,8 @@ public final class Shortcut {
                 System.out.println("browser " + open(a[1], a[2], a[3], Arrays.copyOfRange(a, 4, a.length)));
             } else if (a.length >= 9 && (a[0].equals("notify") || a[0].equals("running"))) {
                 post(a[1], Integer.parseInt(a[2]), a[3], a[4], a[5], a[6], a[7], a[8], Arrays.copyOfRange(a, 9, a.length), a[0].equals("running"));
+            } else if (a.length >= 3 && a[0].equals("clip")) {
+                clip(a[1], a[2]);
             } else if (a.length >= 1 && a[0].equals("device")) {
                 device();
             } else if (a.length >= 3 && a[0].equals("pinned")) {
@@ -88,7 +91,7 @@ public final class Shortcut {
             } else {
                 throw new IllegalArgumentException("usage: pin <package> <id> <label> <icon> <action> <component> <type> <text> | remove <package> <id>"
                         + " | open <package> new|raise <url> <browser>... | notify|running <package> <id> <program> <title> <text> <icon> <small-icon> <url> <browser>..."
-                        + " | cancel <package> <id> | pinned <package> <id> | device");
+                        + " | cancel <package> <id> | pinned <package> <id> | clip <package> <file> | device");
             }
             System.out.println("ok");
             System.exit(0);
@@ -98,6 +101,15 @@ public final class Shortcut {
             System.out.println("error: " + c);
             System.exit(1);
         }
+    }
+
+    /** Puts the text in {@code path} on Android's clipboard, as the terminal app (writing is allowed in the background). */
+    static void clip(String pkg, String path) throws Exception {
+        String text = new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(path)), java.nio.charset.StandardCharsets.UTF_8);
+        IBinder b = (IBinder) Class.forName("android.os.ServiceManager").getMethod("getService", String.class).invoke(null, "clipboard");
+        if (b == null) throw new IllegalStateException("no clipboard service");
+        Object svc = Class.forName("android.content.IClipboard$Stub").getMethod("asInterface", IBinder.class).invoke(null, b);
+        call(svc, "setPrimaryClip", android.content.ClipData.newPlainText("lindroids", text), pkg, userId());
     }
 
     static Object service() throws Exception {
