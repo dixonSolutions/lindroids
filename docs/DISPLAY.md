@@ -64,8 +64,17 @@ it from its `app_process` helper, as Termux, the way export pins shortcuts
   always take a new task, so a second window opens, takes over the run, and the old one closes
   itself *(tested with Cromite)*. Firefox also loads a second copy of the page nobody sees, which the
   relay tells to stand down (see *The handshake*).
-- **Closing by the user.** The close button, Back, or swiping the window from recents gives the
+- **Closing by the user.** The close button, or swiping the window from recents, gives the
   relay a clean `pagehide` and WebSocket close 1001, and the task goes away.
+- **Back does not close it.** The browser takes the window out of full screen on Back and closed
+  it on the next one, and its program ended: on a phone, Back is a swipe in from the screen's
+  edge, which users make to leave, and by accident while using the program *(reproduced on b16:
+  Back twice from full screen, the program ended 5 s later)*. While its program runs, the page
+  takes Back (`CloseWatcher`, Chrome 120 and later) and shows once in a while that Home or the app
+  switcher leaves the program running and ✕ closes it. When the program has ended, Back closes
+  the window again *(tested, Cromite: Back three, four and six times, fast or slow, the window and
+  the program stay; `lab/test-windows.sh`)*. Chrome may let a Back through when the page was not
+  touched since the last one; that closes the window as before.
 - **Closing by the program: Chromium yes, Firefox no.** In Chromium's Custom Tabs the page's
   `window.close()` ends the window when the program exits *(tested with Cromite)*. It is ignored
   in a Firefox Custom Tab, even a fresh one, and nothing outside Firefox may finish its activity:
@@ -337,7 +346,8 @@ its place or a window it hides, still runs, and its window says so):
 | What happened | What the relay sees | Treated as |
 |---|---|---|
 | Program exited | the supervisor's `wait` returns | end |
-| Back, the close button, or swiped away while the browser keeps running | `Closing`, then close frame **1001** | window closed: end in 5 s |
+| The close button, or swiped away while the browser keeps running | `Closing`, then close frame **1001** | window closed: end in 5 s |
+| Back | nothing: the page takes it (out of full screen first) | still shown |
 | Chrome's close button (no `pagehide`) | close frame **1001** while on screen, or out of sight under 3 s | window closed: end in 5 s |
 | Another app in front, then Android kills the page's process for memory | `Shown: false`, then later close frame **1001** (the browser closes the link of a page whose process died), and no `Closing` | dropped in the background: **keeps running** until its page links again; the browser loads the page again when the user comes back to the window *(tested, Cromite: kept, and back from Recents in 1 s)* |
 | Another app in front, then the browser killed for memory | `Shown: false`, then **EOF** | the same *(tested)* |
@@ -357,7 +367,7 @@ the page tells the relay when it leaves the screen and comes back (`Shown`).
   its history entry). The program runs on until then, with no limit: its notification brings
   the window back. Before, it ended 5 s later, and the window, back, said it had closed
   *(reported on a Samsung phone; reproduced on b16 by killing Cromite's page process)*.
-- **Closed by the user:** `Closing` (pagehide: the close button, Back, swiped from Recents with
+- **Closed by the user:** `Closing` (pagehide: the close button, swiped from Recents with
   the page alive) or 1001 on screen: 5 s.
 - **Lost on screen** (the browser crashed): 60 seconds (`LINDROIDS_LINGER`, in seconds).
 

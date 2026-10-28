@@ -423,6 +423,8 @@ function showEnded() {
   const out = endedOutput.length ? `<pre class="output">${esc(endedOutput.join('\n'))}</pre>` : '';
   showPanel(`<p>${esc(program ? program.name : ended)} ${endedOutput.length ? 'stopped' : 'closed'}.</p>${endedNote ? `<p>${esc(endedNote)}</p>` : ''}${out}<p>Close this window with the ✕ at the top.</p>`, null,
     icon && `data:image/png;base64,${icon}`);
+  // Back closes the window again: the program is gone.
+  if (backWatcher) { backWatcher.destroy(); backWatcher = null; }
   // Out of full screen, so the browser's own close button shows where the page cannot close.
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   endTimer = setTimeout(() => {
@@ -884,6 +886,33 @@ $('kb').onclick = () => {
 // a tap; the canvas cancels touches (no click follows), so ask on the tap's end. Not on the
 // page's own buttons: asking for full screen uses up the tap, and they need it (Choose… opens
 // Android's picker).
+// Back. The browser takes a window out of full screen on Back, and closes it on the next: its
+// program then ended, where the user only meant to leave it (the Back gesture is a swipe in from
+// the screen's edge, made by accident too). A window of its own keeps Back from closing it
+// (CloseWatcher) while its program runs: leaving is Home or the app switcher, which keep it as it
+// is; closing it is the browser's ✕, or quitting the program. Browsers without CloseWatcher, and
+// Chrome when the page was not touched since the last Back, close it as before.
+let backWatcher = null, backHinted = 0;
+function watchBack() {
+  if (!OWN_WINDOW || backWatcher || typeof CloseWatcher !== 'function' || (ended !== null && !windows.size)) return;
+  try {
+    backWatcher = new CloseWatcher();
+  } catch (e) {
+    return;
+  }
+  backWatcher.onclose = () => {
+    backWatcher = null;
+    trace('Back: the window stays');
+    if (performance.now() - backHinted > 30000) {
+      backHinted = performance.now();
+      toast({ title: program ? program.name : 'Lindroids', body: 'Home or the app switcher leaves it running. ✕ closes it.' }, 4000);
+    }
+    watchBack();
+  };
+}
+watchBack();
+addEventListener('pointerup', watchBack, { capture: true });
+
 // Once each time the window comes on screen: a user who left full screen (Back, Esc) meant it, and
 // asking on every tap took the taps (the resize closed the menu a tap opened).
 let wantFull = true;

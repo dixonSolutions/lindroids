@@ -3,6 +3,7 @@
 # icon (Termux closed) — with the browser Lindroids picks on this VM:
 #   - Recents: the window's task label and icon (the TaskDescription its browser set), and a
 #     screenshot of Recents;
+#   - Back, three times from full screen, leaves the window and its program as they are;
 #   - the window's ✕ ends the program;
 #   - the program ending closes the window (Chromium; Firefox keeps it, with its end screen);
 #   - (run) another app in front and Android killing the browser's page process, as a phone does to
@@ -144,6 +145,23 @@ check_background() { # <tag>
   log "$tag in the background: ${R[$tag-background]}"
 }
 
+# Back from full screen, three times (the first leaves full screen; the browser closed the window
+# on the next, and its program ended): the window and its program stay.
+check_back() { # <tag> <run>
+  local tag=$1 run=$2
+  sh_ 'input tap 640 400'
+  sleep 2
+  for i in 1 2 3; do sh_ 'input keyevent KEYCODE_BACK'; sleep 1.5; done
+  sleep 6
+  if running && grep -qE "window&run=$run([^0-9]|$)" <<<"$(sh_ 'dumpsys activity recents')"; then
+    R[$tag-back]="window and program kept"
+  else
+    R[$tag-back]="no: $(running && echo "program running, window gone" || echo "program ended")"
+  fi
+  "$VM" "$NAME" screenshot "$OUT/$tag-after-back.png" >/dev/null 2>&1
+  log "$tag Back x3: ${R[$tag-back]}"
+}
+
 # The program ending closes its window (its task leaves Recents).
 check_program_ends() { # <tag> <run>
   local tag=$1 run=$2
@@ -202,6 +220,7 @@ log "window in $BROWSER"
 "$VM" "$NAME" screenshot "$OUT/run-window.png" >/dev/null 2>&1
 check_recents run
 check_background run
+check_back run "$RUN"
 check_close_window run
 n=$(notes)
 tsh "cd ~; (nohup lindroids run $APP > ~/windows-run.log 2>&1 </dev/null &); true"
@@ -256,7 +275,7 @@ else
 fi
 
 {
-  for k in browser run-recents run-background run-close-window run-program-ends export-browser export-recents export-close-window export-program-ends export; do
+  for k in browser run-recents run-background run-back run-close-window run-program-ends export-browser export-recents export-close-window export-program-ends export; do
     [[ -n ${R[$k]:-} ]] && printf '%-24s %s\n' "$k" "${R[$k]}"
   done
 } | tee "$OUT/result.txt"
