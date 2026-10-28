@@ -76,7 +76,7 @@ it from its `app_process` helper, as Termux, the way export pins shortcuts
 | Browser | Custom Tab |
 |---|---|
 | Firefox | Works as above *(tested)*. |
-| Chrome, Edge, Brave, Vivaldi, Samsung Internet | Chromium's Custom Tabs, as Cromite's below; Chrome itself not yet tried on a device. |
+| Chrome, Edge, Brave, Vivaldi, Samsung Internet | Chromium's Custom Tabs, as Cromite's below. Chrome on a Samsung phone (One UI, reported by the user): a window of its own, but Recents shows Chrome's icon (below). |
 | Cromite | With Settings → Privacy and security → *Allow custom tab intents* on, and as the default browser (it needs both): a window of its own whose task in Recents has the program's name and icon (Chromium's `CustomTabTaskDescriptionHelper` takes the page's title and favicon), which closes itself when the program ends (`window.close()` with one history entry), and File System Access *(tested, Cromite 153)*. Without the setting: an ordinary tab. |
 | WebView-based browsers (Jellyfish…) | No Custom Tabs; an ordinary tab. |
 
@@ -109,7 +109,7 @@ whole replies.
 | Home screen | The exported program's own icon and name, as an adaptive icon (the program's drawing on a backdrop of its colour), on a shortcut pinned for Termux. The launcher adds a small Termux badge. Exporting again updates it in place *(tested)*. |
 | Status bar and shade | While the program runs: its one-colour (`-symbolic`) icon in the status bar, its name and icon in a notification the helper posts as Termux; a tap brings back its window *(tested)*. Its own notifications show the same way. |
 | The window | The page's favicon and title are the program's. While it starts, and after it ends, the page shows the program's icon and name full size *(tested: "Calculator closed." under the Calculator icon)*. |
-| Recents | Chromium-based browsers: **the program's icon and name** *(tested, Cromite)*. Chromium sets the page's title, favicon (32 dp or more; the program's is 192 px, at `/run-icon/<run>.png`: a `data:` favicon is not taken) and theme colour on a Custom Tab in a task of its own (`CustomTabTaskDescriptionHelper`). Firefox: **the browser's icon** *(tested)*, with a live thumbnail of the program; it sets a task's icon only for web apps installed through it, which are rejected above. |
+| Recents | Chromium-based browsers: **the program's icon and name** *(tested, Cromite)*, where the launcher draws a task's own icon. Samsung's One UI launcher draws the browser's icon on every Chrome window's card instead *(reported, Chrome on a Samsung phone)*: the same Chromium code sets the program's icon on the task in Cromite, and the card's name is the program's, so it is the launcher that draws the app's icon over the task's. Only an installed app of the program's own would change that. Chromium sets the page's title, favicon (32 dp or more; the program's is 192 px, at `/run-icon/<run>.png`: a `data:` favicon is not taken) and theme colour on a Custom Tab in a task of its own (`CustomTabTaskDescriptionHelper`). Firefox: **the browser's icon** *(tested)*, with a live thumbnail of the program; it sets a task's icon only for web apps installed through it, which are rejected above. |
 
 ## The parts
 
@@ -246,7 +246,7 @@ On a desktop, it is the programs shown in the browser tab.
 | Origin label | 130-bit random | `~/.local/share/lindroids/origin`; in the browser, as its origin | for good | the origin only our pages run in |
 | Relay key | ECDSA P-256 key pair | `~/.local/share/lindroids/relay.key` (0600) | for good | the relay proves it is the relay |
 | Display key | ECDSA P-256 key pair, made in the page, `extractable: false` | private key: the origin's IndexedDB (a CryptoKey: usable, not readable); public key: `~/.local/share/lindroids/displays/<id>.json` | until `lindroids displays forget <id>` | the page proves it is a paired browser |
-| Run ticket | 128-bit random | relay memory; URL fragment `#t=` | while the run's process lives (24 h at most) | pairs a browser the first time; lets a window attach to its run, every time |
+| Run ticket | 128-bit random | relay memory; URL fragment `#t=`; the window's history entry (`history.state`) | while the run's process lives (24 h at most) | pairs a browser the first time; lets a window attach to its run, every time |
 | Shared-page ticket | 128-bit random | relay memory; URL fragment `#t=` | 10 minutes | pairs a browser for the shared page |
 | Pairing code | 6 digits | relay memory; `<runtime>/pairing-code` (0600); shown by `lindroids pair` | single use; 5 wrong tries close pairing | pairs a page opened by hand; accepts a new relay key |
 
@@ -267,8 +267,10 @@ WebCrypto makes), both base64url. The Rust side is RustCrypto's `p256`.
    runtime dir, and the relay also checks the caller's uid with `SO_PEERCRED`.
 2. The CLI puts the ticket in the URL fragment. The helper sends that URL in an intent addressed
    to the browser package, which other apps cannot see.
-3. Browsers never send the fragment over HTTP. The page keeps the ticket in memory only and
-   removes it from the address bar at once with `history.replaceState`.
+3. Browsers never send the fragment over HTTP. The page removes it from the address bar at once
+   with `history.replaceState`, and keeps it in that history entry's state: a page the browser
+   loads again (after dropping it in the background, or a reload) attaches to its run with it.
+   No other page can read another window's history state.
 
 Run tickets are not single use, on purpose. The same run must get the same URL every time, because
 the window is found again by its URL (raising it, and Firefox restoring it). A run ticket is
@@ -346,6 +348,17 @@ was lost. The default grace is 60 seconds (`LINDROIDS_LINGER`, in seconds):
 - A swiped window's program outlives it by at most a minute.
 - A memory-killed browser has a minute to come back.
 
+**The page links again by itself** when its link is lost while its program runs, also unseen in
+the background *(tested: a dropped link, a reload, both relinked to the running Calculator)*. It
+says "<name> closed" only when the program has ended: the server said so (`RunEnded`), it refused
+the window's ticket on the way back (a run's ticket goes with its process), or the server cannot
+be reached (the program's display went with it). Before, a window took any lost link for the
+end, and said so while its program still ran in Termux *(reported: Chrome on a Samsung phone,
+after leaving the window and coming back)*.
+The page logs how the link was lost (`linked again after the browser dropped the link (code …,
+hidden|shown)`) and the server how each page went (`close 1001`, `no close frame`…), in
+`<runtime>/server.log`.
+
 **No heartbeat.** A dead browser is reported over loopback at once (EOF). And browsers freeze
 pages in the background, so a heartbeat would take a window the user left in the background for
 a dead one and end its program.
@@ -369,8 +382,8 @@ a dead one and end its program.
 6. Either end ends the run, as above. Ctrl+C in the terminal, or closing the Termux session, ends
    the program; its window then shows the end screen, out of full screen so that the browser's ✕
    shows (Back only sends a Firefox Custom Tab behind; ✕ removes it *(tested)*). A run started
-   from a home screen icon ends with Termux's session, server and all: the page takes the lost
-   link as the end of the program.
+   from a home screen icon ends with Termux's session, server and all: the page cannot reach the
+   server again, and takes that as the end of the program.
 7. While it runs, a notification stands for it (its icon in the status bar), posted by the helper
    as Termux; requests from the program (sound, file pickers, links, notifications) go to its own
    window, by pid → run.
@@ -436,7 +449,7 @@ has a developer option to turn it off. Lindroids keeps its own process count low
 | No root, no APK, no special permission or setting | Yes. Lindroids uses intents to the browser and to Termux's share receiver, and pinned shortcuts: nothing else. |
 | Any Android version and vendor | Yes, with a browser that has Custom Tabs, which every major one does. Without one, the windows fall back to a plain browser tab. |
 | A window of its own, not a tab, not installed through the browser | Yes. A Custom Tab in its own task per program, opened and raised by Lindroids. Full screen from the first tap; before that, a thin bar with close, title and menu. |
-| The program's icon | Yes on the home screen, in the status bar and notifications, in the window, as the favicon, and on the start and end screens. In recents too with a Chromium-based browser; Firefox shows its own icon there. |
+| The program's icon | Yes on the home screen, in the status bar and notifications, in the window, as the favicon, and on the start and end screens. In recents too with a Chromium-based browser, except on Samsung's launcher; Firefox shows its own icon there. |
 | Single run tied to its process | Window gone: the program ends 5 s later, or 60 s later if the browser died. Program gone: `run` exits and the window closes itself (Chromium), or shows its end screen until ✕ (Firefox does not let a page close a Custom Tab). |
 | Export works with Termux closed | Yes. A Termux-owned shortcut with the program's icon, through the share receiver; 2 s to the window in the lab. |
 
@@ -447,7 +460,8 @@ These have not been tried yet.
 - **Stop from the running program's notification.** It has the program's icon and a tap that
   brings back the window (done). A *Stop* button needs a way back from Android to the relay
   without Termux coming to the front (a PendingIntent can only start Termux's activities).
-- **Chrome.** Chromium's Custom Tabs are tested through Cromite; try Chrome itself on a phone.
+- **Chrome.** Chromium's Custom Tabs are tested through Cromite; Chrome itself only on the user's
+  Samsung phone so far.
   On phones with Google Play, Chrome's minted WebAPKs answer `VIEW` intents for their URLs.
 - **Closing Firefox's window from outside.** Its source offers no way: Gecko does ask to close
   a one-entry window, but only normal tabs act on it; `ExternalAppBrowserActivity` ends itself

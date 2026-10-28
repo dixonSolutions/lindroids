@@ -30,17 +30,22 @@ const order = []; // most recently active last
 
 // ------------------------------------------------------------------ secret and auth
 
-// The ticket `lindroids run` put in the URL, for pairing: kept in memory only, and out of the
-// address bar, history and bookmarks at once.
-let ticket = null;
+// The ticket `lindroids run` put in the URL, for pairing and for attaching to its run: out of the
+// address bar, history and bookmarks at once. It stays with this window's history entry
+// (history.state, which no other page can read), so the page the browser loads again after it
+// dropped this one in the background, or a reload, still attaches to its run.
+let ticket = null, ticketRestored = false;
 function takeTicketFromUrl() {
   const m = /[#&]t=([^&]+)/.exec(location.hash);
   if (!m) return false;
   ticket = decodeURIComponent(m[1]);
-  history.replaceState(null, '', location.pathname + location.search);
+  history.replaceState({ t: ticket }, '', location.pathname + location.search);
   return true;
 }
-takeTicketFromUrl();
+if (!takeTicketFromUrl() && history.state && typeof history.state.t === 'string') {
+  ticket = history.state.t;
+  ticketRestored = true;
+}
 
 // `lindroids run` opens the page again to bring it to the front; the browser reuses this tab and
 // only the fragment changes. If this tab had lost the link (to another tab, or a server that
@@ -101,7 +106,8 @@ function randomNonce() {
 // (Firefox restores every tab when it starts), and the newest page to link wins. It links once shown.
 let linkWhenShown = false;
 function connect() {
-  if (document.hidden) {
+  // Linking again to the run this window showed is fine unseen: it is this window's own.
+  if (document.hidden && !relinking) {
     if (!linkWhenShown) {
       linkWhenShown = true;
       document.addEventListener('visibilitychange', function shown() {
@@ -139,16 +145,30 @@ function connect() {
     const payload = nl < 0 ? new Uint8Array(0) : bytes.subarray(nl + 1);
     handle(msg, payload).catch((e) => console.error('lindroids:', msg.t, e));
   };
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
     ws = null;
     const was = ready;
     ready = false;
     for (const w of [...windows.keys()]) removeWindow(w);
     for (const s of [...mics.keys()]) recordClose(s);
     if (replaced) return;
-    // A program's own window: the program cannot outlive the server (its display went with it;
-    // a run from a home screen icon ends with Termux's session, server and all). That is its end.
-    if (OWN_WINDOW && RUN && was) {
+    // A program's own window. The program ended (the server said so), or cannot outlive a server
+    // that is gone (its display went with it; a run from a home screen icon ends with Termux's
+    // session, server and all): that is its end. A link the browser dropped while the program
+    // runs is not (a phone's browser in the background): link again at once, seen or not; the
+    // server keeps the run for a while (docs/DISPLAY.md, "The grace period").
+    if (OWN_WINDOW && RUN && (was || relinking)) {
+      if (!runOver && (was || relinking++ < 2)) {
+        if (was) {
+          relinking = 1;
+          lostLink = `code ${ev.code}, ${document.hidden ? 'hidden' : 'shown'}`;
+        }
+        ended = null;
+        if (program) showPanel(`<p>Connecting to ${esc(program.name)} again…</p>`, null, program.icon && `data:image/png;base64,${program.icon}`);
+        retry = setTimeout(connect, was ? 0 : 1000);
+        return;
+      }
+      relinking = 0;
       if (ended === null) ended = program ? program.name : 'The program';
       return showEnded();
     }
@@ -216,6 +236,13 @@ async function handle(m, payload) {
     case 'auth_failed':
       if (m.reason === 'this window was not opened by lindroids run') {
         replaced = true;
+        // Its ticket worked before (on this page, or the one before a reload): its run is over
+        // (the server forgets a run's ticket with it).
+        if (OWN_WINDOW && RUN && (relinking || everLinked || ticketRestored)) {
+          relinking = 0;
+          if (ended === null) ended = program ? program.name : (history.state && history.state.name) || 'The program';
+          return showEnded();
+        }
         return showPanel(`<p>This window was not opened by <code>lindroids run</code>.</p>
           <p>Start the program from Termux, or from its icon, to see it.</p>`);
       }
@@ -239,6 +266,11 @@ async function handle(m, payload) {
       if (m.build && m.build !== BUILD && !BUILD.startsWith('@')) return location.reload();
       if (m.stats) enableStats();
       ready = true;
+      everLinked = true;
+      if (relinking) {
+        plog(`linked again after the browser dropped the link (${lostLink})`);
+        relinking = 0;
+      }
       hidePanelIfWindows();
       sendSystem();
       return;
@@ -250,6 +282,8 @@ async function handle(m, payload) {
       return showPanel(`<p>${esc(m.reason)}.</p><p><button id="again">Show the windows here</button></p>`, () => $('again').onclick = connect);
     case 'run':
       program = { name: m.name, icon: m.icon_png_b64 || null };
+      // For its end screen, should the page be loaded again after the program ended.
+      if (ticket) history.replaceState({ t: ticket, name: m.name }, '');
       showProgram();
       return hidePanelIfWindows();
     case 'window_new': return newWindow(m);
@@ -281,6 +315,7 @@ async function handle(m, payload) {
     case 'close_notification': return closeToast('n:' + m.id);
     case 'wake_lock': return wakeLock(m.on);
     case 'run_ended':
+      runOver = true;
       if (!OWN_WINDOW || windows.size) return;
       if (ended === null) ended = program ? program.name : 'The program';
       if (m.output && m.output.length) {
@@ -346,6 +381,9 @@ const OWN_WINDOW = new URLSearchParams(location.search).has('window');
 const RUN = new URLSearchParams(location.search).get('run');
 let ended = null, endedIcon = null, endTimer = null, endedNote = '', endedOutput = [], everShown = false;
 let program = null; // { name, icon } of this window's run, from the server
+// The server said the program ended; this page linked to its run before; tries at linking again
+// after a lost link (0: none under way), and how that link was lost (for the server's log).
+let runOver = false, everLinked = false, relinking = 0, lostLink = '';
 
 // The window as the browser shows it outside the page (title, icon; Chrome puts them on its task
 // in recents): the program's, not Lindroids'.

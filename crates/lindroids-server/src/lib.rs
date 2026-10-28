@@ -1465,7 +1465,13 @@ pub fn run(cfg: Config) -> i32 {
                 // links again in time keeps the programs; otherwise they end with their window.
                 let Some(l) = state.links.iter().find(|l| l.id == id) else { continue };
                 let (run, grace) = (l.run, if l.closing { Duration::from_secs(5) } else { linger() });
-                info!("page for {} closed; what was started into it ends in {}s unless it links again", run.map_or("the rest".into(), |r| format!("run {r}")), grace.as_secs());
+                let how = match l.close_frame {
+                    Some(Some(c)) => format!("close {c}"),
+                    Some(None) => "close, no code".into(),
+                    None if l.closing => "said it was closing, no close frame".into(),
+                    None => "no close frame".into(),
+                };
+                info!("page for {} closed ({how}); what was started into it ends in {}s unless it links again", run.map_or("the rest".into(), |r| format!("run {r}")), grace.as_secs());
                 state.drop_link(id);
                 if !state.links.iter().any(|l| l.run == run) {
                     state.unlinked.push((run, Instant::now(), grace));

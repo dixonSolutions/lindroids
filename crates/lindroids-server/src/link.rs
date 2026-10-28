@@ -63,6 +63,9 @@ pub struct Link {
     pub run: Option<u32>,
     /// The page said it is going away (`Closing`) before its link closed.
     pub closing: bool,
+    /// The WebSocket close frame, if one came, and its code, if it had one (for the log: how the
+    /// page went).
+    pub close_frame: Option<Option<u16>>,
     /// The origin of the page (its WebSocket's Origin); empty for a display that is not a page.
     /// Signatures in the handshake cover it.
     pub origin: String,
@@ -89,6 +92,7 @@ impl Link {
             id: 0,
             run: None,
             closing: false,
+            close_frame: None,
             origin: String::new(),
         }
     }
@@ -230,6 +234,7 @@ impl Link {
                     self.flush();
                 }
                 if u.closed {
+                    self.close_frame = Some(u.close_code);
                     // 1001, going away: the browser closes the socket of a page it takes down (its
                     // window closed, a reload), also when the page had no time to say so itself
                     // (Chrome: no pagehide on closing a Custom Tab). A browser that dies sends
