@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine;
-use lindroids_proto::{CliRequest, TERMUX_PREFIX};
+use lindroids_proto::{CliReply, CliRequest, TERMUX_PREFIX};
 
-use crate::{client, desktop, flatpak, sandbox};
+use crate::{client, desktop, flatpak, instances, sandbox};
 
 #[derive(Debug, Default, Clone)]
 pub struct Opts {
@@ -20,6 +20,11 @@ pub struct Opts {
     pub id: Option<String>,
     /// Folders a distro or a Flatpak is shown at their own path (`--bind`).
     pub binds: Vec<PathBuf>,
+    /// Another window of an app that runs already (`--new`): the app is asked for a new window
+    /// (its new-window option) rather than started plainly again.
+    pub new: bool,
+    /// Start even past the limits (free memory, how many run).
+    pub force: bool,
     pub command: Vec<String>,
 }
 
@@ -56,6 +61,8 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
             }
             "--distro" | "--prootdistro" => o.distro = Some(value()?),
             "--x11" => o.x11 = true,
+            "--new" => o.new = true,
+            "--force" => o.force = true,
             "--name" => o.name = Some(value()?),
             "--icon" => o.icon = Some(PathBuf::from(value()?)),
             "--id" => o.id = Some(value()?),
@@ -398,11 +405,9 @@ pub fn cmd_run(args: &[String]) -> i32 {
     cmd_run_launched(args, None)
 }
 
-/// Where `launch` notes the pid of an exported program it started, so that tapping its icon again
-/// brings back its window instead of starting another.
-pub fn launched_marker(id: &str) -> PathBuf {
-    sandbox::runtime_dir().join("launched").join(format!("{id}.pid"))
-}
+/// A run that ends cleanly this soon after it started, while another instance of its app runs,
+/// handed its work to that instance (VSCodium, GApplications): it claims the window that comes.
+const HANDOVER: Duration = Duration::from_secs(5);
 
 /// `run`, for the exported program `launched` (`lindroids launch <id>`) if given.
 pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
@@ -436,6 +441,40 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
         }
     }
     let (name, icon) = identify(&o, &target);
+    // Instances of the same app that run already: a limit may stop this one, and with --new the
+    // app is asked for a new window.
+    let key = instances::app_key(&o, &target, &sb);
+    let (others, runs) = instances::query(&rt, &key);
+    if !o.force {
+        let app_runs = others.iter().filter(|i| !i.claimed).count() as u32;
+        match instances::check_limits(&name, instances::mem_available(), runs, others.len() as u32, app_runs, instances::Caps::from_env()) {
+            instances::Verdict::Go => {}
+            instances::Verdict::Warn(m) => eprintln!("lindroids: {m}"),
+            instances::Verdict::Refuse(m) => return crate::fail(&m),
+        }
+    }
+    let siblings = !others.is_empty();
+    let target = if o.new && siblings {
+        let extra = instances::new_window_args(&o, &target);
+        if !extra.is_empty() {
+            eprintln!("lindroids: {name} runs already: asking it for a new window ({})", extra.join(" "));
+        }
+        instances::with_args(target, &extra)
+    } else {
+        target
+    };
+    // How the page's "New window" starts one more.
+    let again: Vec<String> = match launched {
+        Some(id) => vec!["launch".into(), "--new".into(), id.into()],
+        None => {
+            let mut v = vec!["run".to_string()];
+            if !args.iter().any(|a| a == "--new") {
+                v.push("--new".into());
+            }
+            v.extend(args.iter().cloned());
+            v
+        }
+    };
     let mut cmd = match build_command(&o, &target, &rt) {
         Ok(c) => c,
         Err(e) => return crate::fail(&e),
@@ -475,19 +514,30 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
             });
         }
     }
-    let marker = launched.map(launched_marker);
-    if let Some(m) = &marker {
-        let _ = std::fs::create_dir_all(m.parent().unwrap());
-        let _ = std::fs::write(m, child.id().to_string());
-    }
+    let spawned = std::time::Instant::now();
     let icon_b64 = Some(base64::engine::general_purpose::STANDARD.encode(icon));
     let symbolic_b64 = symbolic(&o, &target).map(|s| base64::engine::general_purpose::STANDARD.encode(s));
     let pid = child.id();
     let register = |window: bool| {
-        let req = CliRequest::Launch { pid, name: name.clone(), icon_png_b64: icon_b64.clone(), symbolic_png_b64: symbolic_b64.clone(), window };
-        let _ = client::request(&rt, &req, Duration::from_secs(3));
+        let req = CliRequest::Launch {
+            pid,
+            name: name.clone(),
+            icon_png_b64: icon_b64.clone(),
+            symbolic_png_b64: symbolic_b64.clone(),
+            window,
+            app_key: key.clone(),
+            again: again.clone(),
+            supervisor: Some(std::process::id()),
+        };
+        match client::request(&rt, &req, Duration::from_secs(3)) {
+            Ok(CliReply::Launched { ordinal }) => ordinal,
+            _ => 0,
+        }
     };
-    register(own_window);
+    let ordinal = register(own_window);
+    if ordinal >= 2 {
+        eprintln!("lindroids: {name} {ordinal} (another instance of {name})");
+    }
     // `lindroids run` in a terminal: a program that ends at once (a wrong option, a missing file,
     // a crash on start) has said why in the terminal, and gets no window only to show that it
     // could not start. From a home screen icon (`launch`), its window is where its error shows.
@@ -502,22 +552,57 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
             }
         }
     }
-    if own_window && early.is_none() && !crate::open_run_window(&sb, &rt, child.id()) {
-        register(false);
-        crate::ensure_display(&sb, &rt, false);
+    let mut window_opened = false;
+    if own_window && early.is_none() {
+        window_opened = crate::open_run_window(&sb, &rt, child.id());
+        if !window_opened {
+            register(false);
+            crate::ensure_display(&sb, &rt, false);
+        }
+    }
+    // Another instance runs: this one may hand its work over to it and end at once.
+    if siblings && early.is_none() {
+        while early.is_none() && spawned.elapsed() < HANDOVER {
+            match child.try_wait() {
+                Ok(Some(st)) => early = Some(st),
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(_) => break,
+            }
+        }
     }
     let waited = match early {
         Some(st) => Ok(st),
         None => child.wait(),
     };
-    if let Some(m) = &marker {
-        let _ = std::fs::remove_file(m);
-    }
     let code = match waited {
         // Killed (its window closed, Ctrl+C): 128 + the signal, as a shell reports it.
         Ok(st) => st.code().unwrap_or_else(|| 128 + std::os::unix::process::ExitStatusExt::signal(&st).unwrap_or(0)),
         Err(e) => return crate::fail(&e.to_string()),
     };
+    if own_window && siblings && code == 0 && spawned.elapsed() < HANDOVER + Duration::from_millis(500) {
+        // It handed its work to the instance that runs: the window that instance opens now is
+        // this run's, in this run's window; if none comes, that instance is brought forward.
+        let shown = if ordinal >= 2 { format!("{name} {ordinal}") } else { name.clone() };
+        match client::request(&rt, &CliRequest::Claim { pid }, Duration::from_secs(30)) {
+            Ok(CliReply::Claimed { windows }) => {
+                if !window_opened {
+                    crate::open_run_window(&sb, &rt, pid);
+                }
+                eprintln!("lindroids: {name} was running already and opened a new window for this one ({shown}, window {windows:?})");
+                return 0;
+            }
+            Ok(CliReply::Focused { pid: other }) => {
+                // This run's own window (if it opened) closes with the run.
+                let _ = client::request(&rt, &CliRequest::RunEnded { pid, code: 0, output: Vec::new() }, Duration::from_secs(2));
+                if let Some(o) = other {
+                    crate::open_run_window(&sb, &rt, o);
+                }
+                eprintln!("lindroids: {name} is running already and opened no new window: brought it forward");
+                return 0;
+            }
+            _ => {}
+        }
+    }
     if own_window {
         // An error: its last words go to its window, which is where the user is looking. (Not
         // when its window was closed: 128 + SIGTERM, SIGKILL or SIGINT.)
@@ -688,6 +773,16 @@ mod tests {
         // Blank lines are not kept.
         assert_eq!(tail.lock().unwrap().iter().cloned().collect::<Vec<_>>(), ["x", "proot info: vpid 1: terminated with signal 11"]);
         assert_eq!(found, Some(11));
+    }
+
+    #[test]
+    fn new_and_force_are_options_before_the_command() {
+        let o = parse(&s(&["--new", "--force", "mousepad", "--new"])).unwrap();
+        assert!(o.new && o.force);
+        assert_eq!(o.command, s(&["mousepad", "--new"]));
+        let o = parse(&s(&["foot", "--new"])).unwrap();
+        assert!(!o.new);
+        assert_eq!(o.command, s(&["foot", "--new"]));
     }
 
     #[test]

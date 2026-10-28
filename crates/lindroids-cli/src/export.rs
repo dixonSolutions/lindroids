@@ -10,21 +10,32 @@ use lindroids_proto::Exported;
 
 use crate::run::{self, Target};
 use crate::{sandbox, shortcut};
-use std::path::Path;
 
 fn default_id(o: &run::Opts, target: &Target, sb: &sandbox::Sandbox) -> String {
-    match target {
-        Target::Flatpak(app, _) => app.id.clone(),
-        Target::Program(_) => {
-            let place = o.distro.clone().unwrap_or_else(|| match sb.kind {
-                sandbox::Kind::Termux => "termux".into(),
-                _ => "linux".into(),
-            });
-            let prog = run::program_of(&o.command);
-            let safe: String = prog.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
-            format!("{place}.{safe}")
+    crate::instances::app_key(o, target, sb)
+}
+
+/// `export --new-window ...`: the export of a second icon that always opens a new window
+/// (`lindroids run --new`), next to the program's own icon; its id gets `.new-window`.
+fn split_new_window(args: &[String]) -> (bool, Vec<String>) {
+    let mut out = Vec::new();
+    let mut found = false;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--new-window" && !found {
+            found = true;
+            continue;
+        }
+        let command = !a.starts_with('-') || a == "--";
+        out.push(a.clone());
+        if run::takes_value(a) {
+            out.extend(it.next().cloned());
+        } else if command {
+            out.extend(it.cloned());
+            break;
         }
     }
+    (found, out)
 }
 
 /// The `lindroids run` arguments that start the same thing: the export's own, minus `--id`.
@@ -71,6 +82,10 @@ pub(crate) fn load_all() -> Vec<Exported> {
 }
 
 pub fn cmd_export(args: &[String]) -> i32 {
+    let (new_window, rest) = split_new_window(args);
+    if new_window {
+        return export_new_window(&rest);
+    }
     // `lindroids export <id>` of something exported before: again, as it was (its icon is updated
     // in place), rather than a new export of a command named like the id.
     if let [one] = args {
@@ -122,25 +137,81 @@ pub fn cmd_export(args: &[String]) -> i32 {
     }
 }
 
-/// `lindroids launch <id>`: what an exported program's shortcut runs (through Termux).
+/// `export --new-window <id or command>`: a second home screen icon, "<name> (new window)", that
+/// always starts another instance (`run --new`).
+fn export_new_window(args: &[String]) -> i32 {
+    // Of something exported already (its id), or of a command as `export` takes it.
+    let (base_id, mut run) = match args {
+        [one] if lindroids_server::load_exported(one).is_some() => {
+            let rec = lindroids_server::load_exported(one).unwrap();
+            (rec.id, rec.run)
+        }
+        _ => {
+            let o = match run::parse(args) {
+                Ok(o) => o,
+                Err(e) => return crate::fail(&e),
+            };
+            let mut o = o;
+            run::pick_distro(&mut o);
+            let target = match run::resolve(&o) {
+                Ok(t) => t,
+                Err(e) => return crate::fail(&e),
+            };
+            let id = o.id.clone().unwrap_or_else(|| default_id(&o, &target, &sandbox::detect()));
+            (id, run_args(args))
+        }
+    };
+    if !run.iter().any(|a| a == "--new") {
+        run.insert(0, "--new".into());
+    }
+    let id = format!("{base_id}.new-window");
+    let o = run::parse(&run).unwrap_or_default();
+    let name = match run::resolve(&o) {
+        Ok(t) => run::identify(&o, &t).0,
+        Err(e) => return crate::fail(&e),
+    };
+    let mut again = vec!["--id".to_string(), id, "--name".into(), format!("{name} (new window)")];
+    again.extend(run);
+    cmd_export(&again)
+}
+
+/// `lindroids launch [--new] <id>`: what an exported program's shortcut runs (through Termux).
+/// Tapping the icon of a program that runs brings back its most recently used window; only
+/// `--new` (or an icon exported with `--new-window`) starts another.
 pub fn cmd_launch(args: &[String]) -> i32 {
-    let Some(id) = args.first() else { return crate::fail("which one? (lindroids list)") };
+    let new = args.iter().any(|a| a == "--new");
+    let force = args.iter().any(|a| a == "--force");
+    let Some(id) = args.iter().find(|a| !a.starts_with("--")) else { return crate::fail("which one? (lindroids list)") };
     let Some(rec) = lindroids_server::load_exported(id) else {
         return crate::fail(&format!("nothing exported as {id:?} (lindroids list)"));
     };
-    // Already running (in a window of its own): bring that window back rather than start another.
-    let sb = sandbox::detect();
-    let running = std::fs::read_to_string(run::launched_marker(id)).ok().and_then(|p| p.trim().parse::<u32>().ok());
-    if let Some(pid) = running.filter(|p| Path::new(&format!("/proc/{p}")).exists()) {
-        if sandbox::on_android() {
-            if let Ok(rt) = crate::ensure_server(&sb) {
-                if crate::open_run_window(&sb, &rt, pid) {
-                    return 0;
-                }
-            }
+    let mut run = rec.run.clone();
+    for (flag, on) in [("--new", new), ("--force", force)] {
+        if on && !run.iter().any(|a| a == flag) {
+            run.insert(0, flag.into());
         }
     }
-    run::cmd_run_launched(&rec.run, Some(id))
+    let sb = sandbox::detect();
+    if !run.iter().any(|a| a == "--new") && sandbox::on_android() {
+        if let Some(shown) = running_instance(&sb, &run) {
+            return if shown { 0 } else { crate::fail("its window could not be opened") };
+        }
+    }
+    run::cmd_run_launched(&run, Some(id))
+}
+
+/// The most recently used instance of what `run` starts, brought forward (its window opened
+/// again), if one runs: true if so.
+fn running_instance(sb: &sandbox::Sandbox, run: &[String]) -> Option<bool> {
+    let mut o = run::parse(run).ok()?;
+    run::pick_distro(&mut o);
+    let target = run::resolve(&o).ok()?;
+    let key = crate::instances::app_key(&o, &target, sb);
+    let rt = crate::ensure_server(sb).ok()?;
+    let (instances, _) = crate::instances::query(&rt, &key);
+    let last = instances.first()?;
+    eprintln!("lindroids: {} is running: bringing back its window", last.name);
+    Some(crate::open_run_window(sb, &rt, last.pid))
 }
 
 pub fn cmd_list() -> i32 {
@@ -175,6 +246,14 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn new_window_exports_are_told_apart() {
+        assert_eq!(split_new_window(&s(&["--new-window", "com.vscodium.codium"])), (true, s(&["com.vscodium.codium"])));
+        assert_eq!(split_new_window(&s(&["--name", "N", "--new-window", "foot"])), (true, s(&["--name", "N", "foot"])));
+        // The command's own --new-window is the command's.
+        assert_eq!(split_new_window(&s(&["codium", "--new-window"])), (false, s(&["codium", "--new-window"])));
     }
 
     #[test]

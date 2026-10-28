@@ -6,6 +6,7 @@ mod debug;
 mod desktop;
 mod export;
 mod flatpak;
+mod instances;
 mod run;
 mod sandbox;
 mod elf;
@@ -31,7 +32,9 @@ USAGE
   lindroids run [options] <command> [args...]
   lindroids run [options] \"<command line>\"
   lindroids export [options] <command> [args...]   a home screen shortcut that starts it
-  lindroids list | remove <id> | launch <id>
+  lindroids list | remove <id> | launch [--new] <id>
+  lindroids instances [<app>]        the programs running, numbered per app (VSCodium, VSCodium 2)
+  lindroids show <pid|app>           bring back the window of a running program (`instances`)
   lindroids setup                    start the server and open the windows page in the browser
   lindroids setup x11 [--yes]        install what X11 programs need (Xwayland), restart the server
   lindroids setup flatpak            install Flatpak: natively in Termux (no root), in a proot-distro
@@ -54,9 +57,19 @@ RUN OPTIONS
   -e, --env K=V       extra environment (repeatable)
   --touch pointer     treat touch as a mouse for this program's windows
   --bind <folder>     show a folder at the same path inside a distro or Flatpak
+  --new               another window of a program that runs already: the program is asked for a
+                      new window (its desktop entry's new-window action, or a known option)
+  --force             start even when little memory is free or many programs run
 
 EXPORT OPTIONS (as run, plus)
   --id <id>           shortcut id (default: derived from the program)
+  --new-window        a second icon, \"<name> (new window)\", that always opens another window
+
+Tapping a program's icon while it runs brings back the window used last; `launch --new`, the
+\"(new window)\" icon and the window's own ＋ button open another one. Each window of its own is
+numbered (VSCodium, VSCodium 2). Limits: LINDROIDS_MAX_RUNS (8 programs), LINDROIDS_MAX_INSTANCES
+(6 windows of one app), LINDROIDS_MAX_APP_RUNS (3 processes of one app), and free memory (warns
+below 700 MB, stops below 300 MB); --force passes them.
 
 A program name that looks like a Flatpak id (org.gnome.Calculator) runs that Flatpak.
 
@@ -124,6 +137,8 @@ fn main() {
         Some("run") => run::cmd_run(&args[1..]),
         Some("export") => export::cmd_export(&args[1..]),
         Some("launch") => export::cmd_launch(&args[1..]),
+        Some("instances") => cmd_instances(&args[1..]),
+        Some("show") => cmd_show(&args[1..]),
         // Flatpak's bubblewrap on rooted Android (see bwrap.rs).
         Some("bwrap") => bwrap::cmd_bwrap(&args[1..]),
         Some("list") => export::cmd_list(),
@@ -179,11 +194,26 @@ fn cmd_server(args: &[String]) -> i32 {
     lindroids_server::run(cfg)
 }
 
-/// Start the server in the background unless it is running. Returns its runtime dir.
+/// Start the server in the background unless it is running. Returns its runtime dir. A server
+/// of another protocol (from before an update) is restarted when it shows nothing; otherwise it
+/// keeps running, and what needs the new protocol says so.
 pub fn ensure_server(sb: &sandbox::Sandbox) -> Result<std::path::PathBuf, String> {
     let rt = sandbox::runtime_dir();
-    if client::status(&rt).is_ok() {
-        return Ok(rt);
+    match client::status(&rt) {
+        Ok(CliReply::Status { version, windows, shown_runs, .. }) if version != lindroids_proto::PROTOCOL_VERSION => {
+            if windows.is_empty() && shown_runs.is_empty() {
+                eprintln!("lindroids: the server running is from another version (protocol {version}): restarting it");
+                let _ = cmd_stop_quiet(&rt);
+            } else {
+                static TOLD: std::sync::Once = std::sync::Once::new();
+                TOLD.call_once(|| {
+                    eprintln!("lindroids: the server running is from another version (protocol {version}, this is {}); `lindroids stop` once its windows are closed", lindroids_proto::PROTOCOL_VERSION)
+                });
+                return Ok(rt);
+            }
+        }
+        Ok(_) => return Ok(rt),
+        Err(_) => {}
     }
     std::fs::create_dir_all(&rt).map_err(|e| format!("{}: {e}", rt.display()))?;
     let log = std::fs::File::create(rt.join("server.log")).map_err(|e| e.to_string())?;
@@ -293,6 +323,57 @@ pub fn ensure_display(sb: &sandbox::Sandbox, rt: &Path, quiet: bool) -> bool {
         }
     }
     false
+}
+
+/// Stop the server and wait until it is gone.
+fn cmd_stop_quiet(rt: &Path) -> Result<(), String> {
+    let pid = std::fs::read_to_string(rt.join("server.pid")).ok().and_then(|p| p.trim().parse::<u32>().ok());
+    client::request(rt, &CliRequest::Stop, Duration::from_secs(5))?;
+    let t0 = Instant::now();
+    while pid.is_some_and(|p| Path::new(&format!("/proc/{p}")).exists()) && t0.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
+}
+
+/// `lindroids instances [<app>]`: what runs, numbered per app.
+fn cmd_instances(args: &[String]) -> i32 {
+    let rt = sandbox::runtime_dir();
+    let key = args.first().cloned().unwrap_or_default();
+    match client::request(&rt, &CliRequest::Instances { app_key: key }, Duration::from_secs(3)) {
+        Ok(CliReply::Instances { instances, runs }) => {
+            for i in &instances {
+                println!("{:<8} {:<3} {:<32} {}{}", i.pid, i.ordinal, i.name, if i.shown { "shown" } else { "not shown" }, if i.claimed { ", a window of another instance's process" } else { "" });
+            }
+            if instances.is_empty() {
+                println!("Nothing runs.");
+            }
+            println!("{runs} program(s) running");
+            0
+        }
+        Ok(CliReply::Error { message }) => fail(&format!("the server does not know instances ({message}): `lindroids stop`, then start again")),
+        Ok(other) => fail(&format!("unexpected reply {other:?}")),
+        Err(e) => fail(&e),
+    }
+}
+
+/// `lindroids show <pid|app>`: bring back a running instance's window (an app: the one used last).
+fn cmd_show(args: &[String]) -> i32 {
+    let Some(what) = args.first() else { return fail("which one? (lindroids instances)") };
+    let sb = sandbox::detect();
+    let rt = sandbox::runtime_dir();
+    let (all, _) = instances::query(&rt, "");
+    let found = match what.parse::<u32>() {
+        Ok(pid) => all.iter().find(|i| i.pid == pid),
+        Err(_) => instances::query(&rt, what).0.first().and_then(|f| all.iter().find(|i| i.pid == f.pid)),
+    };
+    let Some(i) = found else { return fail(&format!("{what} is not running (lindroids instances)")) };
+    if open_run_window(&sb, &rt, i.pid) {
+        println!("{}: its window is back", i.name);
+        0
+    } else {
+        fail("its window could not be opened")
+    }
 }
 
 fn cmd_stop() -> i32 {
