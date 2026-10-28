@@ -96,11 +96,21 @@ pub fn launched_pids() -> Vec<u32> {
         .unwrap_or_default()
 }
 
+/// The process `pid` belongs under: its parent, or, for an orphan (adopted by init), the process
+/// tracing it. An app under proot that detaches a process (VSCodium: VS Code's CLI starts the
+/// editor and exits) leaves it with init as its parent, but proot, the run's, still traces it:
+/// its windows are the run's, and it ends with the run.
 fn parent_of(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // pid (comm) state ppid ...  — comm may contain spaces and parentheses.
     let after = &stat[stat.rfind(')')? + 2..];
-    after.split_whitespace().nth(1)?.parse().ok()
+    let ppid: u32 = after.split_whitespace().nth(1)?.parse().ok()?;
+    if ppid > 1 {
+        return Some(ppid);
+    }
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let tracer = status.lines().find_map(|l| l.strip_prefix("TracerPid:"))?.trim().parse().ok();
+    tracer.filter(|t| *t > 1).or(Some(ppid))
 }
 
 pub fn client_pid(dh: &DisplayHandle, client: &ClientId) -> Option<u32> {

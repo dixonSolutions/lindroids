@@ -1623,7 +1623,7 @@ fn linger() -> Duration {
 
 /// The window is gone, so are the programs `lindroids run` and `launch` started into it (`run`:
 /// that run; None: those without a window of their own): SIGTERM, and SIGKILL for whatever is
-/// still there 5 s later. (proot's --kill-on-exit takes its tracees.)
+/// still there 5 s later.
 fn end_launches(run: Option<u32>) {
     let pids: Vec<u32> = match run {
         Some(r) => icons::launched_pids().into_iter().filter(|p| *p == r).collect(),

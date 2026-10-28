@@ -21,6 +21,7 @@ from Android**, through the window page and Termux, never by giving the containe
 | Program's icons and title bar draw right (Adwaita) | ✅ | portal sends GNOME's icon theme and button layout |
 | Closing the program ends the window | 🟡 | Chromium Custom Tabs: the window closes itself and leaves Recents, whatever the default browser (b16: Firefox the default, Cromite's window; lab test); ⛔ with only Firefox: the ended screen asks for one tap on ✕ |
 | Closing the window ends the program | ✅ | ✕ → 5 s (Firefox, Cromite; lab test); Back only sends a Chromium window to the background, alive |
+| Other kinds of program, the whole lab test each: an Electron Flatpak (VSCodium, `flatpak run flathub com.vscodium.codium`), a native Termux program (Mousepad) | ✅ | `LAB_PROC='[/]app/share/codium/' lab/test-windows.sh b16 com.vscodium.codium`; `LAB_PROC='[m]ousepad$' lab/test-windows.sh b16 mousepad` |
 | Another app in front, the browser's page process killed: the program keeps running, its Recents card brings it back | ✅ | `lab/test-windows.sh` (b16, Cromite): back and linked again in 1 s; 0.1.75 ended the program |
 | Tapping the exported icon again brings the window back | ✅ | Firefox raises its window; Chromium opens a new one, which takes over the run while the old one closes itself (`lab/test-windows.sh`, b16) |
 | Recents icon right after opening | 🟡 | Android writes the task's icon a few seconds after the browser sets it: Recents opened in the first seconds shows the browser's icon (b16) |

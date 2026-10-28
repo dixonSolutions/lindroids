@@ -269,6 +269,15 @@ fn font_dirs_xml(remaps: &str) -> String {
 const RESOLV_CONF: &str = "nameserver 8.8.8.8\nnameserver 1.1.1.1\n";
 const HOSTS: &str = "127.0.0.1 localhost\n::1 localhost\n";
 
+/// Stands in for zypak's helper (`/app/bin/zypak-helper host|child <fds> <program> <args>...`).
+/// Electron and Chromium apps start through zypak, which puts each Chromium process in Flatpak's
+/// sandbox through Flatpak's portal (`org.freedesktop.portal.Flatpak`). Neither exists here, and
+/// Chromium's own sandbox cannot work under ptrace: the zygote died (`zygote_linux.cc: write:
+/// Broken pipe`) and the app with it (tested: VSCodium). So the program runs unsandboxed, as the
+/// rest of the app does. Not for Electron run as Node (`ELECTRON_RUN_AS_NODE`: VS Code's CLI),
+/// which takes no Chromium switches.
+const ZYPAK_HELPER: &str = "#!/bin/sh\n# Lindroids: no Flatpak sandbox here (see flatpak.rs, ZYPAK_HELPER).\nshift 2\nprog=$1\nshift\n[ -n \"$ELECTRON_RUN_AS_NODE\" ] && exec \"$prog\" \"$@\"\nexec \"$prog\" --no-sandbox \"$@\"\n";
+
 fn random_hex(n: usize) -> String {
     let mut buf = vec![0u8; n / 2];
     if std::fs::File::open("/dev/urandom").and_then(|mut f| std::io::Read::read_exact(&mut f, &mut buf)).is_err() {
@@ -444,6 +453,12 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
     binds.push((machine_id, "/etc/machine-id".into()));
     binds.push((resolv, "/etc/resolv.conf".into()));
     binds.push((hosts, "/etc/hosts".into()));
+    if app.app.files().join("bin/zypak-helper").exists() {
+        let p = base.join("zypak-helper");
+        std::fs::write(&p, ZYPAK_HELPER).map_err(|e| io_err(&p, e))?;
+        std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o755)).map_err(|e| io_err(&p, e))?;
+        binds.push((p, "/app/bin/zypak-helper".into()));
+    }
     if let Some(l) = localtime {
         binds.push((l, "/etc/localtime".into()));
     }
@@ -469,6 +484,9 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
         binds.push((x_dir, "/tmp/.X11-unix".into()));
     }
     binds.push((var_host.join("cache/tmp"), "/var/tmp".into()));
+    // `$XDG_RUNTIME_DIR/app/<id>`, which `flatpak run` makes for each app: apps keep their
+    // sockets there (VSCodium could not start without it: "Unable to write program user data").
+    mkdirs(&rt.join("app").join(&app.id))?;
     binds.push((rt.to_path_buf(), format!("/run/user/{uid}")));
     binds.push((home_host.clone(), home.clone()));
     for d in ["data", "config", "cache"] {
@@ -545,6 +563,9 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
     env.push(("LD_LIBRARY_PATH".into(), ld_library_path(app)));
     env.push(("XDG_RUNTIME_DIR".into(), format!("/run/user/{uid}")));
     env.push(("WAYLAND_DISPLAY".into(), "wayland-0".into()));
+    // Electron unsandboxed, also when started other than through zypak (ZYPAK_HELPER): VS Code's
+    // CLI starts the editor's binary itself, whose zygote then died the same way.
+    env.push(("ELECTRON_DISABLE_SANDBOX".into(), "1".into()));
     env.extend(crate::sandbox::integration_env(rt, Path::new(&format!("/run/user/{uid}"))));
     if let Some((_, d)) = env.iter_mut().find(|(k, _)| k == "XDG_DATA_DIRS") {
         if let Some(with) = crate::sandbox::data_dirs_with_runtime(rt, Path::new(&format!("/run/user/{uid}")), d) {
@@ -579,7 +600,10 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
         mkdirs(&pt)?;
         c.env("PROOT_TMP_DIR", pt);
     }
-    c.arg("--kill-on-exit");
+    // No --kill-on-exit: proot then runs until the last process in it ends, not only the first.
+    // Some apps' command starts the app and returns at once (VSCodium's is VS Code's CLI, which
+    // starts the editor detached): with it, proot killed the app as its launcher exited. The run
+    // still ends with its window (the relay ends its whole process tree).
     if on_android() {
         // Android forbids hard links in app data, and its kernels have no SysV IPC.
         c.args(["--link2symlink", "--sysvipc"]);

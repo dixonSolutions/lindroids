@@ -10,6 +10,7 @@
 #     window back, linked to it again.
 #
 #   lab/test-windows.sh <vm> [flatpak-app-id]     (default org.gnome.Calculator, installed in Termux)
+#   LAB_PROC='[/]app/share/codium/' lab/test-windows.sh b16 com.vscodium.codium
 #
 # Results: lab/results/<vm>/windows-<browser>/ (screenshots, Recents icons, result.txt). Uses the
 # lindroids that is on the VM now.
@@ -20,7 +21,9 @@ REPO=$(cd "$LAB_DIR/.." && pwd)
 VM=$LAB_DIR/vm.sh
 NAME=${1:?usage: test-windows.sh <vm> [app-id]}
 APP=${2:-org.gnome.Calculator}
-PROC="[/]app/bin/"   # a Flatpak app's own process: /app/bin/<name>
+# A Flatpak app's own process: /app/bin/<name>; LAB_PROC for apps elsewhere (VSCodium:
+# '[/]app/share/codium/').
+PROC=${LAB_PROC:-"[/]app/bin/"}
 sh_() { "$VM" "$NAME" adb shell "$@" | tr -d '\r'; }
 tsh() { timeout "${TSH_TIMEOUT:-60}" "$VM" "$NAME" ssh "$@"; }
 log() { echo "[$(date +%T)] $NAME: $*"; }
@@ -210,8 +213,9 @@ log "lindroids export $APP, tapped with Termux stopped"
 tsh "lindroids export $APP 2>&1" >"$OUT/export.txt"
 xy=$(ui_find '(?i)^add( to home screen)?$') && sh_ "input tap $xy"
 sleep 2
-label=$(tsh "lindroids list 2>/dev/null" | tr -d '\r' | awk -v a="$APP" '$1 == a' | sed -E 's/^[^ ]+ +//; s/  +.*//' | head -1)
-label=${label:-Calculator}
+# Its id is the Flatpak's, or termux.<program> for a Termux program.
+label=$(tsh "lindroids list 2>/dev/null" | tr -d '\r' | awk -v a="$APP" '$1 == a || $1 == "termux." a' | sed -E 's/^[^ ]+ +//; s/  +.*//' | head -1)
+[[ -n $label ]] || { log "export: $APP not in lindroids list"; label=$APP; }
 sh_ 'am force-stop com.termux'
 sh_ 'input keyevent KEYCODE_HOME'
 sleep 2

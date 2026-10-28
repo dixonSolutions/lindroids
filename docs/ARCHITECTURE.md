@@ -215,7 +215,23 @@ Flatpak's own runner needs bubblewrap, which needs namespaces an Android app doe
 `lindroids run <app-id>` finds the installation (in Termux's view, inside a proot-distro rootfs,
 or a toolbox host), reads the app's and runtime's metadata, resolves extensions (GL, locale,
 codecs), and builds the same filesystem view with proot: runtime at `/usr`, app at `/app`,
-extensions at their mount points, a generated `/etc/passwd`, `~/.var/app/<id>` as the XDG dirs.
+extensions at their mount points, a generated `/etc/passwd`, `~/.var/app/<id>` as the XDG dirs,
+and `$XDG_RUNTIME_DIR/app/<id>`, where apps keep their sockets. `flatpak run [options] <app-id>`
+works the same, also with a remote name before the app (`flatpak run flathub <app-id>`), which
+`flatpak run` itself does not take.
+
+What else differs from `flatpak run` *(tested on b16: Calculator, VSCodium)*:
+
+- **The run lasts as long as anything in it.** proot runs without `--kill-on-exit`, so a launcher
+  that starts the app and returns (VSCodium's command is VS Code's CLI, which starts the editor
+  detached and exits) does not take the app with it. A process left with init as its parent
+  counts as a child of the one tracing it, the run's proot (`TracerPid`): its windows show in the
+  run's window, and it ends with the run.
+- **Electron and Chromium apps run unsandboxed.** They start through zypak, which puts each
+  Chromium process in Flatpak's sandbox through Flatpak's portal; neither exists here, and
+  Chromium's own sandbox cannot work under ptrace (the zygote dies: `write: Broken pipe`). A
+  stand-in for zypak's helper starts the program with `--no-sandbox`, and
+  `ELECTRON_DISABLE_SANDBOX=1` covers Electron started any other way.
 
 ## Home screen shortcuts
 

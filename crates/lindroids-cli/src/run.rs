@@ -187,6 +187,12 @@ pub enum Target {
 /// `flatpak run [options] <app> [args]`: the app and its arguments (Flatpak's own options left
 /// out).
 pub fn flatpak_run(cmd: &[String]) -> Option<(String, Vec<String>)> {
+    flatpak_run_from(cmd).map(|(id, args, _)| (id, args))
+}
+
+/// `flatpak_run`, and the remote named before the app (`flatpak run flathub <app>`): `flatpak
+/// run` takes no remote (`flatpak install` does), but the app is clear, so it runs.
+fn flatpak_run_from(cmd: &[String]) -> Option<(String, Vec<String>, Option<String>)> {
     let prog = cmd.first()?;
     if !(prog == "flatpak" || prog.ends_with("/flatpak")) || cmd.get(1).map(String::as_str) != Some("run") {
         return None;
@@ -205,14 +211,22 @@ pub fn flatpak_run(cmd: &[String]) -> Option<(String, Vec<String>)> {
         i += if VALUED.contains(&a.as_str()) { 2 } else { 1 };
     }
     let id = cmd.get(i)?.clone();
-    flatpak::looks_like_id(&id).then(|| (id, cmd[i + 1..].to_vec()))
+    if flatpak::looks_like_id(&id) {
+        return Some((id, cmd[i + 1..].to_vec(), None));
+    }
+    let next = cmd.get(i + 1).filter(|n| flatpak::looks_like_id(n))?;
+    let remote = id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    remote.then(|| (next.clone(), cmd[i + 2..].to_vec(), Some(id)))
 }
 
 pub fn resolve(o: &Opts) -> Result<Target, String> {
     // On Android Flatpak's own `flatpak run` cannot work (bubblewrap needs root there): run the app
     // as `lindroids run <app>` does.
     if sandbox::on_android() && !is_shell_line(&o.command) {
-        if let Some((id, args)) = flatpak_run(&o.command) {
+        if let Some((id, args, remote)) = flatpak_run_from(&o.command) {
+            if let Some(r) = remote {
+                eprintln!("lindroids: running {id} (`flatpak run` takes no remote: `{r}` is for `flatpak install`)");
+            }
             let root = o.distro.as_deref().map(distro_rootfs).unwrap_or_else(|| PathBuf::from("/"));
             return match flatpak::find(&root, &id) {
                 Some(app) => Ok(Target::Flatpak(app, args)),
@@ -591,6 +605,12 @@ mod tests {
         assert_eq!(flatpak_run(&s(&["flatpak", "run", "--", "org.x.Y", "-v"])), Some(("org.x.Y".into(), s(&["-v"]))));
         assert_eq!(flatpak_run(&s(&["flatpak", "install", "org.gnome.Calculator"])), None);
         assert_eq!(flatpak_run(&s(&["flatpak", "run"])), None);
+        // A remote where it does not belong: the app is still clear.
+        assert_eq!(
+            flatpak_run_from(&s(&["flatpak", "run", "flathub", "com.vscodium.codium", "a.txt"])),
+            Some(("com.vscodium.codium".into(), s(&["a.txt"]), Some("flathub".into())))
+        );
+        assert_eq!(flatpak_run(&s(&["flatpak", "run", "some/path", "org.x.Y"])), None);
         assert_eq!(flatpak_run(&s(&["foot"])), None);
     }
 

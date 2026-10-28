@@ -379,7 +379,7 @@ hidden|shown)`) and the server how each page went (`close 1001`, `no close frame
 pages in the background, so a heartbeat would take a window the user left in the background for
 a dead one and end its program.
 
-### Single run: `lindroids run X` *(tested: Mousepad, xclock, foot, Flatpak Calculator, Xournal++ in proot Debian)*
+### Single run: `lindroids run X` *(tested: Mousepad, xclock, foot, Flatpak Calculator and VSCodium, Xournal++ in proot Debian)*
 
 1. Make sure the relay is up.
 2. Fork the program, keeping the terminal as its stdio.
