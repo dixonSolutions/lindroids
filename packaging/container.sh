@@ -39,9 +39,10 @@ in_container() {
   [ "${1:-}" = -- ] && shift
   engine=$(container_engine) || return 1
   case "$engine" in *docker*) chown_to="$(id -u):$(id -g)" ;; esac
+  # SOURCE_DATE_EPOCH with its value: the host's podman (from a distrobox) does not see ours.
   # shellcheck disable=SC2086,SC2016
   $engine run --rm --network host --security-opt label=disable "${mounts[@]}" -w "${dirs[0]}" \
-    -e CHOWN_TO="$chown_to" -e SOURCE_DATE_EPOCH "$image" \
+    -e CHOWN_TO="$chown_to" -e SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-}" "$image" \
     sh -c '
       n=$1; shift
       dirs=""

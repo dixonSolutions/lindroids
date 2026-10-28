@@ -18,8 +18,9 @@
 # The same works under proot (proot-distro, UserLAnd, Andronix), where the shell is root. Outside
 # Termux, system changes need root: it runs them directly as root, else with sudo or doas.
 # It also checks for Flatpak and, when it is missing, asks to install it (with Flathub): with the
-# system's package manager, or in Termux (which has no Flatpak package) natively — built once from
-# source with Lindroids' Android patches, no root and no Linux distro needed.
+# system's package manager, or in Termux (which has no Flatpak package) natively — Lindroids' own
+# build with its Android patches (the package lindroids-flatpak, else built here from source), no
+# root and no Linux distro needed.
 #
 # Safe to run again: it rewrites the same source and key files and upgrades the package.
 #
@@ -32,7 +33,8 @@
 #   LINDROIDS_METHOD        force apt-termux | pacman-termux | apt-debian | pacman-arch | dnf | yum |
 #                           zypper | apk | xbps | static
 #   LINDROIDS_FLATPAK       yes | no: install Flatpak (with Flathub) without asking, or skip it; in
-#                           Termux also native | debian | distro:<name> (see flatpak_termux)
+#                           Termux also native | build (from source, not the package) | debian |
+#                           distro:<name> (see flatpak_termux)
 #
 # Options:
 #   --flatpak-only          only the Flatpak step (what `lindroids setup flatpak` runs)
@@ -270,10 +272,32 @@ choose() {
   echo "${answer:-$2}"
 }
 
+# flatpak_package_there: the Lindroids APT repository has lindroids-flatpak for this Termux (apt,
+# and an architecture the release built it for). `lindroids setup flatpak` comes here without the
+# installer's apt update, so a package apt does not know yet gets one more look after an update.
+flatpak_package_there() {
+  [ "$PM" = apt ] || return 1
+  apt-cache policy lindroids-flatpak 2>/dev/null | grep -q 'Candidate: [0-9]' && return 0
+  [ -z "$APT_UPDATED" ] || return 1
+  APT_UPDATED=1
+  apt update > /dev/null 2>&1 || return 1
+  apt-cache policy lindroids-flatpak 2>/dev/null | grep -q 'Candidate: [0-9]'
+}
+
 # Flatpak natively in Termux: ostree and Flatpak built from their release sources with Lindroids'
 # Android patches (packaging/termux-flatpak, published on the site). No root, no Linux distro:
-# apps install per user and run with `lindroids run <app-id>`.
+# apps install per user and run with `lindroids run <app-id>`. The release builds them once per
+# architecture as the package lindroids-flatpak, which installs in seconds; where there is none
+# (pacman, or LINDROIDS_FLATPAK=build), the kit builds them here.
 flatpak_native() {
+  if [ "${LINDROIDS_FLATPAK:-}" != build ] && flatpak_package_there; then
+    say "Flatpak for Termux: apt install lindroids-flatpak (Lindroids' build, no compiling)"
+    if apt install -y lindroids-flatpak < /dev/null; then
+      flatpak --user remote-add --if-not-exists flathub "$FLATHUB" || warn "cannot add Flathub"
+      return 0
+    fi
+    warn "installing lindroids-flatpak failed; building Flatpak instead"
+  fi
   kit=${TMPDIR:-$PREFIX/tmp}/lindroids-termux-flatpak
   rm -rf "$kit"
   mkdir -p "$kit"
@@ -339,15 +363,20 @@ flatpak_termux() {
   done
   distros=$(termux_distros)
   case "${LINDROIDS_FLATPAK:-}" in
-    y|yes|1|true|native) choice=1 ;;
+    y|yes|1|true|native|build) choice=1 ;;
     n|no|0|false|skip) choice=s ;;
     debian) choice=d ;;
     distro:*) choice=${LINDROIDS_FLATPAK#distro:} ;;
     *)
       echo
       echo "Flatpak: not installed. Termux has no Flatpak package. How should Lindroids get it?"
-      echo "  1) build it natively for Termux (recommended): no root and no Linux distro; once,"
-      echo "     about 20 minutes and 600 MB of build tools; apps install per user"
+      if flatpak_package_there; then
+        echo "  1) Lindroids' Flatpak for Termux (recommended): no root and no Linux distro;"
+        echo "     a minute or two (lindroids-flatpak and its libraries); apps install per user"
+      else
+        echo "  1) build it natively for Termux (recommended): no root and no Linux distro; once,"
+        echo "     about 20 minutes and 600 MB of build tools; apps install per user"
+      fi
       n=1
       for d in $distros; do
         n=$((n + 1))
@@ -412,7 +441,18 @@ flatpak_system() {
     return 0
   fi
   say "$PM: installing flatpak"
-  pm_install flatpak || { warn "installing flatpak with $PM failed"; return 0; }
+  if ! pm_install flatpak; then
+    # Minimal Fedora images (containers, proot-distro's Fedora) have systemd-standalone-tmpfiles
+    # and -sysusers, which conflict with the systemd Flatpak's session helper needs: they are
+    # stand-ins for it, and dnf replaces them when allowed to.
+    if [ "$PM" = dnf ] && rpm -q systemd-standalone-tmpfiles systemd-standalone-sysusers 2>/dev/null | grep -q '^systemd-standalone'; then
+      say "dnf: installing flatpak, with systemd in place of systemd-standalone-* (--allowerasing)"
+      $SUDO dnf install -y --allowerasing flatpak < /dev/null || { warn "installing flatpak with dnf failed"; return 0; }
+    else
+      warn "installing flatpak with $PM failed"
+      return 0
+    fi
+  fi
   $SUDO flatpak remote-add --if-not-exists flathub "$FLATHUB" || warn "cannot add Flathub"
 }
 
@@ -473,6 +513,7 @@ install_termux_apt() {
   echo "deb [signed-by=$key] $REPO_URL termux main" > "$PREFIX/etc/apt/sources.list.d/lindroids.list"
   say "apt update"
   apt update || die "apt update failed"
+  APT_UPDATED=1
   say "apt install lindroids"
   apt install -y lindroids || die "apt install lindroids failed"
   FLATPAK_DISTRO=

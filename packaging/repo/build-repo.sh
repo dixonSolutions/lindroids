@@ -2,7 +2,7 @@
 # Build (or update) the static, signed Lindroids package repositories served by GitHub Pages:
 # APT, pacman, RPM (dnf/yum/zypper), Alpine (apk) and Void (xbps).
 #
-#   packaging/repo/build-repo.sh <out-dir> [--debs dist/debs] [--pacman dist/pacman]
+#   packaging/repo/build-repo.sh <out-dir> [--debs dist/debs]... [--pacman dist/pacman]
 #                                [--rpm dist/rpm] [--apk dist/apk] [--xbps dist/xbps] [--keep 3]
 #                                [--base-url URL] [--github-repo owner/repo]
 #                                [--public-key packaging/repo/lindroids.gpg]
@@ -18,6 +18,8 @@
 #   dists/stable/{Release,InRelease,Release.gpg}
 #   dists/stable/main/binary-{arm64,armhf,amd64,i386}/Packages(.gz)
 #   pool/{termux,stable}/main/l/lindroids/lindroids_<version>_<arch>.deb
+#   pool/termux/main/l/lindroids-flatpak/lindroids-flatpak_<version>_<arch>.deb  Flatpak for Termux
+#     (packaging/termux-flatpak; the release takes them from the termux-flatpak-* GitHub release)
 #   pacman/termux/{aarch64,arm,x86_64,i686}/        Termux with pacman (packaging/build-pacman.sh)
 #   pacman/arch/{aarch64,armv7h,x86_64,i686}/       Arch Linux and derivatives
 #     lindroids.db{,.tar.gz}{,.sig}, lindroids-<version>-<rel>-<arch>.pkg.tar.xz{,.sig}
@@ -52,7 +54,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 
 OUTDIR=
-DEBS=$ROOT/dist/debs
+DEBS=()
 PKGS=$ROOT/dist/pacman
 KEEP=3
 BASE_URL=${LINDROIDS_REPO_URL:-}
@@ -64,7 +66,7 @@ PUBKEY=$HERE/lindroids.gpg
 RSA_PUB=$HERE/lindroids.rsa.pub
 while [ $# -gt 0 ]; do
   case "$1" in
-    --debs) DEBS=$2; shift 2 ;;
+    --debs) DEBS+=("$2"); shift 2 ;;
     --pacman) PKGS=$2; shift 2 ;;
     --rpm) RPMS=$2; shift 2 ;;
     --apk) APKS=$2; shift 2 ;;
@@ -152,8 +154,10 @@ ctl() { dpkg-deb -f "$@" 2>/dev/null || dpkg-deb -f "$@"; }
 
 # --- pool ----------------------------------------------------------------------------------
 added=0
-if [ -d "$DEBS" ]; then
-  for deb in "$DEBS"/*.deb; do
+[ ${#DEBS[@]} -gt 0 ] || DEBS=("$ROOT/dist/debs")
+for debs in "${DEBS[@]}"; do
+  [ -d "$debs" ] || continue
+  for deb in "$debs"/*.deb; do
     [ -e "$deb" ] || continue
     pkg=$(ctl "$deb" Package)
     arch=$(ctl "$deb" Architecture)
@@ -164,8 +168,8 @@ if [ -d "$DEBS" ]; then
     cp -f "$deb" "$dir/${pkg}_${ver}_${arch}.deb"
     added=$((added + 1))
   done
-fi
-echo "==> pool: $added package(s) added from $DEBS"
+done
+echo "==> pool: $added package(s) added from ${DEBS[*]}"
 
 # Keep the newest $KEEP versions of every package per architecture.
 for pkgdir in "$OUTDIR"/pool/*/main/*/*; do
@@ -507,8 +511,9 @@ chmod 644 "$OUTDIR/install.sh"
 rm -rf "$OUTDIR/termux-flatpak"
 mkdir -p "$OUTDIR/termux-flatpak"
 install -m 644 "$ROOT"/packaging/termux-flatpak/* "$OUTDIR/termux-flatpak/"
-# VERSION: the newest version in the pool (the static installer downloads that release).
-latest=$(find "$OUTDIR/pool" -name '*.deb' -printf '%f\n' | awk -F_ '{print $2}' | sort -uV | tail -1)
+# VERSION: the newest lindroids in the pool (the static installer downloads that release; the pool
+# also has lindroids-flatpak, whose versions are Flatpak's).
+latest=$(find "$OUTDIR/pool" -name 'lindroids_*.deb' -printf '%f\n' | awk -F_ '{print $2}' | sort -uV | tail -1)
 [ -n "$latest" ] && echo "$latest" > "$OUTDIR/VERSION"
 touch "$OUTDIR/.nojekyll"
 site_url=${BASE_URL:-$(sed -n 's/^DEFAULT_REPO_URL="\(.*\)"/\1/p' "$ROOT/install.sh")}

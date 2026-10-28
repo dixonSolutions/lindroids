@@ -20,6 +20,15 @@ Every push to `main` (unless the head commit message contains `[skip ci]`) is a 
 | `SHA256SUMS`                                    | GitHub Release                           |
 | the repositories + `install.sh`                 | `gh-pages` → https://dixonsolutions.github.io/lindroids/ |
 
+Flatpak for Termux is built separately, by
+[`.github/workflows/termux-flatpak.yml`](../.github/workflows/termux-flatpak.yml), only when
+`packaging/termux-flatpak` changes (or by hand): `build-in-termux.sh --package` in Termux's Docker
+image for aarch64, arm, x86_64 and i686 gives `lindroids-flatpak_<flatpak>+ostree<ostree>-<kit
+rev>_<arch>.deb` (about 2 MB each), kept as the assets of the GitHub release
+`termux-flatpak-<version>`. Each release (and `scripts/publish-local.sh`) adds the newest such
+release's packages to the APT suite `termux`, where `install.sh` installs them instead of building
+Flatpak on the phone. Bump `KIT_REV` in the kit whenever its patches change.
+
 ### Two builds of the CLI
 
 - **Termux** gets a binary built against Android's bionic (`cargo ndk -P 24`, targets

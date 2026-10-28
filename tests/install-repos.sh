@@ -16,6 +16,8 @@
 #
 # --bin: default target/x86_64-unknown-linux-musl/release/lindroids, built if missing.
 # --xwls: the xwayland-satellite builds (debian-amd64/ is used; scripts/build-xwayland-satellite.sh).
+# --flatpak: also answer yes to installing Flatpak, and check that Flathub is added (where a
+#   repository install is expected; the static fallbacks have no Flatpak to get).
 # Needs podman or docker (LINDROIDS_CONTAINER_ENGINE), and what the packaging scripts need
 # (dpkg-deb, bsdtar, gpg, openssl, python3).
 set -euo pipefail
@@ -27,11 +29,13 @@ ROOT=$PWD
 BIN=$ROOT/target/x86_64-unknown-linux-musl/release/lindroids
 XWLS=$ROOT/target/xwls/out
 PORT=${LINDROIDS_TEST_PORT:-8790}
+FLATPAK=no
 DISTROS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --bin) BIN=$(readlink -f "$2"); shift 2 ;;
     --xwls) XWLS=$(readlink -f "$2"); shift 2 ;;
+    --flatpak) FLATPAK=yes; shift ;;
     -h|--help) awk 'NR > 1 && !/^#/ {exit} NR > 1 {sub(/^# ?/, ""); print}' "$0"; exit 0 ;;
     -*) echo "install-repos: unknown option $1" >&2; exit 2 ;;
     *) DISTROS+=("$1"); shift ;;
@@ -131,7 +135,7 @@ for d in "${DISTROS[@]}"; do
       set -e
       { $prep; } || { echo 'FAIL: preparing the container'; exit 1; }
       url=http://127.0.0.1:$PORT/install.sh
-      export LINDROIDS_FLATPAK=no LINDROIDS_RELEASE_URL=http://127.0.0.1:$PORT/releases
+      export LINDROIDS_FLATPAK=$FLATPAK LINDROIDS_RELEASE_URL=http://127.0.0.1:$PORT/releases
       if command -v curl >/dev/null; then get='curl -fsSL'; else get='wget -qO-'; fi
       \$get \$url | sh > /tmp/1.log 2>&1 || { cat /tmp/1.log; exit 1; }
       cat /tmp/1.log
@@ -147,6 +151,10 @@ for d in "${DISTROS[@]}"; do
       fi
       \$bin version
       { $check; } || { echo 'FAIL: $d check'; exit 1; }
+      if [ $FLATPAK = yes ] && [ $method != static ]; then
+        flatpak remotes | grep -q '^flathub' || { echo 'FAIL: no Flatpak with Flathub'; exit 1; }
+        flatpak --version
+      fi
       echo 'PASS'" > "$log" 2>&1; then
     RESULT[$d]="PASS ($method; $(grep -m1 '^lindroids [0-9]' "$log" || true))"
   else

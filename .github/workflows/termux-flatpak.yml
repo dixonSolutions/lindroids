@@ -1,0 +1,88 @@
+# Flatpak for Termux, prebuilt: packaging/termux-flatpak/build-in-termux.sh --package, in Termux's
+# own Docker image (termux/termux-docker) for each Termux architecture, so that install.sh installs
+# the package lindroids-flatpak in seconds instead of building Flatpak on the phone (20 minutes and
+# 600 MB of build tools). The packages become the assets of the GitHub release
+# termux-flatpak-<version>; the release workflow (and scripts/publish-local.sh) adds the newest
+# such release's packages to the termux suite of the APT repository.
+#
+# Runs when the kit changes, or by hand. aarch64 builds natively on an arm64 runner; arm under
+# QEMU on x86_64 (GitHub's arm64 CPUs run no 32-bit code), i686 and x86_64 natively.
+name: termux-flatpak
+
+on:
+  push:
+    branches: [main]
+    paths: [packaging/termux-flatpak/**]
+  workflow_dispatch:
+
+concurrency:
+  group: termux-flatpak-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: aarch64, runner: ubuntu-24.04-arm, qemu: false }
+          - { arch: arm, runner: ubuntu-latest, qemu: true }
+          - { arch: x86_64, runner: ubuntu-latest, qemu: false }
+          - { arch: i686, runner: ubuntu-latest, qemu: false }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: QEMU
+        if: matrix.qemu
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build lindroids-flatpak in Termux
+        run: |
+          mkdir -p out
+          # The image's Termux user (system) writes the package here.
+          chmod 777 out
+          docker run --rm --privileged \
+            -v "$PWD/packaging/termux-flatpak:/kit:ro" -v "$PWD/out:/out" \
+            "termux/termux-docker:${{ matrix.arch }}" \
+            bash -c 'cp -r /kit ~/kit && LINDROIDS_BUILD_JOBS=$(nproc) sh ~/kit/build-in-termux.sh --package /out'
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lindroids-flatpak-${{ matrix.arch }}
+          path: out/*.deb
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: GitHub release termux-flatpak-<version>
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          kit=packaging/termux-flatpak/build-in-termux.sh
+          v() { sed -n "s/^$1=//p" "$kit"; }
+          # As the kit names the package: <flatpak>+ostree<ostree>-<kit revision>.
+          version="$(v FLATPAK_VERSION)+ostree$(v OSTREE_VERSION)-$(v KIT_REV)"
+          tag="termux-flatpak-$version"
+          ls -l out
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" out/*.deb --clobber
+          else
+            gh release create "$tag" out/*.deb --target "$GITHUB_SHA" --latest=false \
+              --title "Flatpak for Termux $version" \
+              --notes "Flatpak and ostree built for Termux by packaging/termux-flatpak (lindroids-flatpak). Installed by install.sh from the Lindroids APT repository; not meant to be downloaded by hand."
+          fi

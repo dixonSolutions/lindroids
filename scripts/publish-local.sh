@@ -64,8 +64,14 @@ if git fetch -q --depth 1 origin gh-pages 2>/dev/null; then
 else
   echo "no gh-pages branch yet: starting an empty repository"
 fi
+# Flatpak for Termux: the packages of the newest termux-flatpak-* release, if any
+# (.github/workflows/termux-flatpak.yml).
+rm -rf dist/termux-flatpak
+mkdir -p dist/termux-flatpak
+FLATPAK_TAG=$(gh release list -R "$REPO" --limit 100 --json tagName --jq '.[].tagName | select(startswith("termux-flatpak-"))' | head -1)
+[ -z "$FLATPAK_TAG" ] || gh release download "$FLATPAK_TAG" -R "$REPO" -p 'lindroids-flatpak_*.deb' -D dist/termux-flatpak
 LINDROIDS_GNUPGHOME="$KEYS/gnupg" LINDROIDS_APK_RSA_KEY_FILE="$KEYS/lindroids.rsa" \
-  packaging/repo/build-repo.sh "$SITE" --debs dist/debs --pacman dist/pacman \
+  packaging/repo/build-repo.sh "$SITE" --debs dist/debs --debs dist/termux-flatpak --pacman dist/pacman \
   --rpm dist/rpm --apk dist/apk --xbps dist/xbps --keep 3 \
   --base-url "$BASE_URL" --github-repo "$REPO"
 

@@ -158,6 +158,21 @@ jobs:
             echo "no gh-pages branch yet: starting an empty repository"
           fi
 
+      # Flatpak for Termux (lindroids-flatpak): the packages of the newest termux-flatpak-* release
+      # (.github/workflows/termux-flatpak.yml), if there is one; the repository keeps them.
+      - name: Fetch the prebuilt Flatpak for Termux
+        if: steps.build.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist/termux-flatpak
+          tag=$(gh release list --limit 100 --json tagName --jq '.[].tagName | select(startswith("termux-flatpak-"))' | head -1)
+          if [ -n "$tag" ]; then
+            gh release download "$tag" -p 'lindroids-flatpak_*.deb' -D dist/termux-flatpak
+          else
+            echo "no termux-flatpak release yet: Termux builds Flatpak from source"
+          fi
+
       - name: Build the repositories
         if: steps.build.outputs.publish == 'true'
         env:
@@ -170,7 +185,7 @@ jobs:
           fi
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           repo="${GITHUB_REPOSITORY#*/}"
-          packaging/repo/build-repo.sh site --debs dist/debs --pacman dist/pacman \
+          packaging/repo/build-repo.sh site --debs dist/debs --debs dist/termux-flatpak --pacman dist/pacman \
             --rpm dist/rpm --apk dist/apk --xbps dist/xbps --keep 3 \
             --base-url "https://$owner.github.io/$repo" --github-repo "$GITHUB_REPOSITORY"
 
