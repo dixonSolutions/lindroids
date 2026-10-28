@@ -283,11 +283,15 @@ pub fn reap() -> Reaped {
         match l.ended {
             Some(t) if now.duration_since(t) >= KEEP_ENDED => r.forgotten.push(*p),
             Some(_) => {}
-            None if now.duration_since(gone) >= KEEP_ENDED => r.lost.push(*p),
+            // Kept a while longer, so that what is sent about its end reaches its page.
+            None if now.duration_since(gone) >= KEEP_ENDED => {
+                r.lost.push(*p);
+                l.ended = Some(now);
+            }
             None => {}
         }
     }
-    for p in r.forgotten.iter().chain(&r.lost) {
+    for p in &r.forgotten {
         map.remove(p);
     }
     r
@@ -489,6 +493,10 @@ mod tests {
         assert!(!reap().lost.contains(&pid));
         std::thread::sleep(KEEP_ENDED + Duration::from_millis(100));
         assert!(reap().lost.contains(&pid));
+        // Still known while its end is reported, then forgotten.
+        assert!(launch_info(pid).is_some());
+        std::thread::sleep(KEEP_ENDED + Duration::from_millis(100));
+        assert!(reap().forgotten.contains(&pid));
         assert!(launch_info(pid).is_none());
     }
 
