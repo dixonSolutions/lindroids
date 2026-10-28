@@ -308,8 +308,8 @@ check_cleanup() {
   tsh "pkill -f '$PROC'; true"
   sleep 12
   left=$(instances | wc -l)
-  notes_left=$(sh_ 'dumpsys notification --noredact' | grep -c 'com.termux.*Running. Tap')
-  if [[ $left == 0 && $(tasks_of "$A" ${B:-}) == 0 ]]; then
+  notes_left=$(sh_ 'dumpsys notification --noredact' | grep -c 'android.text=String (Running. Tap to show its window')
+  if [[ $left == 0 && $(tasks_of "$A" ${B:-}) == 0 && $notes_left == 0 ]]; then
     R[cleanup]="yes: no instances, no window tasks ($notes_left running notifications left)"
   else
     R[cleanup]="no: $left instances, tasks $(tasks_of "$A" ${B:-}), notifications $notes_left"
