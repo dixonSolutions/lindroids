@@ -241,6 +241,7 @@ pub fn surface_committed(state: &mut State, sid: &ObjectId, _first: bool) {
                 state.window_mapped(win);
             } else if !has_image && mapped {
                 // Unmapped (a null buffer): the Android window goes away until it maps again.
+                log::info!("window {win} unmapped by its program");
                 let was_announced = state.windows.get_mut(&win).map_or(false, |w| {
                     w.mapped = false;
                     w.announced

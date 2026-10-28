@@ -146,6 +146,7 @@ function connect() {
     handle(msg, payload).catch((e) => console.error('lindroids:', msg.t, e));
   };
   ws.onclose = (ev) => {
+    trace(`link closed (code ${ev.code}, ${document.hidden ? 'hidden' : 'shown'})`);
     ws = null;
     const was = ready;
     ready = false;
@@ -268,6 +269,7 @@ async function handle(m, payload) {
       ready = true;
       everLinked = true;
       if (document.hidden) send({ t: 'shown', shown: false });
+      for (const l of traced.splice(0)) plog(`trace: ${l} (while unlinked)`);
       if (relinking) {
         plog(`linked again after the browser dropped the link (${lostLink})`);
         relinking = 0;
@@ -317,8 +319,10 @@ async function handle(m, payload) {
     case 'wake_lock': return wakeLock(m.on);
     case 'run_ended':
       runOver = true;
-      if (!OWN_WINDOW || windows.size) return;
+      trace(`the program ended (exit code ${m.code})`);
+      if (!OWN_WINDOW) return;
       if (ended === null) ended = program ? program.name : 'The program';
+      if (windows.size) return; // its windows go next, then the end shows
       if (m.output && m.output.length) {
         endedNote = everShown ? `It stopped with an error (exit code ${m.code}):` : `It could not start (exit code ${m.code}):`;
         endedOutput = m.output;
@@ -374,10 +378,9 @@ function showPanel(html, after, icon) {
   if (after) after();
 }
 
-// In a window of its own (`?window`), the program's last window closing ends the window too: it
-// closes itself where the browser lets a page do that, and otherwise says so (Firefox's Custom
-// Tabs ignore window.close(), and Back only hides them: their ✕ closes them). Not at once: a
-// splash may give way to the window.
+// In a window of its own (`?window`), the program ending ends the window too: it closes itself
+// where the browser lets a page do that, and otherwise says so (Firefox's Custom Tabs ignore
+// window.close(), and Back only hides them: their ✕ closes them).
 const OWN_WINDOW = new URLSearchParams(location.search).has('window');
 const RUN = new URLSearchParams(location.search).get('run');
 let ended = null, endedIcon = null, endTimer = null, endedNote = '', endedOutput = [], everShown = false;
@@ -415,6 +418,7 @@ $('handle').onclick = (e) => { e.stopPropagation(); showTools(!document.body.cla
 $('tools').addEventListener('click', () => showTools(true));
 
 function showEnded() {
+  trace(`shows the end (${runOver ? 'the program ended' : 'the program is gone'})`);
   const icon = endedIcon || (program && program.icon);
   const out = endedOutput.length ? `<pre class="output">${esc(endedOutput.join('\n'))}</pre>` : '';
   showPanel(`<p>${esc(program ? program.name : ended)} ${endedOutput.length ? 'stopped' : 'closed'}.</p>${endedNote ? `<p>${esc(endedNote)}</p>` : ''}${out}<p>Close this window with the ✕ at the top.</p>`, null,
@@ -423,6 +427,7 @@ function showEnded() {
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   endTimer = setTimeout(() => {
     if (windows.size) return;
+    trace('closes itself (window.close)');
     window.close();
     // Still here a second later: the browser kept the window (Firefox's Custom Tabs always do).
     setTimeout(() => plog(`window.close() refused (history ${history.length}, ${navigator.userAgent.match(/(Firefox|Chrome)\/[\d.]+/)?.[0] || 'browser'})`), 1000);
@@ -437,10 +442,11 @@ document.addEventListener('fullscreenchange', () => {
 function hidePanelIfWindows() {
   if (!ready) return;
   clearTimeout(endTimer);
-  if (windows.size) { ended = null; panel.hidden = true; return; }
+  if (windows.size) { panel.hidden = true; return; }
   if (ended !== null) return showEnded();
   if (program) {
-    return showPanel(`<p>Starting ${esc(program.name)}…</p>`, null, program.icon && `data:image/png;base64,${program.icon}`);
+    const what = everShown ? `${esc(program.name)} has no window open.` : `Starting ${esc(program.name)}…`;
+    return showPanel(`<p>${what}</p>`, null, program.icon && `data:image/png;base64,${program.icon}`);
   }
   showPanel(`<p>Connected. No windows yet.</p><p>Run a program in Termux: <code>lindroids run &lt;program&gt;</code></p>`);
 }
@@ -473,7 +479,12 @@ function removeWindow(win) {
   if (!w) return;
   windows.delete(win);
   updateChrome();
-  if (OWN_WINDOW && !windows.size) { ended = w.title || 'The program'; endedIcon = w.icon || null; }
+  // Its last window going is not its end: programs hide a window for a moment (a dialog in its
+  // place, a resize, losing focus). Only the program ending is (run_ended).
+  if (OWN_WINDOW && !windows.size) {
+    endedIcon = w.icon || null;
+    trace(`its last window went (${w.title || win})`);
+  }
   w.canvas.remove();
   w.tab.remove();
   const i = order.indexOf(win);
@@ -873,12 +884,17 @@ $('kb').onclick = () => {
 // a tap; the canvas cancels touches (no click follows), so ask on the tap's end. Not on the
 // page's own buttons: asking for full screen uses up the tap, and they need it (Choose… opens
 // Android's picker).
+// Once each time the window comes on screen: a user who left full screen (Back, Esc) meant it, and
+// asking on every tap took the taps (the resize closed the menu a tap opened).
+let wantFull = true;
+document.addEventListener('visibilitychange', () => { if (!document.hidden) wantFull = true; });
 if (new URLSearchParams(location.search).has('window')) {
   const full = (e) => {
     // Not once the program has ended: the browser's close button is the way out then.
     if (ended !== null && !windows.size) return;
     if (e.target instanceof Element && e.target.closest('.dialog, .toast')) return;
-    if (!document.fullscreenElement) document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
+    if (!wantFull || document.fullscreenElement) return;
+    document.documentElement.requestFullscreen({ navigationUI: 'hide' }).then(() => { wantFull = false; }).catch(() => {});
   };
   for (const ev of ['pointerup', 'touchend', 'click']) addEventListener(ev, full, { capture: true });
 }
@@ -1155,6 +1171,13 @@ function notify(n) {
 
 // Into the server's log (`server.log` in the runtime dir): what a phone's browser keeps to itself.
 function plog(msg) { send({ t: 'log', msg: String(msg) }); }
+// What happens to this window, in the server's log (`lindroids log`): what a phone's browser does
+// can only be seen there. Kept while unlinked and sent once linked again.
+const traced = [];
+function trace(what) {
+  if (ready) return plog(`trace: ${what}`);
+  if (traced.length < 50) traced.push(`${new Date().toISOString().slice(11, 23)} UTC ${what}`);
+}
 addEventListener('error', (e) => plog(`error: ${e.message} (${e.filename}:${e.lineno})`));
 addEventListener('unhandledrejection', (e) => plog(`unhandled: ${e.reason}`));
 
@@ -1449,12 +1472,22 @@ if (navigator.getBattery) {
 
 // Whether the page is on screen: a page the browser drops while it is out of sight (Android kills
 // a background page's process) was not closed, and its program keeps running until it is back.
-document.addEventListener('visibilitychange', () => { if (ready) send({ t: 'shown', shown: !document.hidden }); });
+document.addEventListener('visibilitychange', () => {
+  trace(document.hidden ? 'hidden' : 'shown');
+  if (ready) send({ t: 'shown', shown: !document.hidden });
+});
+addEventListener('pageshow', (e) => trace(`pageshow${e.persisted ? ' (from the back/forward cache)' : ''}`));
+document.addEventListener('freeze', () => trace('frozen'));
+document.addEventListener('resume', () => trace('resumed'));
+document.addEventListener('fullscreenchange', () => trace(document.fullscreenElement ? 'full screen' : 'out of full screen'));
 
 // The page is going away for good (its window closed, or a reload): say so, so the server does
 // not wait a minute for a browser that might come back. A page put in the back/forward cache
 // (persisted) is not going away.
-addEventListener('pagehide', e => { if (!e.persisted && ready) send({ t: 'closing' }); });
+addEventListener('pagehide', e => {
+  trace(`pagehide${e.persisted ? ' (kept in the back/forward cache)' : ''}`);
+  if (!e.persisted && ready) send({ t: 'closing' });
+});
 
 // ------------------------------------------------------------------ start
 

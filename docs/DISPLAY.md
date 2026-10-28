@@ -324,7 +324,8 @@ shared page keeps "newest wins".
 2. The relay sends SIGKILL to whatever is left 5 seconds later.
 3. The supervisor's `wait` returns, and it exits with 128 + the signal number.
 
-**When the program goes:**
+**When the program goes** (and only then: a program with no window open for a while, a dialog in
+its place or a window it hides, still runs, and its window says so):
 
 1. The supervisor exits with its status.
 2. The page shows the program's icon and "<name> closed. Press Back to close this window."
@@ -371,7 +372,11 @@ the window's ticket on the way back (a run's ticket goes with its process), or t
 be reached (the program's display went with it). Before, a window took any lost link for the
 end, and said so while its program still ran in Termux *(reported: Chrome on a Samsung phone,
 after leaving the window and coming back)*.
-The page logs how the link was lost (`linked again after the browser dropped the link (code …,
+Each window traces what happens to it into the server's log (shown and hidden, full screen,
+pagehide, its link closing and how, its program's last window going, the end it shows, closing
+itself), with what it noted while unlinked sent once linked again. `lindroids log` prints
+that, and how each page left (below), with the time of day: what a phone's browser does can only
+be seen there. The page logs how the link was lost (`linked again after the browser dropped the link (code …,
 hidden|shown)`) and the server how each page went (`close 1001`, `no close frame`…), in
 `<runtime>/server.log`.
 

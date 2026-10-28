@@ -582,6 +582,7 @@ impl State {
                 continue;
             }
             if w.announced && w.link.is_some() {
+                info!("window {win} moves from page {} to {}", w.link.unwrap_or(0), to.map_or("none".into(), |t| format!("page {t}")));
                 self.send_win(win, &ToApp::WindowClose { win });
             }
             self.unshow(win);
@@ -1012,6 +1013,7 @@ impl State {
                 Some(CliReply::Ok { message: "registered".into() })
             }
             CliRequest::RunEnded { pid, code, output } => {
+                info!("run {pid} ended (exit code {code})");
                 // Its page shows the end even when the program never showed a window, and why.
                 self.send_from(Some(pid), &ToApp::RunEnded { code, output }, &[]);
                 Some(CliReply::Ok { message: "noted".into() })

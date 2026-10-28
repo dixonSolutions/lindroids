@@ -44,6 +44,7 @@ USAGE
   lindroids info [--json]            Android's theme, accent, network, memory, battery
   lindroids displays [forget <id>]    the browsers paired with this server
   lindroids status | start | stop | pair | doctor | version
+  lindroids log [--all]              what happened to the windows (the server's log; --all: all of it)
 
 RUN OPTIONS
   --distro <name>     run inside a proot-distro distribution (Termux); also --prootdistro=<name>
@@ -102,6 +103,7 @@ fn main() {
         },
         Some("stop") => cmd_stop(),
         Some("status") => cmd_status(),
+        Some("log") => cmd_log(&args[1..]),
         Some("pair") => cmd_pair(),
         Some("displays") => cmd_displays(&args[1..]),
         Some("setup") if args.get(1).map(String::as_str) == Some("x11") => setup_x11::cmd_setup_x11(&args[2..]),
@@ -295,13 +297,48 @@ pub fn ensure_display(sb: &sandbox::Sandbox, rt: &Path, quiet: bool) -> bool {
 
 fn cmd_stop() -> i32 {
     let rt = sandbox::runtime_dir();
+    let pid = std::fs::read_to_string(rt.join("server.pid")).ok().and_then(|p| p.trim().parse::<u32>().ok());
     match client::request(&rt, &CliRequest::Stop, Duration::from_secs(5)) {
         Ok(_) => {
+            // Gone, not only told to go: until it has, it holds the port, and a server started
+            // right after (`lindroids stop; lindroids run ...`) could not take it.
+            let t0 = Instant::now();
+            while pid.is_some_and(|p| Path::new(&format!("/proc/{p}")).exists()) && t0.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
             println!("server stopped");
             0
         }
         Err(e) => fail(&e),
     }
+}
+
+/// The server's log, for a report: by default what happened to windows and runs (pages linking,
+/// leaving and how, runs ending, the pages' own trace), with the time of day.
+fn cmd_log(args: &[String]) -> i32 {
+    let path = sandbox::runtime_dir().join("server.log");
+    let Ok(bytes) = std::fs::read(&path) else { return fail(&format!("no log yet ({})", path.display())) };
+    let all = args.iter().any(|a| a == "--all");
+    const ABOUT: [&str; 14] = [
+        "page for ", "linked", "lost in the background", "ended", "mapped", "unmapped", "moves from", "page ", "the window is gone",
+        "failed to authenticate", "stands down", "already has its window", "lindroids-server ready", "closed",
+    ];
+    for line in String::from_utf8_lossy(&bytes).lines() {
+        if !all && !ABOUT.iter().any(|a| line.contains(a)) {
+            continue;
+        }
+        // "<unix seconds>.<ms> LEVEL target: message" → "HH:MM:SS.mmm message" (local time).
+        let shown = line.split_once(' ').and_then(|(t, rest)| {
+            let secs: f64 = t.parse().ok()?;
+            let msg = rest.splitn(3, ' ').nth(2).unwrap_or(rest);
+            let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+            let tt = secs as libc::time_t;
+            unsafe { libc::localtime_r(&tt, &mut tm) };
+            Some(format!("{:02}:{:02}:{:02}.{:03} {msg}", tm.tm_hour, tm.tm_min, tm.tm_sec, ((secs.fract()) * 1000.0) as u32))
+        });
+        println!("{}", shown.unwrap_or_else(|| line.to_string()));
+    }
+    0
 }
 
 fn cmd_status() -> i32 {
