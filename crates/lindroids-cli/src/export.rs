@@ -1,19 +1,20 @@
-//! `lindroids export`: a home screen shortcut for a Linux program, with its own name and icon.
+//! `lindroids export`: a home screen icon for a Linux program, with its own name and icon.
 //!
 //! The program stays where it is installed (Termux, a proot-distro distro, a Flatpak) and its
-//! launch is recorded in `<state>/apps/<id>.json`; the shortcut belongs to Termux (see
-//! shortcut.rs) and runs `lindroids launch <id>` through it, with Termux open or not. Nothing is
-//! copied and no app of Lindroids' own is involved.
+//! launch is recorded in `<state>/apps/<id>.json`; the icon belongs to Termux (see shortcut.rs)
+//! and runs `lindroids launch <id>` through it, with Termux open or not. Nothing is copied and no
+//! app of Lindroids' own is involved.
 //!
-//! `--webapk` (opt-in) has the browser install the program as an app of its own instead (a WebAPK,
-//! made by Chrome or Samsung Internet: docs/WEBAPK.md). Where no browser here can, it says so and
-//! does nothing.
+//! Where a browser can make it an app of its own (a WebAPK, made by Chrome or Samsung Internet:
+//! docs/WEBAPK.md), the icon is that app. Which browser, and whether at all, is the export's
+//! `--browser` tag, else the setting (`lindroids config browser`), with the default browser
+//! first whenever it can. `--run` launches the export at once.
 
 use base64::Engine;
 use lindroids_proto::Exported;
 
 use crate::run::{self, Target};
-use crate::{sandbox, shortcut};
+use crate::{config, sandbox, shortcut};
 
 fn default_id(o: &run::Opts, target: &Target, sb: &sandbox::Sandbox) -> String {
     crate::instances::app_key(o, target, sb)
@@ -46,6 +47,35 @@ fn split_flag(args: &[String], flag: &str) -> (bool, Vec<String>) {
         }
     }
     (found, out)
+}
+
+/// Like `split_flag` for `flag <value>` or `flag=<value>`: the value, and the rest.
+fn split_valued(args: &[String], flag: &str) -> (Option<String>, Vec<String>) {
+    let mut out = Vec::new();
+    let mut value = None;
+    let mut it = args.iter();
+    let prefix = format!("{flag}=");
+    while let Some(a) = it.next() {
+        if value.is_none() {
+            if a == flag {
+                value = Some(it.next().cloned().unwrap_or_default());
+                continue;
+            }
+            if let Some(v) = a.strip_prefix(&prefix) {
+                value = Some(v.to_string());
+                continue;
+            }
+        }
+        let command = !a.starts_with('-') || a == "--";
+        out.push(a.clone());
+        if run::takes_value(a) {
+            out.extend(it.next().cloned());
+        } else if command {
+            out.extend(it.cloned());
+            break;
+        }
+    }
+    (value, out)
 }
 
 /// The `lindroids run` arguments that start the same thing: the export's own, minus `--id`.
@@ -93,40 +123,117 @@ pub(crate) fn load_all() -> Vec<Exported> {
 
 pub fn cmd_export(args: &[String]) -> i32 {
     let (webapk, args) = split_flag(args, "--webapk");
+    let (run_now, args) = split_flag(&args, "--run");
+    let (browser, args) = split_valued(&args, "--browser");
+    if webapk && browser.is_some() {
+        return crate::fail("--webapk and --browser both choose the browser: give one");
+    }
+    let tag = browser.or_else(|| webapk.then(|| "webapk".to_string()));
+    if let Some(t) = &tag {
+        if !config::valid_browser(t) {
+            return crate::fail(&format!("--browser {t:?}: use webapk, default, home-screen, or a browser's package (e.g. com.android.chrome)"));
+        }
+    }
+    if let Some(pos) = args.iter().position(|a| a == "convert") {
+        return convert(&args[..pos], &args[pos + 1..]);
+    }
     let (new_window, rest) = split_new_window(&args);
-    if new_window && webapk {
-        return crate::fail("--webapk and --new-window do not go together: a program's app is one window");
+    if new_window && tag.is_some() {
+        return crate::fail("--webapk and --browser do not go with --new-window: a second icon takes the browser setting");
     }
     if new_window {
-        return export_new_window(&rest);
+        return export_new_window(&rest, run_now);
     }
-    export(&args, "", webapk)
+    export(&args, "", tag, run_now)
 }
 
-/// `export`, its shortcut named with `suffix` after the program's name; with `webapk`, an app
-/// the browser installs instead of a shortcut.
-fn export(args: &[String], suffix: &str, webapk: bool) -> i32 {
+/// What an export becomes: an app made by that browser, or a home screen icon (the flag: an app
+/// was wanted but no browser can make one).
+enum Plan {
+    App(String),
+    Shortcut(bool),
+}
+
+/// The browser that makes the app for `choice` (`--browser` or the setting), if any: the default
+/// browser when it can, whatever the choice; else the choice's. `explicit` says the choice was
+/// given for this export, where a missing browser is an error rather than a home screen icon.
+fn plan(choice: &str, explicit: bool) -> Result<Plan, String> {
+    if choice == "home-screen" {
+        return Ok(Plan::Shortcut(false));
+    }
+    if !sandbox::on_android() {
+        return if explicit && choice != "default" {
+            Err("a WebAPK is for Android: there the browser installs the program as an app of its own".into())
+        } else {
+            Ok(Plan::Shortcut(false))
+        };
+    }
+    let (can, cannot) = match shortcut::app_browsers() {
+        Ok(x) => x,
+        Err(e) if explicit => return Err(e),
+        Err(_) => return Ok(Plan::Shortcut(true)),
+    };
+    let default = shortcut::default_browser();
+    if let Some(b) = choose(choice, default.as_deref(), &can) {
+        return Ok(Plan::App(b));
+    }
+    if !explicit || choice == "default" {
+        return Ok(Plan::Shortcut(true));
+    }
+    if let Some((b, why)) = cannot.iter().find(|(b, _)| b == choice) {
+        return Err(format!("{} cannot make an app of its own: {why}", shortcut::browser_name(b)));
+    }
+    if config::valid_browser(choice) && choice.contains('.') {
+        return Err(format!("{choice} is not installed"));
+    }
+    Err(no_browser(&cannot))
+}
+
+/// The browser that makes the app, for `choice` (`webapk`, `default`, or a package): the default
+/// browser if it can, whatever the choice (`home-screen` never: it is an explicit icon); else the
+/// choice's own, if it can.
+pub(crate) fn choose(choice: &str, default: Option<&str>, can: &[String]) -> Option<String> {
+    if choice != "home-screen" {
+        if let Some(d) = default.filter(|d| can.iter().any(|c| c == d)) {
+            return Some(d.to_string());
+        }
+    }
+    match choice {
+        "webapk" => can.first().cloned(),
+        "default" | "home-screen" => None,
+        pkg => can.iter().find(|c| c.as_str() == pkg).cloned(),
+    }
+}
+
+fn no_browser(cannot: &[(String, String)]) -> String {
+    let mut msg = String::from(
+        "no browser here can install a program as an app of its own. That takes Chrome with Google Play \
+         services, or Samsung Internet on a Samsung phone with the Galaxy Store (other browsers make only \
+         shortcuts)",
+    );
+    if cannot.is_empty() {
+        msg.push_str(": neither is installed");
+    }
+    for (b, why) in cannot {
+        msg.push_str(&format!("; {}: {why}", shortcut::browser_name(b)));
+    }
+    msg.push_str(". Without --browser webapk, it gets a home screen icon instead.");
+    msg
+}
+
+/// `export`, its icon named with `suffix` after the program's name; `tag` is its browser (for
+/// this export), `launch` starts it when exported.
+fn export(args: &[String], suffix: &str, tag: Option<String>, launch: bool) -> i32 {
     // `lindroids export <id>` of something exported before: again, as it was (its icon is updated
     // in place), rather than a new export of a command named like the id.
     if let [one] = args {
         if let Some(rec) = lindroids_server::load_exported(one).filter(|r| r.run.first() != Some(one) || r.run.len() > 1) {
             let mut again = vec!["--id".to_string(), rec.id.clone()];
+            let tag = tag.or(rec.browser.clone());
             again.extend(rec.run);
-            return export(&again, suffix, webapk || rec.webapk.is_some());
+            return export(&again, suffix, tag, launch);
         }
     }
-    // Before anything is written: where no browser can make the app, nothing is exported.
-    let app_browser = if webapk {
-        if !sandbox::on_android() {
-            return crate::fail("--webapk is for Android: there the browser installs the program as an app of its own");
-        }
-        match shortcut::app_browser() {
-            Ok(b) => Some(b),
-            Err(e) => return crate::fail(&e),
-        }
-    } else {
-        None
-    };
     let mut o = match run::parse(args) {
         Ok(o) => o,
         Err(e) => return crate::fail(&e),
@@ -143,30 +250,72 @@ fn export(args: &[String], suffix: &str, webapk: bool) -> i32 {
     let Some(path) = lindroids_server::exported_path(&id) else {
         return crate::fail(&format!("{id:?} cannot be an id: use letters, digits, '.', '-' and '_'"));
     };
+    let choice = tag.clone().unwrap_or_else(config::browser_setting);
+    let plan = match plan(&choice, tag.is_some()) {
+        Ok(p) => p,
+        Err(e) => return crate::fail(&e),
+    };
     // The program found its distro above; the launcher keeps it, so it does not depend on looking
     // again (or on which distros exist) when the icon is tapped.
     let mut run = run_args(args);
     if let (Some(d), false) = (&o.distro, args.iter().any(|a| a == "--distro")) {
         run.splice(0..0, ["--distro".to_string(), d.clone()]);
     }
-    // An app found for it before stays (exported again: the browser updates it from its manifest).
-    let installed = lindroids_server::load_exported(&id).and_then(|r| r.webapk).unwrap_or_default();
-    let webapk = app_browser.as_ref().map(|_| installed);
-    let rec = Exported { id: id.clone(), name: name.clone(), icon_png_b64: base64::engine::general_purpose::STANDARD.encode(&icon), run, webapk };
+    let previous = lindroids_server::load_exported(&id);
+    let previous_app = previous.as_ref().and_then(|r| r.webapk.clone());
+    let kept_tag = tag.or_else(|| previous.and_then(|r| r.browser));
     if let Some(d) = path.parent() {
         let _ = std::fs::create_dir_all(d);
     }
+    let mut rec = Exported {
+        id: id.clone(),
+        name: name.clone(),
+        icon_png_b64: base64::engine::general_purpose::STANDARD.encode(&icon),
+        run,
+        webapk: None,
+        browser: kept_tag,
+    };
+    if let Plan::App(browser) = &plan {
+        // An app found for it before stays (exported again: the browser updates it from its manifest).
+        rec.webapk = Some(previous_app.clone().unwrap_or_default());
+        if let Err(e) = save(&rec) {
+            return crate::fail(&e);
+        }
+        let browser_name = shortcut::browser_name(browser).to_string();
+        match install_app(&sb, &id, &name, &icon, browser, &browser_name) {
+            Err(e) => {
+                rec.webapk = None;
+                let _ = save(&rec);
+                return crate::fail(&e);
+            }
+            Ok(Some(app)) => {
+                rec.webapk = Some(app);
+                if let Err(e) = save(&rec) {
+                    return crate::fail(&e);
+                }
+                return if launch { export_launch(&id) } else { 0 };
+            }
+            Ok(None) => {
+                println!("No app was installed for {name} in {} s: a home screen icon instead.", install_wait().as_secs());
+                println!("`lindroids export --browser webapk {id}` again finds an app installed later.");
+            }
+        }
+    } else if let Plan::Shortcut(true) = plan {
+        println!("No browser here makes an app of its own for {name}: a home screen icon.");
+    }
+    if let Some(app) = previous_app.as_deref().filter(|a| !a.is_empty()) {
+        println!("{name} is still an app ({app}) of its own: tap Uninstall in Android's page for it to take it away.");
+        let _ = shortcut::app_settings(app);
+    }
+    rec.webapk = None;
     if let Err(e) = save(&rec) {
         return crate::fail(&e);
-    }
-    if let Some((browser, browser_name)) = app_browser {
-        return install_app(&sb, rec, &icon, &browser, &browser_name);
     }
     match shortcut::create(&sb, &rec, &icon) {
         Ok(how) => {
             println!("{name} exported as {id}. {how}");
             println!("Tapping it starts {name} through Termux (opened if it is closed), in a window of its own.");
-            0
+            if launch { export_launch(&id) } else { 0 }
         }
         Err(e) => {
             println!("{name} exported as {id}, but no shortcut: {e}");
@@ -176,68 +325,56 @@ fn export(args: &[String], suffix: &str, webapk: bool) -> i32 {
     }
 }
 
+fn export_launch(id: &str) -> i32 {
+    cmd_launch(&[id.to_string()])
+}
+
 fn save(rec: &Exported) -> Result<(), String> {
     let path = lindroids_server::exported_path(&rec.id).ok_or_else(|| format!("{:?} cannot be an id", rec.id))?;
     std::fs::write(&path, serde_json::to_vec_pretty(rec).unwrap()).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// How long `export --webapk` waits for the browser to install the app (`LINDROIDS_WEBAPK_WAIT`,
-/// seconds; 180).
+/// How long `export` waits for the browser to install the app (`LINDROIDS_WEBAPK_WAIT`, seconds;
+/// 180).
 fn install_wait() -> std::time::Duration {
     std::time::Duration::from_secs(std::env::var("LINDROIDS_WEBAPK_WAIT").ok().and_then(|v| v.parse().ok()).unwrap_or(180))
 }
 
-/// `export --webapk`: `browser` installs the program as an app of its own, from the program's
-/// install page (`/app/<id>/?install`), which it shows in an ordinary tab: the user taps Install
-/// there. Waits for the app to be there, and keeps its package.
-fn install_app(sb: &sandbox::Sandbox, mut rec: Exported, icon: &[u8], browser: &str, browser_name: &str) -> i32 {
-    let name = rec.name.clone();
-    if let Err(e) = shortcut::save_app_icons(&rec.id, icon).and_then(|_| shortcut::prepare_termux(sb)) {
-        return crate::fail(&e);
-    }
-    let rt = match crate::ensure_server(sb) {
-        Ok(rt) => rt,
-        Err(e) => return crate::fail(&e),
+/// `browser` installs the program as an app of its own, from the program's install page
+/// (`/app/<id>/?install`), which it shows in an ordinary tab: the user taps Install there. Returns
+/// the app's package once it is there; None if it is not in time.
+fn install_app(sb: &sandbox::Sandbox, id: &str, name: &str, icon: &[u8], browser: &str, browser_name: &str) -> Result<Option<String>, String> {
+    shortcut::save_app_icons(id, icon).and_then(|_| shortcut::prepare_termux(sb))?;
+    let rt = crate::ensure_server(sb)?;
+    let (ticket, origin) = match crate::client::request(&rt, &lindroids_proto::CliRequest::Ticket { run: None }, std::time::Duration::from_secs(3))
+        .map_err(|e| e.to_string())?
+    {
+        lindroids_proto::CliReply::Ticket { ticket, origin } => (ticket, origin),
+        other => return Err(format!("the server answered {other:?}")),
     };
-    let (ticket, origin) = match crate::client::request(&rt, &lindroids_proto::CliRequest::Ticket { run: None }, std::time::Duration::from_secs(3)) {
-        Ok(lindroids_proto::CliReply::Ticket { ticket, origin }) => (ticket, origin),
-        Ok(other) => return crate::fail(&format!("the server answered {other:?}")),
-        Err(e) => return crate::fail(&e),
-    };
-    let scope = format!("{origin}/app/{}/", rec.id);
+    let scope = format!("{origin}/app/{id}/");
     if let Some(app) = shortcut::app_for(&scope) {
-        rec.webapk = Some(app.clone());
-        let _ = save(&rec);
         println!("{name} is an app of its own already ({app}); {browser_name} updates its name and icon by itself.");
-        return 0;
+        return Ok(Some(app));
     }
     // The ticket pairs the browser, if it has not shown a window yet: the app shares its storage.
-    if let Err(e) = shortcut::view(browser, &format!("{scope}?install#t={ticket}")) {
-        return crate::fail(&format!("{browser_name} did not open: {e}"));
-    }
+    shortcut::view(browser, &format!("{scope}?install#t={ticket}")).map_err(|e| format!("{browser_name} did not open: {e}"))?;
     println!("{browser_name} shows {name}'s install page: tap Install, then Install in {browser_name}'s dialog.");
     let (t0, wait) = (std::time::Instant::now(), install_wait());
     while t0.elapsed() < wait {
         std::thread::sleep(std::time::Duration::from_secs(2));
         if let Some(app) = shortcut::app_for(&scope) {
-            rec.webapk = Some(app.clone());
-            if let Err(e) = save(&rec) {
-                return crate::fail(&e);
-            }
             println!("{name} is an app of its own ({app}): its icon is on the home screen and in the app list.");
             println!("Its icon starts {name}, in a window with its name and icon in Recents. With Termux closed, it asks to start Termux first.");
-            return 0;
+            return Ok(Some(app));
         }
     }
-    println!("No app was installed for {name} in {} s.", wait.as_secs());
-    println!("If {browser_name} added a home screen shortcut instead, it could not make an app here (it takes Google Play services, or Samsung's Galaxy Store).");
-    println!("`lindroids export {}` again finds an app installed later; without --webapk it gets a Termux icon instead.", rec.id);
-    1
+    Ok(None)
 }
 
 /// `export --new-window <id or command>`: a second home screen icon, "<name> (new window)", that
 /// always starts another instance (`run --new`).
-fn export_new_window(args: &[String]) -> i32 {
+fn export_new_window(args: &[String], launch: bool) -> i32 {
     // Of something exported already (its id), or of a command as `export` takes it.
     let (base_id, mut run) = match args {
         [one] if lindroids_server::load_exported(one).is_some() => {
@@ -264,10 +401,42 @@ fn export_new_window(args: &[String]) -> i32 {
     }
     let mut again = vec!["--id".to_string(), format!("{base_id}.new-window")];
     again.extend(run);
-    export(&again, " (new window)", false)
+    export(&again, " (new window)", None, launch)
 }
 
-/// `lindroids launch [--new] <id>`: what an exported program's shortcut runs (through Termux).
+/// `export <program> convert home-screen --to=webapk`, and `convert webapk --to=home-screen`: the
+/// program's icon becomes the other kind (an explicit choice: the browser setting does not
+/// override it).
+fn convert(target: &[String], rest: &[String]) -> i32 {
+    let target = target.join(" ");
+    let from = rest.first().map(String::as_str).unwrap_or("");
+    let mut to = None;
+    let mut it = rest.iter().skip(1);
+    while let Some(a) = it.next() {
+        if let Some(v) = a.strip_prefix("--to=") {
+            to = Some(v.to_string());
+        } else if a == "--to" {
+            to = it.next().cloned();
+        }
+    }
+    let to = to.unwrap_or_default();
+    if !matches!((from, to.as_str()), ("home-screen", "webapk") | ("webapk", "home-screen")) {
+        return crate::fail("convert home-screen --to=webapk, or convert webapk --to=home-screen");
+    }
+    let Some(rec) = load_all().into_iter().find(|r| !target.is_empty() && (r.id == target || r.name == target)) else {
+        return crate::fail(&format!("nothing exported as {target:?} (lindroids list)"));
+    };
+    let is_app = rec.webapk.is_some();
+    if (from == "webapk") != is_app {
+        let now = if is_app { "an app of its own" } else { "a home screen icon" };
+        return crate::fail(&format!("{} is {now} already", rec.name));
+    }
+    let mut again = vec!["--id".to_string(), rec.id.clone()];
+    again.extend(rec.run.clone());
+    export(&again, "", Some(to), false)
+}
+
+/// `lindroids launch [--new] <id>`: what an exported program's icon runs (through Termux).
 /// Tapping the icon of a program that runs brings back its most recently used window; only
 /// `--new` (or an icon exported with `--new-window`) starts another.
 pub fn cmd_launch(args: &[String]) -> i32 {
@@ -316,7 +485,8 @@ pub fn cmd_list() -> i32 {
         println!("Nothing exported from here yet.");
     }
     for r in recs {
-        println!("{:<40} {:<24} lindroids run {}", r.id, r.name, r.run.join(" "));
+        let kind = if r.webapk.is_some() { "app" } else { "icon" };
+        println!("{:<40} {:<24} {:<5} lindroids run {}", r.id, r.name, kind, r.run.join(" "));
     }
     0
 }
@@ -372,6 +542,33 @@ mod tests {
         assert_eq!(split_flag(&s(&["--webapk", "mousepad"]), "--webapk"), (true, s(&["mousepad"])));
         assert_eq!(split_flag(&s(&["--name", "N", "--webapk", "--distro", "debian", "gimp"]), "--webapk"), (true, s(&["--name", "N", "--distro", "debian", "gimp"])));
         assert_eq!(split_flag(&s(&["foot", "--webapk"]), "--webapk"), (false, s(&["foot", "--webapk"])));
+    }
+
+    #[test]
+    fn browser_tag_is_taken_before_the_command() {
+        assert_eq!(split_valued(&s(&["--browser", "default", "foot"]), "--browser"), (Some("default".into()), s(&["foot"])));
+        assert_eq!(split_valued(&s(&["--browser=com.android.chrome", "foot", "--browser", "x"]), "--browser"), (Some("com.android.chrome".into()), s(&["foot", "--browser", "x"])));
+        assert_eq!(split_valued(&s(&["foot", "--browser", "x"]), "--browser"), (None, s(&["foot", "--browser", "x"])));
+    }
+
+    #[test]
+    fn default_browser_wins_over_the_tag_and_the_setting() {
+        let chrome = "com.android.chrome";
+        let samsung = "com.sec.android.app.sbrowser";
+        let can = s(&[chrome, samsung]);
+        assert_eq!(choose("default", Some(samsung), &can), Some(samsung.to_string()));
+        assert_eq!(choose("webapk", Some(samsung), &can), Some(samsung.to_string()));
+        assert_eq!(choose(chrome, Some(samsung), &can), Some(samsung.to_string()));
+        assert_eq!(choose("webapk", Some("org.mozilla.firefox"), &can), Some(chrome.to_string()));
+        assert_eq!(choose("default", Some("org.mozilla.firefox"), &can), None);
+        assert_eq!(choose(samsung, None, &can[..1]), None);
+        assert_eq!(choose(chrome, None, &can), Some(chrome.to_string()));
+    }
+
+    #[test]
+    fn home_screen_is_an_explicit_icon() {
+        let chrome = "com.android.chrome";
+        assert_eq!(choose("home-screen", Some(chrome), &s(&[chrome])), None);
     }
 
     #[test]

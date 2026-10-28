@@ -180,7 +180,7 @@ fn open_in_app(url: &str, id: &str, app: &str) -> Option<Result<String, String>>
 }
 
 /// Browser packages and the names users know them by.
-fn browser_name(pkg: &str) -> &str {
+pub fn browser_name(pkg: &str) -> &str {
     match pkg {
         "com.android.chrome" => "Chrome",
         "com.chrome.beta" => "Chrome Beta",
@@ -192,31 +192,16 @@ fn browser_name(pkg: &str) -> &str {
     }
 }
 
-/// An installed browser that can install a page as an app of its own (a WebAPK: Chrome with
-/// Google Play services, Samsung Internet on a Samsung phone with the Galaxy Store), and its
-/// name; else why none can. `LINDROIDS_WEBAPK_BROWSER` names one to use regardless.
-pub fn app_browser() -> Result<(String, String), String> {
-    if let Some(b) = std::env::var("LINDROIDS_WEBAPK_BROWSER").ok().filter(|b| !b.is_empty()) {
-        return Ok((b.clone(), browser_name(&b).to_string()));
-    }
-    let out = helper(&["app-browsers"])?;
-    let (can, cannot) = parse_app_browsers(&out);
-    if let Some(b) = can.first() {
-        return Ok((b.clone(), browser_name(b).to_string()));
-    }
-    let mut msg = String::from(
-        "no browser here can install a program as an app of its own. That takes Chrome with Google Play \
-         services, or Samsung Internet on a Samsung phone with the Galaxy Store (other browsers make only \
-         shortcuts)",
-    );
-    if cannot.is_empty() {
-        msg.push_str(": neither is installed");
-    }
-    for (b, why) in &cannot {
-        msg.push_str(&format!("; {}: {why}", browser_name(b)));
-    }
-    msg.push_str(".\n`lindroids export` without --webapk gives it a Termux icon and a window in any browser.");
-    Err(msg)
+/// The installed browsers that can install a program as an app of its own (a WebAPK), in order,
+/// and those that cannot, with why.
+pub fn app_browsers() -> Result<(Vec<String>, Vec<(String, String)>), String> {
+    helper(&["app-browsers"]).map(|out| parse_app_browsers(&out))
+}
+
+/// The browser that opens web links, if one is chosen.
+pub fn default_browser() -> Option<String> {
+    let out = helper(&["default-browser"]).ok()?;
+    out.lines().find_map(|l| l.strip_prefix("default ")).map(str::trim).filter(|d| *d != "none").map(str::to_string)
 }
 
 /// The helper's `app-browsers` answer: the browsers that can, and those that cannot, with why.

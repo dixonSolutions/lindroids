@@ -95,6 +95,9 @@ public final class Shortcut {
                 cancel(a[1], Integer.parseInt(a[2]));
             } else if (a.length >= 1 && a[0].equals("app-browsers")) {
                 appBrowsers();
+            } else if (a.length >= 1 && a[0].equals("default-browser")) {
+                String d = defaultBrowser();
+                System.out.println("default " + (d == null ? "none" : d));
             } else if (a.length >= 2 && a[0].equals("apps-for")) {
                 for (String p : appsFor(a[1])) System.out.println("app " + p);
             } else if (a.length >= 4 && a[0].equals("view")) {
@@ -107,7 +110,7 @@ public final class Shortcut {
                 throw new IllegalArgumentException("usage: pin <package> <id> <label> <icon> <action> <component> <type> <text> | remove <package> <id>"
                         + " | open <package> new|raise <url> <browser>... | notify|running <package> <id> <program> <title> <text> <icon> <small-icon> <url> <browser>..."
                         + " | cancel <package> <id> | pinned <package> <id> | clip <package> <file> | device"
-                        + " | app-browsers | apps-for <url> | view <package> <target> <url> | app-settings <package> <app> | app-icons <icon> <maskable> <plain>");
+                        + " | app-browsers | default-browser | apps-for <url> | view <package> <target> <url> | app-settings <package> <app> | app-icons <icon> <maskable> <plain>");
             }
             System.out.println("ok");
             System.exit(0);

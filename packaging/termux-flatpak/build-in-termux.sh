@@ -112,7 +112,7 @@ bwrap_shim() {
     mkdir -p "$PREFIX/libexec/lindroids"
     cat > "$PREFIX/libexec/lindroids/bwrap" <<EOF
 #!$PREFIX/bin/sh
-if [ "\$1" = --version ] && [ ! -x "$PREFIX/bin/lindroids" ]; then echo "bubblewrap (lindroids)"; exit 0; fi
+if [ "\$1" = --version ] && [ ! -x "$PREFIX/bin/lindroids" ]; then echo "bubblewrap 0.11.0"; exit 0; fi
 exec "$PREFIX/bin/lindroids" bwrap "\$@"
 EOF
     chmod 755 "$PREFIX/libexec/lindroids/bwrap"

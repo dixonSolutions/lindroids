@@ -478,6 +478,10 @@ pub struct Exported {
     /// one was found). Its windows open in that app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webapk: Option<String>,
+    /// The export's browser tag (`--browser`): "default", "webapk", or a browser's package.
+    /// Overrides the browser setting (`lindroids config browser`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<String>,
 }
 
 /// Whether `id` is safe as an exported program's id (a file name, a URL path segment, a shell word).

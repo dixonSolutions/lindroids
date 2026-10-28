@@ -2,6 +2,7 @@
 
 mod bwrap;
 mod client;
+mod config;
 mod debug;
 mod desktop;
 mod export;
@@ -32,6 +33,10 @@ USAGE
   lindroids run [options] <command> [args...]
   lindroids run [options] \"<command line>\"
   lindroids export [options] <command> [args...]   a home screen shortcut that starts it
+  lindroids export [--run] [--browser <value>] <program>   (--run: start it now too)
+  lindroids export <id|name> convert home-screen --to=webapk   (or convert webapk --to=home-screen)
+  lindroids run --export <command> [args...]       export with the defaults, then run it
+  lindroids config [browser [webapk|default|<browser package>]]
   lindroids list | remove <id> | launch [--new] <id>
   lindroids instances [<app>]        the programs running, numbered per app (VSCodium, VSCodium 2)
   lindroids show <pid|app>           bring back the window of a running program (`instances`)
@@ -134,8 +139,14 @@ fn main() {
         Some("open") => integration::cmd_open(&args[1..]),
         Some("notify") => integration::cmd_notify(&args[1..]),
         Some("info") => integration::cmd_info(&args[1..]),
+        Some("run") if args[1..].iter().any(|a| a == "--export") => {
+            let mut export_args = vec!["--run".to_string()];
+            export_args.extend(args[1..].iter().filter(|a| *a != "--export").cloned());
+            export::cmd_export(&export_args)
+        }
         Some("run") => run::cmd_run(&args[1..]),
         Some("export") => export::cmd_export(&args[1..]),
+        Some("config") => config::cmd_config(&args[1..]),
         Some("launch") => export::cmd_launch(&args[1..]),
         Some("instances") => cmd_instances(&args[1..]),
         Some("show") => cmd_show(&args[1..]),

@@ -1,12 +1,39 @@
-# A program as an app of its own: `export --webapk`
+# A program as an app of its own: WebAPK exports
 
-`lindroids export --webapk <program>` has the browser install a Linux program as an Android app
-of its own, with the program's name and icon: on the home screen, in the app list, and in Recents
-on every launcher, Samsung's One UI included. Its windows open full screen from the start.
+An export of a Linux program becomes an Android app of its own, with the program's name and icon:
+on the home screen, in the app list, and in Recents on every launcher, Samsung's One UI included.
+Its windows open full screen from the start. This happens whenever a browser on the phone can
+make one (below); otherwise the export is a home screen shortcut, as before.
 
-It is **opt-in**. Plain `lindroids export` (a Termux icon, a Custom Tab window in any browser) is
-unchanged and stays the default ([DISPLAY.md](DISPLAY.md)). Where no browser on the phone can do
-it, `--webapk` says why and exports nothing.
+## Choosing
+
+- The default browser wins: if it can make a WebAPK, it does, whatever the export or the setting
+  says.
+- Otherwise the setting decides, `lindroids config browser`:
+  - `webapk` (the default): any browser that can, Chrome before Samsung Internet.
+  - `default`: the default browser only, if it can; else a shortcut.
+  - a browser's package (`com.android.chrome`): that browser, if it can.
+  - `home-screen`: never an app; set it per export, see below.
+- An export's own choice overrides the setting: `lindroids export --browser <value> <program>`
+  (`--webapk` is `--browser webapk`). Given for an export, a browser that cannot make an app is an
+  error, not a shortcut.
+- Exporting again keeps the export's choice unless a new one is given.
+
+## Converting
+
+- `lindroids export <id or name> convert home-screen --to=webapk`: a shortcut becomes an app.
+- `lindroids export <id or name> convert webapk --to=home-screen`: an app becomes a shortcut.
+  Android keeps the app until its Uninstall is tapped: lindroids opens the app's page for it.
+- Porting an existing shortcut is the same export again with its id: `lindroids export --id <id>
+  <program>` (the program's own command works too).
+- `lindroids export --run <program>` exports, then starts it. `lindroids run --export <program>`
+  does the same with the default setting, and runs it once exported.
+
+## Why and how
+
+`lindroids export --webapk <program>` used to be the only way; now it is one value of the setting
+above. The app is made by the browser, which the phone must have *installed* (not only set as the
+default) and which can make apps of its own.
 
 ## What "WebAPK" means
 
@@ -31,11 +58,11 @@ belongs to the browser that installed it and always opens in it.
 
 ## What happens
 
-1. **Checking** (`Shortcut.java app-browsers`): Chrome counts if it is on, and Google Play services
-   and the Play Store are installed and not microG's (microG's Play services have `org.microg.*`
-   activities). Samsung Internet counts on a Samsung phone with the Galaxy Store. None: the error
-   says what was found, and nothing is written. `LINDROIDS_WEBAPK_BROWSER=<package>` names a
-   browser to use regardless (for testing).
+1. **Checking** (`Shortcut.java app-browsers`, `default-browser`): Chrome counts if it is on, and
+   Google Play services and the Play Store are installed and not microG's (microG's Play services
+   have `org.microg.*` activities). Samsung Internet counts on a Samsung phone with the Galaxy
+   Store. The default browser is looked up first. When no browser can, the export is a shortcut,
+   and an explicit choice says why and writes nothing.
 2. **The program's pages.** The record (`<state>/apps/<id>.json`) gets `"webapk"`, and the server
    serves the program's own pages under `/app/<id>/` in the usual origin
    (`http://<label>.localhost:<port>`, see [DISPLAY.md](DISPLAY.md), *The origin*):
@@ -60,6 +87,9 @@ belongs to the browser that installed it and always opens in it.
 Exporting again updates the record; the browser updates the app's name and icon from the manifest
 when it next checks (Chrome 144 and later offers it in its menu rather than forcing it).
 
+Re-exporting an app keeps it while its browser can still make it. When no browser can any more,
+the export fails with the reason and the app stays as it is.
+
 ## Starting it
 
 | From | What happens |
@@ -70,8 +100,7 @@ when it next checks (Chrome 144 and later offers it in its menu rather than forc
 | The running program's notification | Opens the app at the run's window (the window noted for the run in `<runtime>/windows`). |
 
 **One window per app.** The app is one task. When it shows another run of the program that still
-runs (`run --new`, the window's *New window*), the next window opens as a Custom Tab, as without
-`--webapk`. A run whose window was a Custom Tab before moves to the app when brought back from its
+runs (`run --new`, the window's *New window*), the next window opens as a Custom Tab, as it does for a shortcut. A run whose window was a Custom Tab before moves to the app when brought back from its
 icon (the Custom Tab stands down: the newest page wins).
 
 ## Removing
