@@ -22,7 +22,7 @@ pub mod fdpass;
 
 /// Bumped whenever a message changes shape. The app and the server refuse to talk across
 /// versions, and the CLI says which side needs updating.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// The real uid of this process. Under proot's fake root (proot-distro, UserLAnd) getuid() says
 /// 0, but the app looks for the sandbox app's own uid; the kernel's view in /proc is not faked.
@@ -417,6 +417,9 @@ pub enum ToServer {
     WriteResult { request: u32, ok: bool, #[serde(default, skip_serializing_if = "Option::is_none")] message: Option<String> },
     /// What the page wants in the server's log: its errors, and what the browser refused.
     Log { msg: String },
+    /// The user asked this window's page for another window of its program ("New window"):
+    /// the server starts another instance, as `lindroids launch --new` would.
+    NewInstance,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -519,7 +522,47 @@ pub enum CliRequest {
         /// shared one.
         #[serde(default)]
         window: bool,
+        /// What it is an instance of ("com.vscodium.codium", "termux.foot"): instances of the
+        /// same app are numbered (`VSCodium`, `VSCodium 2`) and found again by `Instances`.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        app_key: String,
+        /// Arguments to `lindroids` that start one more instance ("launch --new <id>"), for the
+        /// page's "New window".
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        again: Vec<String>,
+        /// The process of `lindroids run` that watches it (it sends RunEnded).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        supervisor: Option<u32>,
     },
+    /// The running instances of an app (`Launch`'s `app_key`), most recently used first.
+    Instances { app_key: String },
+    /// The run `pid` ended at once and cleanly, as a program that hands its work to an instance
+    /// already running does (VSCodium, GApplications): the next new window of that app's other
+    /// instances is this run's (it shows in this run's own window). Answered when one appeared
+    /// (Claimed) or none did within moments (Focused: the instance to bring forward instead).
+    Claim { pid: u32 },
+}
+
+/// One running instance of an app.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Instance {
+    /// Its run (the pid `lindroids run` started; for a claimed instance, the run that claimed).
+    pub pid: u32,
+    /// 1 for the first instance, 2 for the next... the lowest free number.
+    pub ordinal: u32,
+    /// Its name with the number from 2 on ("VSCodium 2").
+    pub name: String,
+    /// Its window (page) is linked.
+    #[serde(default)]
+    pub shown: bool,
+    /// When it was last used (focused, or its page came on screen), in milliseconds since the
+    /// server started; 0: never.
+    #[serde(default)]
+    pub last_focus: u64,
+    /// It shows windows of another instance's process (a handed-over window), not a process
+    /// of its own.
+    #[serde(default)]
+    pub claimed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -553,6 +596,19 @@ pub enum CliReply {
     Folder { path: Option<String> },
     Info { system: Option<SystemState> },
     Error { message: String },
+    /// Answer to Launch: the instance's number among its app's.
+    Launched { ordinal: u32 },
+    /// Answer to Instances: the app's, most recently used first, and how many runs (processes)
+    /// are running in all.
+    Instances {
+        instances: Vec<Instance>,
+        #[serde(default)]
+        runs: u32,
+    },
+    /// Answer to Claim: these windows (ids) are the run's now.
+    Claimed { windows: Vec<u32> },
+    /// Answer to Claim: no new window appeared; `pid` is the instance to bring forward.
+    Focused { pid: Option<u32> },
 }
 
 /// A paired display, as the relay keeps it (`<state>/displays/<id>.json`).
@@ -714,6 +770,54 @@ mod tests {
         f.push(b"{\"t\":\"record_data\",\"stream\":3,\"len\":4}\n\x01\x00\xff\x7f{\"t\":\"closing\"}\n");
         assert_eq!(f.next::<ToServer>().unwrap().unwrap(), (ToServer::RecordData { stream: 3, len: 4 }, vec![1, 0, 0xff, 0x7f]));
         assert_eq!(f.next::<ToServer>().unwrap().unwrap().0, ToServer::Closing);
+    }
+
+    #[test]
+    fn launch_from_protocol_5_still_decodes() {
+        // A CLI before instances: no app_key, again, supervisor.
+        let old = br#"{"t":"launch","pid":42,"name":"VSCodium","window":true}"#;
+        let m: CliRequest = decode(old).unwrap();
+        assert_eq!(
+            m,
+            CliRequest::Launch { pid: 42, name: "VSCodium".into(), icon_png_b64: None, symbolic_png_b64: None, window: true, app_key: String::new(), again: vec![], supervisor: None }
+        );
+        // And a new one round-trips.
+        let new = CliRequest::Launch {
+            pid: 7,
+            name: "Mousepad".into(),
+            icon_png_b64: None,
+            symbolic_png_b64: None,
+            window: true,
+            app_key: "termux.mousepad".into(),
+            again: vec!["launch".into(), "--new".into(), "termux.mousepad".into()],
+            supervisor: Some(6),
+        };
+        let line = encode(&new);
+        assert_eq!(decode::<CliRequest>(&line[..line.len() - 1]).unwrap(), new);
+    }
+
+    #[test]
+    fn instance_messages_round_trip() {
+        for m in [CliRequest::Instances { app_key: "org.x.Y".into() }, CliRequest::Claim { pid: 9 }] {
+            let line = encode(&m);
+            assert_eq!(decode::<CliRequest>(&line[..line.len() - 1]).unwrap(), m);
+        }
+        let i = Instance { pid: 3, ordinal: 2, name: "X 2".into(), shown: true, last_focus: 99, claimed: true };
+        for r in [
+            CliReply::Instances { instances: vec![i.clone()], runs: 4 },
+            CliReply::Claimed { windows: vec![5, 6] },
+            CliReply::Focused { pid: Some(3) },
+            CliReply::Focused { pid: None },
+            CliReply::Launched { ordinal: 2 },
+        ] {
+            let line = encode(&r);
+            assert_eq!(decode::<CliReply>(&line[..line.len() - 1]).unwrap(), r);
+        }
+        // The page's "New window".
+        assert_eq!(decode::<ToServer>(br#"{"t":"new_instance"}"#).unwrap(), ToServer::NewInstance);
+        // An Instance without the optional fields.
+        let j: Instance = serde_json::from_str(r#"{"pid":1,"ordinal":1,"name":"X"}"#).unwrap();
+        assert!(!j.shown && !j.claimed && j.last_focus == 0);
     }
 
     #[test]

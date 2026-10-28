@@ -46,7 +46,7 @@ static SYMBOLIC: std::sync::Mutex<Vec<(u32, String)>> = std::sync::Mutex::new(Ve
 /// The run `run`'s one-colour icon, from `lindroids run`.
 pub fn set_symbolic(run: u32, png_b64: Option<String>) {
     let mut v = SYMBOLIC.lock().unwrap();
-    v.retain(|(r, _)| *r != run && std::path::Path::new(&format!("/proc/{r}")).exists());
+    v.retain(|(r, _)| *r != run && crate::icons::run_alive(*r));
     if let Some(b) = png_b64 {
         v.push((run, b));
     }
@@ -112,6 +112,11 @@ pub fn run_started(run: u32) {
     let Some(a) = get() else { return };
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(3));
+        // A run that handed its work to another instance at once has no notification of its own
+        // unless it took a window (a claimed run keeps its pid alive in the registry).
+        if !crate::icons::run_alive(run) {
+            return;
+        }
         let Some((url, icon, name)) = crate::run_of_pid(run) else { return };
         let id = note_id(&format!("run-{run}"));
         note_running(id, true);
@@ -124,8 +129,9 @@ pub fn run_started(run: u32) {
             small_icon: symbolic_of(run),
             url: Some(url),
         });
-        let proc = PathBuf::from(format!("/proc/{run}"));
-        while proc.exists() {
+        // Until the run is over: its process ended, or (a run showing another instance's
+        // window) that window closed. Its pid might be another process's by then.
+        while crate::icons::run_alive(run) {
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
         a.cancel(id);

@@ -503,6 +503,9 @@ impl Dispatch<xdg_surface::XdgSurface, ObjectId> for State {
                         decoration_mode: None,
                         run: None,
                         link: None,
+                        claimed: None,
+                        created: std::time::Instant::now(),
+                        transient: false,
                     },
                 );
             }
@@ -568,7 +571,13 @@ impl Dispatch<xdg_toplevel::XdgToplevel, (ObjectId, u32)> for State {
                     w.announced && w.app_id != "org.freedesktop.Xwayland"
                 });
                 if announced == Some(true) {
+                    let title = state.shown_title(win, &title);
                     state.send_win(win, &ToApp::WindowTitle { win, title });
+                }
+            }
+            xdg_toplevel::Request::SetParent { parent } => {
+                if let Some(w) = state.windows.get_mut(&win) {
+                    w.transient = parent.is_some();
                 }
             }
             xdg_toplevel::Request::SetAppId { app_id } => {

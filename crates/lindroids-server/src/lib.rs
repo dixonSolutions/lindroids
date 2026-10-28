@@ -158,7 +158,7 @@ static TICKETS: Mutex<Vec<(String, Option<u32>, Instant)>> = Mutex::new(Vec::new
 /// The tickets still good (their run still running).
 fn live_tickets() -> std::sync::MutexGuard<'static, Vec<(String, Option<u32>, Instant)>> {
     let mut t = TICKETS.lock().unwrap();
-    t.retain(|(_, r, until)| *until > Instant::now() && r.map_or(true, |p| Path::new(&format!("/proc/{p}")).exists()));
+    t.retain(|(_, r, until)| *until > Instant::now() && r.map_or(true, icons::run_alive));
     t
 }
 
@@ -330,6 +330,41 @@ pub struct Window {
     pub run: Option<u32>,
     /// The link (page) the window is announced on.
     pub link: Option<u64>,
+    /// A run that claimed this window: its process handed its work to the process that made the
+    /// window (a second VSCodium asking the first for a new window), and it shows here.
+    pub claimed: Option<u32>,
+    /// When the toplevel was made.
+    pub created: Instant,
+    /// It has a parent (a dialog of another window): never claimed.
+    pub transient: bool,
+}
+
+/// A window that a claiming run might take (see `claim_target`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClaimCandidate {
+    pub win: u32,
+    /// The app of the run whose process made it.
+    pub app_key: String,
+    /// That run.
+    pub owner: Option<u32>,
+    pub created: Instant,
+    pub transient: bool,
+    pub claimed: bool,
+    pub mapped: bool,
+}
+
+/// The window a claiming run `claimer` (an instance of `app_key`, started at `since`) takes: the
+/// newest mapped toplevel of another instance of the same app, made since the claimer started,
+/// not a dialog and not claimed already.
+pub fn claim_target(cands: &[ClaimCandidate], app_key: &str, claimer: u32, since: Instant) -> Option<u32> {
+    // A window may come a moment before the claimer is registered (it hands over as it starts).
+    let since = since.checked_sub(Duration::from_millis(500)).unwrap_or(since);
+    cands
+        .iter()
+        .filter(|c| !app_key.is_empty() && c.app_key == app_key && c.mapped && !c.transient && !c.claimed)
+        .filter(|c| c.owner.is_some_and(|o| o != claimer) && c.created >= since)
+        .max_by_key(|c| (c.created, c.win))
+        .map(|c| c.win)
 }
 
 struct CliConn {
@@ -342,6 +377,8 @@ struct CliConn {
 #[derive(Debug, Clone, PartialEq)]
 enum Waiting {
     Folder(u32),
+    /// `Claim` of this run: answered when a window is claimed or the wait is over.
+    Claim(u32),
     /// A worker thread answers this CLI (`lindroids open`).
     Detached,
 }
@@ -387,6 +424,8 @@ pub struct State {
     mic: HashSet<u32>,
     /// The page each of the portal's requests went to: what follows it goes there too.
     asked: HashMap<u32, u64>,
+    /// Runs waiting to claim a window (`CliRequest::Claim`), until when.
+    claims: Vec<(u32, Instant)>,
 }
 
 impl State {
@@ -563,9 +602,158 @@ impl State {
     /// descending from it, or an X11 window owned by one), if anything.
     fn run_of(&self, win: u32) -> Option<u32> {
         let w = self.windows.get(&win)?;
-        w.run
-            .or_else(|| icons::launch_for_window(&self.dh, &w.client))
-            .or_else(|| x11::run_for_window(icons::client_pid(&self.dh, &w.client), &w.title, &w.app_id))
+        w.claimed.or(w.run).or_else(|| self.natural_run(win))
+    }
+
+    /// The run whose process made a window, claimed or not.
+    fn natural_run(&self, win: u32) -> Option<u32> {
+        let w = self.windows.get(&win)?;
+        icons::launch_for_window(&self.dh, &w.client).or_else(|| x11::run_for_window(icons::client_pid(&self.dh, &w.client), &w.title, &w.app_id))
+    }
+
+    /// A window's title as its page shows it: from an app's second instance on, with the
+    /// instance's name first ("VSCodium 2 — main.rs").
+    pub fn shown_title(&self, win: u32, title: &str) -> String {
+        match self.run_of(win) {
+            Some(r) if icons::ordinal(r) >= 2 => {
+                let name = icons::launch_info(r).map(|(n, _)| n).unwrap_or_default();
+                if title.is_empty() || title.starts_with(&name) {
+                    name
+                } else {
+                    format!("{name} — {title}")
+                }
+            }
+            _ => title.to_string(),
+        }
+    }
+
+    /// Windows a claiming run could take.
+    fn claim_candidates(&self) -> Vec<ClaimCandidate> {
+        self.windows
+            .iter()
+            .map(|(win, w)| {
+                let owner = self.natural_run(*win);
+                ClaimCandidate {
+                    win: *win,
+                    app_key: owner.map(icons::app_key).unwrap_or_default(),
+                    owner,
+                    created: w.created,
+                    transient: w.transient,
+                    claimed: w.claimed.is_some(),
+                    mapped: w.mapped,
+                }
+            })
+            .collect()
+    }
+
+    /// Give runs waiting to claim a window the one that fits, if any; answer their CLI.
+    fn try_claims(&mut self) {
+        let waiting: Vec<u32> = self.claims.iter().map(|(p, _)| *p).collect();
+        for pid in waiting {
+            let key = icons::app_key(pid);
+            let since = icons::registered(pid).unwrap_or_else(Instant::now);
+            let Some(win) = claim_target(&self.claim_candidates(), &key, pid, since) else { continue };
+            info!("run {pid} claims window {win} (a new window of another instance of {key})");
+            self.claims.retain(|(p, _)| *p != pid);
+            icons::set_claim(pid, icons::Claim::Holding);
+            if let Some(w) = self.windows.get_mut(&win) {
+                w.claimed = Some(pid);
+            }
+            // To the claiming run's own page.
+            if self.windows.get(&win).is_some_and(|w| w.announced && w.link.is_some()) {
+                self.send_win(win, &ToApp::WindowClose { win });
+            }
+            self.unshow(win);
+            self.announce(win);
+            self.reply_cli(&Waiting::Claim(pid), CliReply::Claimed { windows: vec![win] });
+        }
+    }
+
+    /// Claims whose wait is over: their CLI is told which instance to bring forward instead.
+    fn expire_claims(&mut self) {
+        let now = Instant::now();
+        let over: Vec<u32> = self.claims.iter().filter(|(_, until)| *until <= now).map(|(p, _)| *p).collect();
+        for pid in over {
+            self.claims.retain(|(p, _)| *p != pid);
+            icons::set_claim(pid, icons::Claim::None);
+            let key = icons::app_key(pid);
+            let (instances, _) = icons::instances(&key);
+            let other = instances.iter().find(|i| i.pid != pid).map(|i| i.pid);
+            info!("run {pid}: no new window of {key} came; {} instead", other.map_or("nothing to bring forward".into(), |o| format!("bring run {o} forward")));
+            self.reply_cli(&Waiting::Claim(pid), CliReply::Focused { pid: other });
+        }
+    }
+
+    /// The run `run` showed only claimed windows and the last one went: it is over.
+    fn claimed_run_over(&mut self, run: u32) {
+        info!("run {run} ended (its last claimed window closed)");
+        self.send_from(Some(run), &ToApp::RunEnded { code: 0, output: Vec::new() }, &[]);
+        icons::set_claim(run, icons::Claim::None);
+        icons::ended(run);
+    }
+
+    /// Runs that show windows of `run`'s process (claimed from it) and are on.
+    fn dependents(&self, run: u32) -> Vec<u32> {
+        let mut v: Vec<u32> = self.windows.iter().filter(|(win, w)| w.claimed.is_some() && self.natural_run(**win) == Some(run)).filter_map(|(_, w)| w.claimed).collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// A run's window (page) is gone for good. A run that claimed windows: they are asked to close
+    /// (their process is another instance's). A run whose process also shows other instances'
+    /// windows: only its own windows are asked to close. Otherwise what it started ends.
+    fn page_gone(&mut self, run: Option<u32>) {
+        let Some(r) = run else { return end_launches(None) };
+        let own: Vec<u32> = self.windows.keys().copied().filter(|w| self.run_of(*w) == Some(r)).collect();
+        let claiming = icons::claim(r) != icons::Claim::None;
+        let deps = self.dependents(r);
+        if when_page_gone(claiming, &deps) == PageGone::CloseWindows {
+            info!("the window of run {r} is gone: closing its windows {own:?} ({})", if claiming { "they belong to another instance's process".to_string() } else { format!("its process also shows runs {deps:?}") });
+            for win in own {
+                if let Some(w) = self.windows.get(&win) {
+                    w.toplevel.close();
+                }
+            }
+            // A claimed run ends when its last window has gone (window_gone).
+            self.claims.retain(|(p, _)| *p != r);
+            return;
+        }
+        end_launches(Some(r));
+    }
+
+    /// Start one more instance of the run `run`'s app, as its page asked.
+    fn new_instance(&mut self, run: Option<u32>) {
+        let Some(r) = run else { return };
+        let again = icons::again(r);
+        if again.is_empty() {
+            warn!("run {r}: no way to start another instance (started by an older lindroids)");
+            return;
+        }
+        let Ok(exe) = std::env::current_exe() else { return };
+        info!("run {r}: its page asks for a new window: lindroids {}", again.join(" "));
+        let log = std::fs::File::create(self.cfg.runtime_dir.join("new-instance.log")).ok();
+        let mut c = std::process::Command::new(exe);
+        c.args(&again).stdin(std::process::Stdio::null());
+        if let Some(l) = log {
+            if let Ok(l2) = l.try_clone() {
+                c.stdout(l2);
+            }
+            c.stderr(l);
+        }
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(&mut c, || {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        // Reaped by a thread: the server is its parent.
+        match c.spawn() {
+            Ok(mut child) => {
+                std::thread::spawn(move || child.wait());
+            }
+            Err(e) => warn!("cannot start another instance: {e}"),
+        }
     }
 
     /// Show every window on the page it belongs on now that pages (or launches) came or went.
@@ -663,6 +851,7 @@ impl State {
         } else {
             launched.unwrap_or_else(|| w.app_id.clone())
         };
+        let title = if w.claimed.is_some() || run.is_some() { self.shown_title(win, &title) } else { title };
         let msg = ToApp::WindowNew {
             win,
             title,
@@ -685,6 +874,9 @@ impl State {
                 info!("window {win} mapped: {:?} ({})", w.title, w.app_id);
             }
         }
+        if !self.claims.is_empty() {
+            self.try_claims();
+        }
         self.announce(win);
     }
 
@@ -699,6 +891,11 @@ impl State {
                 self.seat.focus_win = None;
             }
             self.frame_due.extend(w.waiting);
+            if let Some(c) = w.claimed {
+                if !self.windows.values().any(|o| o.claimed == Some(c)) {
+                    self.claimed_run_over(c);
+                }
+            }
         }
     }
 
@@ -940,14 +1137,26 @@ impl State {
             ToServer::Shown { shown } => {
                 if let Some(l) = self.links.iter_mut().find(|l| l.id == from) {
                     l.hidden_since = if shown { None } else { l.hidden_since.or(Some(Instant::now())) };
+                    if let (true, Some(r)) = (shown, l.run) {
+                        icons::touch(r);
+                    }
                 }
+            }
+            ToServer::NewInstance => {
+                let run = self.links.iter().find(|l| l.id == from).and_then(|l| l.run);
+                self.new_instance(run);
             }
             ToServer::Close { win } => {
                 if let Some(w) = self.windows.get(&win) {
                     w.toplevel.close();
                 }
             }
-            ToServer::Focus { win, focused } => seat::window_focus(self, win, focused),
+            ToServer::Focus { win, focused } => {
+                if let (true, Some(r)) = (focused, self.run_of(win)) {
+                    icons::touch(r);
+                }
+                seat::window_focus(self, win, focused)
+            }
             ToServer::Touch { win, action, id, x, y, time_ms } => seat::touch(self, win, action, id, x, y, time_ms),
             ToServer::Pointer { win, action, x, y, button, time_ms } => seat::pointer(self, win, action, x, y, button, time_ms),
             ToServer::Scroll { win, dx, dy, time_ms } => seat::scroll(self, win, dx, dy, time_ms),
@@ -1002,18 +1211,42 @@ impl State {
                 self.running = false;
                 Some(CliReply::Ok { message: "stopping".into() })
             }
-            CliRequest::Launch { pid, name, icon_png_b64, symbolic_png_b64, window } => {
-                icons::register_launch(pid, name, icon_png_b64, window);
+            CliRequest::Launch { pid, name, icon_png_b64, symbolic_png_b64, window, app_key, again, supervisor: _ } => {
+                let ordinal = icons::register(pid, icons::NewLaunch { name, icon: icon_png_b64, window, app_key: app_key.clone(), again });
+                if !app_key.is_empty() {
+                    info!("run {pid} is instance {ordinal} of {app_key}");
+                }
                 android::set_symbolic(pid, symbolic_png_b64);
                 if window {
                     android::run_started(pid);
                 }
                 // Windows it opened before it was registered move to where they belong.
                 self.reroute();
-                Some(CliReply::Ok { message: "registered".into() })
+                Some(CliReply::Launched { ordinal })
+            }
+            CliRequest::Instances { app_key } => {
+                let (mut instances, runs) = icons::instances(&app_key);
+                for i in &mut instances {
+                    i.shown = self.links.iter().any(|l| l.run == Some(i.pid));
+                }
+                Some(CliReply::Instances { instances, runs })
+            }
+            CliRequest::Claim { pid } => {
+                if icons::app_key(pid).is_empty() {
+                    Some(CliReply::Focused { pid: None })
+                } else {
+                    let until = Instant::now() + claim_wait();
+                    icons::set_claim(pid, icons::Claim::Pending(until));
+                    self.claims.retain(|(p, _)| *p != pid);
+                    self.claims.push((pid, until));
+                    self.clis[idx].waiting = Some(Waiting::Claim(pid));
+                    self.try_claims();
+                    None
+                }
             }
             CliRequest::RunEnded { pid, code, output } => {
                 info!("run {pid} ended (exit code {code})");
+                icons::ended(pid);
                 // Its page shows the end even when the program never showed a window, and why.
                 self.send_from(Some(pid), &ToApp::RunEnded { code, output }, &[]);
                 Some(CliReply::Ok { message: "noted".into() })
@@ -1265,6 +1498,7 @@ pub fn run(cfg: Config) -> i32 {
         sound: HashMap::new(),
         mic: HashSet::new(),
         asked: HashMap::new(),
+        claims: Vec::new(),
     };
     surface::register_globals(&dh);
     shell::register_globals(&dh);
@@ -1298,6 +1532,7 @@ pub fn run(cfg: Config) -> i32 {
 
     let mut last_frame_flush = Instant::now();
     let mut last_socket_check = Instant::now();
+    let mut last_reap = Instant::now();
     while state.running {
         let mut fds: Vec<libc::pollfd> = Vec::with_capacity(8 + state.clis.len() + state.pending.len());
         let pfd = |fd: RawFd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
@@ -1336,7 +1571,18 @@ pub fn run(cfg: Config) -> i32 {
         if !due.is_empty() {
             state.unlinked.retain(|(_, since, grace)| !over(since, grace));
             for run in due {
-                end_launches(run);
+                state.page_gone(run);
+            }
+        }
+        if !state.claims.is_empty() {
+            state.expire_claims();
+        }
+        if last_reap.elapsed() >= Duration::from_secs(2) {
+            last_reap = Instant::now();
+            let reaped = icons::reap();
+            for pid in reaped.lost {
+                warn!("run {pid} is gone, and nothing said how it ended (its `lindroids run` was killed?)");
+                state.send_from(Some(pid), &ToApp::RunEnded { code: -1, output: vec!["Lindroids lost track of this program: it ended, but not through `lindroids run`.".into()] }, &[]);
             }
         }
         seat::keyboard_due(&mut state);
@@ -1346,6 +1592,9 @@ pub fn run(cfg: Config) -> i32 {
         }
         if let Some(t) = x11.as_ref().and_then(|x| x.wants_timeout()) {
             timeout = timeout.min(t.as_millis() as i32);
+        }
+        if let Some(until) = state.claims.iter().map(|(_, u)| *u).min() {
+            timeout = timeout.min(until.saturating_duration_since(Instant::now()).as_millis() as i32 + 1);
         }
         unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
 
@@ -1569,6 +1818,24 @@ pub fn run(cfg: Config) -> i32 {
     0
 }
 
+/// What a run's page going for good does to the run.
+#[derive(Debug, PartialEq)]
+enum PageGone {
+    /// Its process tree ends (SIGTERM, then SIGKILL): the program was this run's alone.
+    EndProcesses,
+    /// Its windows are asked to close (xdg_toplevel.close): the process also serves another
+    /// instance (`dependents`), or the run's windows are another instance's process's (`claiming`).
+    CloseWindows,
+}
+
+fn when_page_gone(claiming: bool, dependents: &[u32]) -> PageGone {
+    if claiming || !dependents.is_empty() {
+        PageGone::CloseWindows
+    } else {
+        PageGone::EndProcesses
+    }
+}
+
 /// Which page something goes to, among the linked ones (`pages`: link and the run each shows,
 /// oldest first): its run's own page; nothing (yet) for a run that wants one and has none; else
 /// the page showing everything else if `shared_first`, else the page last used (`primary`).
@@ -1620,6 +1887,11 @@ fn window_browser(runtime: &Path, run: u32) -> Option<String> {
 /// The browser a run's window was sent to (`?window&run=<pid>&via=<package>`).
 fn via_of_page(page: &str) -> Option<&str> {
     page.split_once('?')?.1.split('&').find_map(|kv| kv.strip_prefix("via="))
+}
+
+/// How long a run that handed over waits for its new window (`LINDROIDS_CLAIM_WAIT`, ms).
+fn claim_wait() -> Duration {
+    Duration::from_millis(std::env::var("LINDROIDS_CLAIM_WAIT").ok().and_then(|v| v.parse().ok()).unwrap_or(3000))
 }
 
 /// How long programs outlive a page that vanished without saying so (`LINDROIDS_LINGER`, seconds).
@@ -1715,7 +1987,50 @@ fn render_dirty(state: &mut State) {
 
 #[cfg(test)]
 mod tests {
-    use super::{pick_page, run_of_page, via_of_page};
+    use super::{claim_target, pick_page, run_of_page, via_of_page, when_page_gone, ClaimCandidate, PageGone};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn closing_a_claimed_window_never_ends_the_process_it_belongs_to() {
+        // A run that took a window of another instance's process: only its windows close.
+        assert_eq!(when_page_gone(true, &[]), PageGone::CloseWindows);
+        // The first instance, whose process also shows a second instance's window: the same.
+        assert_eq!(when_page_gone(false, &[42]), PageGone::CloseWindows);
+        // A program of its own: it ends, as before.
+        assert_eq!(when_page_gone(false, &[]), PageGone::EndProcesses);
+    }
+
+    #[test]
+    fn a_claim_takes_the_newest_new_window_of_the_same_app() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let c = |win: u32, key: &str, owner: u32, ms: u64| ClaimCandidate {
+            win,
+            app_key: key.into(),
+            owner: Some(owner),
+            created: at(ms),
+            transient: false,
+            claimed: false,
+            mapped: true,
+        };
+        // Run 100 (instance 1 of codium) had window 1 before; run 200 started at 2000 ms and
+        // handed over; 100 then made windows 2 (a dialog), 3 and 4.
+        let mut cands = vec![c(1, "codium", 100, 0), c(2, "codium", 100, 2600), c(3, "codium", 100, 2700), c(4, "codium", 100, 2900), c(5, "other", 300, 3000)];
+        cands[1].transient = true;
+        assert_eq!(claim_target(&cands, "codium", 200, at(2000)), Some(4));
+        // Not one claimed already, nor one not mapped yet.
+        cands[3].claimed = true;
+        assert_eq!(claim_target(&cands, "codium", 200, at(2000)), Some(3));
+        cands[2].mapped = false;
+        assert_eq!(claim_target(&cands, "codium", 200, at(2000)), None);
+        // A window from a moment before the claimer was registered still counts; an old one not.
+        let early = [c(6, "codium", 100, 1700), c(7, "codium", 100, 500)];
+        assert_eq!(claim_target(&early, "codium", 200, at(2000)), Some(6));
+        // Never the claimer's own windows, another app's, or with no app known.
+        assert_eq!(claim_target(&[c(8, "codium", 200, 3000)], "codium", 200, at(2000)), None);
+        assert_eq!(claim_target(&cands, "nothing", 200, at(2000)), None);
+        assert_eq!(claim_target(&[c(9, "", 100, 3000)], "", 200, at(2000)), None);
+    }
 
     #[test]
     fn pages_name_their_run() {
