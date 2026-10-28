@@ -10,7 +10,7 @@
 'use strict';
 
 const BUILD = '@BUILD@';
-const PROTOCOL_VERSION = 5;
+const PROTOCOL_VERSION = 6;
 // What pages kept before keys (protocol 4): gone, it no longer proves anything.
 try { localStorage.removeItem('lindroids.secret'); } catch (e) { /* storage off */ }
 
@@ -931,6 +931,9 @@ $('fs').onclick = () => {
   if (document.fullscreenElement) document.exitFullscreen();
   else document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
 };
+// Another window of this program (a run's own window only): the server starts one more instance.
+$('neww').hidden = !(OWN_WINDOW && RUN);
+$('neww').onclick = () => send({ t: 'new_instance' });
 
 // ------------------------------------------------------------------ clipboard
 
