@@ -61,6 +61,9 @@ pub struct Link {
     /// The run this page shows (`?run=<pid>`: a window of its own for what `lindroids run`
     /// started); None for the page that shows everything else.
     pub run: Option<u32>,
+    /// An exported program's own page (`/app/<id>/`, no run: the page that installs it as an
+    /// app, or that the installed app opens with): the id. Not a display: nothing is shown in it.
+    pub app: Option<String>,
     /// The page said it is going away (`Closing`) before its link closed.
     pub closing: bool,
     /// Since when the page has been out of sight (`Shown`), if it is.
@@ -93,6 +96,7 @@ impl Link {
             broken: false,
             id: 0,
             run: None,
+            app: None,
             closing: false,
             hidden_since: None,
             close_frame: None,

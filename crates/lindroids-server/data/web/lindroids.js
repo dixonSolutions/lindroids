@@ -274,9 +274,17 @@ async function handle(m, payload) {
         plog(`linked again after the browser dropped the link (${lostLink})`);
         relinking = 0;
       }
+      if (APP && !OWN_WINDOW) return appPage();
       hidePanelIfWindows();
       sendSystem();
       return;
+    case 'navigate': {
+      // To the window of the program this page asked for: only within this program's pages.
+      const to = new URL(m.url, location.href);
+      if (!APP || to.origin !== location.origin || !to.pathname.startsWith(`/app/${APP}/`)) return;
+      replaced = true;
+      return location.replace(to.href);
+    }
     case 'bye':
       replaced = true;
       // A tab the browser opened for `lindroids run` that a newer one replaced: close it, where
@@ -383,11 +391,66 @@ function showPanel(html, after, icon) {
 // window.close(), and Back only hides them: their ✕ closes them).
 const OWN_WINDOW = new URLSearchParams(location.search).has('window');
 const RUN = new URLSearchParams(location.search).get('run');
+// An exported program's own page (`lindroids export --webapk`, /app/<id>/), which the browser
+// installs as an app of its own: `?install` is where that is done; with no run, it is what the
+// app opens with, which asks for the program (`launch`) and goes to its window (`navigate`).
+const APP = (/^\/app\/([A-Za-z0-9._-]+)\/$/.exec(location.pathname) || [])[1] || null;
+const INSTALL = !!APP && new URLSearchParams(location.search).has('install');
 let ended = null, endedIcon = null, endTimer = null, endedNote = '', endedOutput = [], everShown = false;
 let program = null; // { name, icon } of this window's run, from the server
 // The server said the program ended; this page linked to its run before; tries at linking again
 // after a lost link (0: none under way), and how that link was lost (for the server's log).
 let runOver = false, everLinked = false, relinking = 0, lostLink = '';
+
+// ------------------------------------------------------------------ an exported program's app
+
+const appIcon = () => `/app/${APP}/icon.png`;
+let installPrompt = null, installed = false;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  if (INSTALL && ready) showInstall();
+});
+window.addEventListener('appinstalled', () => {
+  installed = true;
+  if (INSTALL) showInstall();
+});
+
+function appPage() {
+  if (INSTALL) return showInstall();
+  showPanel(`<p>Starting ${esc(document.title)}…</p>`, null, appIcon());
+  send({ t: 'launch', id: APP });
+}
+
+// Installing as an app of its own is the browser's to do: its install dialog (Chrome and Samsung
+// Internet show it for `prompt()`), or its menu.
+function showInstall() {
+  const name = esc(document.title);
+  if (installed) {
+    return showPanel(`<p><b>${name}</b> is installed. Its icon is on the home screen and in the app list.</p>
+      <p>Termux says when it has found it; this tab can be closed.</p>`, null, appIcon());
+  }
+  if (!installPrompt) {
+    return showPanel(`<p>Install <b>${name}</b> from this browser's menu: <b>⋮</b>, then <b>Install app</b>
+      (or <b>Add to home screen</b>, then <b>Install</b>).</p>
+      <p class="err">A shortcut is not enough: only an app opens it as a window of its own.</p>`, null, appIcon());
+  }
+  showPanel(`<p>Install <b>${name}</b> as an app of its own: its icon and name on the home screen, in the
+    app list and in Recents.</p><p><button id="install">Install</button></p>`, () => {
+    $('install').onclick = () => {
+      const p = installPrompt;
+      installPrompt = null;
+      p.prompt();
+      p.userChoice.then((c) => { if (c.outcome !== 'accepted') { installPrompt = null; showInstall(); } }, () => showInstall());
+    };
+  }, appIcon());
+}
+
+// What the app shows when the server cannot be reached (Termux closed): a page of ours that
+// starts the program through Termux, not the browser's error page (app-sw.js).
+if (APP && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.register(`/app/${APP}/sw.js`, { scope: `/app/${APP}/` }).catch((e) => console.warn('lindroids: service worker:', e));
+}
 
 // The window as the browser shows it outside the page (title, icon; Chrome puts them on its task
 // in recents): the program's, not Lindroids'.

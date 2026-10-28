@@ -63,6 +63,11 @@ const WINDOW_BROWSERS: &[&str] = &[
 /// opens one (see `browsers`). Sending the same URL again brings that window back instead of
 /// opening another. Returns the browser used, which notifications then open windows in.
 pub fn open_window(url: &str) -> Result<String, String> {
+    if let Some((id, app)) = APP_WINDOW.get() {
+        if let Some(r) = open_in_app(url, id, app) {
+            return r;
+        }
+    }
     let rt = sandbox::runtime_dir();
     let opened = std::fs::read_to_string(rt.join("windows")).unwrap_or_default();
     // (url, browser) lines: whether this page (the URL without its ticket, after #) has had a
@@ -82,13 +87,188 @@ pub fn open_window(url: &str) -> Result<String, String> {
     let browser = out.lines().find_map(|l| l.strip_prefix("browser ")).unwrap_or("?").to_string();
     if browser != "?" {
         let _ = std::fs::write(rt.join("window-browser"), &browser);
-        let mut lines: Vec<&str> = opened.lines().collect();
-        let line = format!("{url} {browser}");
-        lines.push(&line);
-        let keep = lines.len().saturating_sub(64);
-        let _ = std::fs::write(rt.join("windows"), lines[keep..].join("\n") + "\n");
+        note_window(&rt, url, &browser);
     }
     Ok(browser)
+}
+
+/// Notes in `<runtime>/windows` that the window for `url` went to `browser` (the last 64 kept).
+fn note_window(rt: &Path, url: &str, browser: &str) {
+    let opened = std::fs::read_to_string(rt.join("windows")).unwrap_or_default();
+    let mut lines: Vec<&str> = opened.lines().collect();
+    let line = format!("{url} {browser}");
+    lines.push(&line);
+    let keep = lines.len().saturating_sub(64);
+    let _ = std::fs::write(rt.join("windows"), lines[keep..].join("\n") + "\n");
+}
+
+/// The run a window's URL is for (`?window&run=<pid>`).
+fn run_of_url(url: &str) -> Option<u32> {
+    let query = url.split('#').next()?.split_once('?')?.1;
+    query.split('&').find_map(|kv| kv.strip_prefix("run=")).and_then(|v| v.parse().ok())
+}
+
+/// The window last noted for run `run`: its URL and where it went.
+fn noted_window(rt: &Path, run: u32) -> Option<(String, String)> {
+    let opened = std::fs::read_to_string(rt.join("windows")).ok()?;
+    opened.lines().rev().find_map(|l| l.split_once(' ').filter(|(u, _)| run_of_url(u) == Some(run)).map(|(u, b)| (u.to_string(), b.trim().to_string())))
+}
+
+// ------------------------------------------------------------------ installed web apps
+
+/// The exported program `lindroids launch` starts, when the browser installed it as an app of its
+/// own (`export --webapk`): its id and the app's package (empty if not known). Its window opens in
+/// that app.
+static APP_WINDOW: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+
+pub fn set_app_window(id: &str, app: &str) {
+    let _ = APP_WINDOW.set((id.to_string(), app.to_string()));
+}
+
+/// `url` (a run's window, `<origin>/?window&run=<pid>...`) as a page of the exported program `id`'s
+/// own (`<origin>/app/<id>/?window&run=<pid>...`): in the app's scope.
+fn app_page_url(url: &str, id: &str) -> Option<String> {
+    let (origin, rest) = url.split_once("/?")?;
+    (!origin.contains("://") || !origin.split_once("://")?.1.contains('/')).then(|| format!("{origin}/app/{id}/?{rest}"))
+}
+
+/// `url` naming where it was sent (`&via=<package>`, before the fragment), as the helper does
+/// for browsers: the server keeps the page in the window it was sent to.
+fn with_via(url: &str, via: &str) -> String {
+    let (base, fragment) = url.split_once('#').map_or((url, String::new()), |(b, f)| (b, format!("#{f}")));
+    format!("{base}&via={via}{fragment}")
+}
+
+/// Shows a run's window in the exported program's installed app (`export --webapk`). None when
+/// it is not for that app: not a run's window, or the app shows another run of the program that
+/// still runs (an app is one window), or the app did not open; the window is then one of the
+/// usual kind.
+fn open_in_app(url: &str, id: &str, app: &str) -> Option<Result<String, String>> {
+    let run = run_of_url(url)?;
+    let rt = sandbox::runtime_dir();
+    let via = if app.is_empty() { "app" } else { app };
+    let notes = std::fs::read_to_string(rt.join("windows")).unwrap_or_default();
+    let other = notes.lines().rev().find_map(|l| l.split_once(' ').filter(|(_, b)| b.trim() == via).and_then(|(u, _)| run_of_url(u)));
+    if let Some(o) = other.filter(|o| *o != run && Path::new(&format!("/proc/{o}")).exists()) {
+        eprintln!("lindroids: {id}'s app shows another of its windows (run {o}): this one opens in the browser");
+        return None;
+    }
+    let page = app_page_url(url, id)?;
+    let sent = with_via(&page, via);
+    // The app's page asked for this launch, and goes there itself: the terminal app is in the
+    // background then, and Android would not let it open the app.
+    if std::env::var("LINDROIDS_PAGE_LAUNCH").ok().as_deref() == Some(id) {
+        let req = proto::CliRequest::AppWindow { id: id.to_string(), url: sent.clone() };
+        if let Ok(proto::CliReply::Ok { .. }) = crate::client::request(&rt, &req, std::time::Duration::from_secs(3)) {
+            note_window(&rt, &page, via);
+            return Some(Ok(via.to_string()));
+        }
+    }
+    if app.is_empty() {
+        return None;
+    }
+    match helper(&["view", &package(), app, &sent]) {
+        Ok(_) => {
+            note_window(&rt, &page, via);
+            Some(Ok(app.to_string()))
+        }
+        Err(e) => {
+            eprintln!("lindroids: {id}'s app ({app}) did not open ({e}): its window opens in the browser");
+            None
+        }
+    }
+}
+
+/// Browser packages and the names users know them by.
+fn browser_name(pkg: &str) -> &str {
+    match pkg {
+        "com.android.chrome" => "Chrome",
+        "com.chrome.beta" => "Chrome Beta",
+        "com.chrome.dev" => "Chrome Dev",
+        "com.chrome.canary" => "Chrome Canary",
+        "com.sec.android.app.sbrowser" => "Samsung Internet",
+        "com.sec.android.app.sbrowser.beta" => "Samsung Internet Beta",
+        p => p,
+    }
+}
+
+/// An installed browser that can install a page as an app of its own (a WebAPK: Chrome with
+/// Google Play services, Samsung Internet on a Samsung phone with the Galaxy Store), and its
+/// name; else why none can. `LINDROIDS_WEBAPK_BROWSER` names one to use regardless.
+pub fn app_browser() -> Result<(String, String), String> {
+    if let Some(b) = std::env::var("LINDROIDS_WEBAPK_BROWSER").ok().filter(|b| !b.is_empty()) {
+        return Ok((b.clone(), browser_name(&b).to_string()));
+    }
+    let out = helper(&["app-browsers"])?;
+    let (can, cannot) = parse_app_browsers(&out);
+    if let Some(b) = can.first() {
+        return Ok((b.clone(), browser_name(b).to_string()));
+    }
+    let mut msg = String::from(
+        "no browser here can install a program as an app of its own. That takes Chrome with Google Play \
+         services, or Samsung Internet on a Samsung phone with the Galaxy Store (other browsers make only \
+         shortcuts)",
+    );
+    if cannot.is_empty() {
+        msg.push_str(": neither is installed");
+    }
+    for (b, why) in &cannot {
+        msg.push_str(&format!("; {}: {why}", browser_name(b)));
+    }
+    msg.push_str(".\n`lindroids export` without --webapk gives it a Termux icon and a window in any browser.");
+    Err(msg)
+}
+
+/// The helper's `app-browsers` answer: the browsers that can, and those that cannot, with why.
+fn parse_app_browsers(out: &str) -> (Vec<String>, Vec<(String, String)>) {
+    let (mut can, mut cannot) = (Vec::new(), Vec::new());
+    for line in out.lines() {
+        if let Some(b) = line.strip_prefix("can ") {
+            can.push(b.trim().to_string());
+        } else if let Some((b, why)) = line.strip_prefix("cannot ").and_then(|r| r.split_once(' ')) {
+            cannot.push((b.to_string(), why.trim().to_string()));
+        }
+    }
+    (can, cannot)
+}
+
+/// The app installed for `scope` (an exported program's pages, `<origin>/app/<id>/`), if any.
+pub fn app_for(scope: &str) -> Option<String> {
+    let out = helper(&["apps-for", scope]).ok()?;
+    out.lines().find_map(|l| l.strip_prefix("app ")).map(|p| p.trim().to_string())
+}
+
+/// Opens `url` in `target` (an ordinary tab of a browser, or an installed app).
+pub fn view(target: &str, url: &str) -> Result<(), String> {
+    helper(&["view", &package(), target, url]).map(|_| ())
+}
+
+/// Android's settings page of an installed app (where it is uninstalled).
+pub fn app_settings(app: &str) -> Result<(), String> {
+    helper(&["app-settings", &package(), app]).map(|_| ())
+}
+
+/// Keeps an exported program's icons for its app's manifest (`<state>/apps/<id>.*.png`, made by the
+/// helper): 512 pixels square (`.app.png`; browsers install no app whose icon is under 144), and
+/// as Android's adaptive icons draw it (`.maskable.png`). Without them, the app gets the icon as
+/// it is.
+pub fn save_app_icons(id: &str, icon_png: &[u8]) -> Result<(), String> {
+    let dir = lindroids_server::state_dir().join("apps");
+    let icon = dir.join(format!("{id}.png"));
+    std::fs::write(&icon, icon_png).map_err(|e| format!("{}: {e}", icon.display()))?;
+    let (maskable, plain) = (dir.join(format!("{id}.maskable.png")), dir.join(format!("{id}.app.png")));
+    if let Err(e) = helper(&["app-icons", &icon.display().to_string(), &maskable.display().to_string(), &plain.display().to_string()]) {
+        eprintln!("lindroids: the app gets the icon as it is ({e}); a small one can stop the browser installing it");
+        let _ = std::fs::remove_file(&maskable);
+        let _ = std::fs::remove_file(&plain);
+    }
+    Ok(())
+}
+
+/// What Termux needs for an exported program's app to start it with Termux closed: the opener for
+/// the launch URL the app's offline page shares with Termux (as a Termux icon does).
+pub fn prepare_termux(sb: &Sandbox) -> Result<(), String> {
+    install_opener(sb).map(|_| ())
 }
 
 /// The browsers to show windows in, in order: `LINDROIDS_BROWSER` (comma-separated packages),
@@ -343,6 +523,23 @@ fn parse_device(out: &str) -> lindroids_server::android::Device {
     d
 }
 
+/// The helper's arguments for a program's notification. Its tap brings back the run's window
+/// where it went (an installed app's, for one: `export --webapk`), else the browsers' way.
+fn notice_args(what: &str, n: lindroids_server::android::Notice) -> Vec<String> {
+    let icon = n.icon.map(|p| p.display().to_string()).unwrap_or_default();
+    let small = n.small_icon.map(|p| p.display().to_string()).unwrap_or_default();
+    let mut url = n.url.unwrap_or_default();
+    let mut browsers = notice_browsers();
+    if let Some((noted, to)) = run_of_url(&url).and_then(|r| noted_window(&sandbox::runtime_dir(), r)) {
+        // The ticket in the URL the window opened with: the window is found again by it.
+        url = noted;
+        browsers.insert(0, to);
+    }
+    let mut args = vec![what.to_string(), package(), n.id.to_string(), n.app, n.title, n.body, icon, small, url];
+    args.extend(browsers);
+    args
+}
+
 /// Programs' notifications in Android's shade, posted by the helper as the terminal app (which
 /// may post them: no permission of Lindroids' own). One at a time, in order: each runs
 /// app_process, which takes a moment.
@@ -370,19 +567,11 @@ impl AndroidServices {
 
 impl lindroids_server::android::Android for AndroidServices {
     fn notify(&self, n: lindroids_server::android::Notice) {
-        let icon = n.icon.map(|p| p.display().to_string()).unwrap_or_default();
-        let small = n.small_icon.map(|p| p.display().to_string()).unwrap_or_default();
-        let mut args = vec!["notify".to_string(), package(), n.id.to_string(), n.app, n.title, n.body, icon, small, n.url.unwrap_or_default()];
-        args.extend(notice_browsers());
-        let _ = self.queue.lock().unwrap().send(args);
+        let _ = self.queue.lock().unwrap().send(notice_args("notify", n));
     }
 
     fn running(&self, n: lindroids_server::android::Notice) {
-        let icon = n.icon.map(|p| p.display().to_string()).unwrap_or_default();
-        let small = n.small_icon.map(|p| p.display().to_string()).unwrap_or_default();
-        let mut args = vec!["running".to_string(), package(), n.id.to_string(), n.app, n.title, n.body, icon, small, n.url.unwrap_or_default()];
-        args.extend(notice_browsers());
-        let _ = self.queue.lock().unwrap().send(args);
+        let _ = self.queue.lock().unwrap().send(notice_args("running", n));
     }
 
     fn device(&self) -> Option<lindroids_server::android::Device> {
@@ -422,6 +611,23 @@ mod tests {
     #[test]
     fn dex_is_embedded() {
         assert_eq!(&DEX[..4], b"dex\n");
+    }
+
+    #[test]
+    fn run_windows_go_into_the_programs_app() {
+        let url = "http://k7.localhost:47282/?window&run=42#t=abc";
+        assert_eq!(app_page_url(url, "org.gnome.Calculator").as_deref(), Some("http://k7.localhost:47282/app/org.gnome.Calculator/?window&run=42#t=abc"));
+        assert_eq!(app_page_url("http://k7.localhost:47282/app/x/?window&run=1", "y"), None);
+        assert_eq!(with_via("http://k/app/x/?window&run=42#t=abc", "org.chromium.webapk.a1"), "http://k/app/x/?window&run=42&via=org.chromium.webapk.a1#t=abc");
+        assert_eq!(run_of_url(url), Some(42));
+        assert_eq!(run_of_url("http://k/?window"), None);
+    }
+
+    #[test]
+    fn app_browsers_answer() {
+        let (can, cannot) = parse_app_browsers("cannot com.android.chrome microG instead of Google Play services\ncan com.sec.android.app.sbrowser\nok\n");
+        assert_eq!(can, vec!["com.sec.android.app.sbrowser".to_string()]);
+        assert_eq!(cannot, vec![("com.android.chrome".to_string(), "microG instead of Google Play services".to_string())]);
     }
 
     #[test]

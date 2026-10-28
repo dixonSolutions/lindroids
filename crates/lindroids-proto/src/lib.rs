@@ -166,6 +166,9 @@ pub enum ToApp {
     Log { level: String, msg: String },
     /// The server is closing this link: another display linked, or the server stops.
     Bye { reason: String },
+    /// An exported program's own page (`/app/<id>/`, installed as an app) asked to start it
+    /// (`Launch`): its run's window, which the page goes to.
+    Navigate { url: String },
 
     // --- Android integration (the portal; see lindroids-server/src/portal.rs) ---
     /// Open a URI with Android (ACTION_VIEW: browser, mail, maps, dialer...). Answered with
@@ -390,6 +393,9 @@ pub enum ToServer {
     /// The page came on screen or left it (visibilitychange). A page lost while out of sight was
     /// dropped by its browser (Android killed its process in the background), not closed.
     Shown { shown: bool },
+    /// From an exported program's own page (`/app/<id>/`): start the program, or bring back the
+    /// one running; the server answers with its window's URL (`Navigate`).
+    Launch { id: String },
     Clipboard { text: String },
     FolderPicked { request: u32, path: Option<String> },
     /// Sound flow control: the app has room for this many more bytes of a stream.
@@ -468,6 +474,10 @@ pub struct Exported {
     pub icon_png_b64: String,
     /// Arguments to `lindroids run`.
     pub run: Vec<String>,
+    /// Exported with `--webapk`: the package of the app the browser installed for it (empty until
+    /// one was found). Its windows open in that app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webapk: Option<String>,
 }
 
 /// Whether `id` is safe as an exported program's id (a file name, a URL path segment, a shell word).
@@ -498,6 +508,9 @@ pub enum CliRequest {
     Open { target: String },
     /// `lindroids notify`.
     Notify { title: String, body: String },
+    /// The window `lindroids launch <id>` opens, when an exported program's own page asked for
+    /// the launch: the server sends that page there (`Navigate`) rather than the CLI opening it.
+    AppWindow { id: String, url: String },
     /// `lindroids info`: what Android reports.
     Info,
     /// The program the CLI started (`Launch`) ended, with this exit code (and, for an error, the

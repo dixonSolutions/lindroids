@@ -528,7 +528,11 @@ These have not been tried yet.
   without Termux coming to the front (a PendingIntent can only start Termux's activities).
 - **Chrome.** Chromium's Custom Tabs are tested through Cromite; Chrome itself only on the user's
   Samsung phone so far.
-  On phones with Google Play, Chrome's minted WebAPKs answer `VIEW` intents for their URLs.
+- **An app of its own, opt-in.** `lindroids export --webapk` has Chrome (with Google Play
+  services) or Samsung Internet (on Samsung phones) install the program as a WebAPK, whose task
+  Android shows with the program's icon on every launcher, Samsung's too. Only those two browsers
+  can, so it is never the default and errors where neither is installed:
+  [WEBAPK.md](WEBAPK.md). Not yet tried on a phone with Chrome.
 - **Closing Firefox's window from outside.** Its source offers no way: Gecko does ask to close
   a one-entry window, but only normal tabs act on it; `ExternalAppBrowserActivity` ends itself
   only when its tab is gone, and only its ✕, "Open in Firefox" or its own end remove that tab

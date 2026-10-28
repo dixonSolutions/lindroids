@@ -426,6 +426,8 @@ pub struct State {
     asked: HashMap<u32, u64>,
     /// Runs waiting to claim a window (`CliRequest::Claim`), until when.
     claims: Vec<(u32, Instant)>,
+    /// Exported programs whose own page asked for their launch (`Launch`): the page, and when.
+    page_launches: HashMap<String, (u64, Instant)>,
 }
 
 impl State {
@@ -462,13 +464,13 @@ impl State {
         served_origin()
     }
 
-    /// Whether any page is linked.
+    /// Whether any page is linked (a display: not an exported program's own page).
     pub fn linked(&self) -> bool {
-        !self.links.is_empty()
+        self.links.iter().any(|l| l.app.is_none())
     }
 
     fn primary_link(&self) -> Option<&Link> {
-        self.primary.and_then(|id| self.links.iter().find(|l| l.id == id)).or_else(|| self.links.last())
+        self.primary.and_then(|id| self.links.iter().find(|l| l.id == id)).or_else(|| self.links.iter().rev().find(|l| l.app.is_none()))
     }
 
     /// What is not about one window nor from one program (the clipboard): to the page last used.
@@ -549,7 +551,7 @@ impl State {
 
     /// The linked pages, oldest first: their link and the run each shows.
     fn pages(&self) -> Vec<(u64, Option<u32>)> {
-        self.links.iter().map(|l| (l.id, l.run)).collect()
+        self.links.iter().filter(|l| l.app.is_none()).map(|l| (l.id, l.run)).collect()
     }
 
     /// The page for a run's windows: its own window, else (for what did not ask for one) the page
@@ -722,6 +724,47 @@ impl State {
         end_launches(Some(r));
     }
 
+    /// `lindroids launch <id>` for an exported program's own page (installed as an app, and opened
+    /// from its icon): the program starts, or the one running is brought back, and the page goes
+    /// to its window (`AppWindow`, `Navigate`). Only from that program's page.
+    fn page_launch(&mut self, from: u64, id: String) {
+        if self.links.iter().find(|l| l.id == from).and_then(|l| l.app.as_deref()) != Some(id.as_str()) || load_exported(&id).is_none() {
+            warn!("launch of {id:?}: not from its own page, or not exported");
+            return;
+        }
+        // Browsers that load a page twice for one tap ask twice.
+        if self.page_launches.get(&id).is_some_and(|(_, at)| at.elapsed() < Duration::from_secs(5)) {
+            self.page_launches.insert(id, (from, Instant::now()));
+            return;
+        }
+        self.page_launches.insert(id.clone(), (from, Instant::now()));
+        let Ok(exe) = std::env::current_exe() else { return };
+        info!("launch of {id}: asked by its page");
+        let log = std::fs::File::create(self.cfg.runtime_dir.join(format!("page-launch-{id}.log"))).ok();
+        let mut c = std::process::Command::new(exe);
+        c.arg("launch").arg(&id).env("LINDROIDS_PAGE_LAUNCH", &id).stdin(std::process::Stdio::null());
+        if let Some(l) = log {
+            if let Ok(l2) = l.try_clone() {
+                c.stdout(l2);
+            }
+            c.stderr(l);
+        }
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(&mut c, || {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        match c.spawn() {
+            Ok(mut child) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Err(e) => warn!("launch of {id}: {e}"),
+        }
+    }
+
     /// Start one more instance of the run `run`'s app, as its page asked.
     fn new_instance(&mut self, run: Option<u32>) {
         let Some(r) = run else { return };
@@ -782,8 +825,9 @@ impl State {
     fn drop_link(&mut self, id: u64) {
         self.links.retain(|l| l.id != id);
         if self.primary == Some(id) {
-            self.primary = self.links.last().map(|l| l.id);
+            self.primary = self.links.iter().rev().find(|l| l.app.is_none()).map(|l| l.id);
         }
+        self.page_launches.retain(|_, (l, _)| *l != id);
         portal::app_changed(self.primary_link().map_or(0, |l| l.version));
         // What the page was asked will not be answered (a file picker it showed, a file to open).
         let unanswered: Vec<u32> = self.asked.iter().filter(|(_, l)| **l == id).map(|(r, _)| *r).collect();
@@ -925,6 +969,7 @@ impl State {
             (Phase::Hello, ToServer::Hello { version, build, density, nonce: app_nonce, screen, page }) => {
                 link.page = page.filter(|p| p.starts_with('/') && p.len() < 256);
                 link.run = link.page.as_deref().and_then(run_of_page);
+                link.app = if link.run.is_none() { link.page.as_deref().and_then(app_of_page) } else { None };
                 let nonce = auth::random_token(24);
                 let proof = self.relay_key.sign(&auth::relay_transcript(&link.origin, &app_nonce, &nonce));
                 link.send(&ToApp::Challenge { nonce: nonce.clone(), proof, relay_key: self.relay_key.public() });
@@ -995,6 +1040,18 @@ impl State {
                 link.build = build.clone();
                 link.version = version;
                 link.phase = Phase::Ready;
+                // An exported program's own page shows nothing: it installs the program as an app,
+                // or asks for its launch (`Launch`) and goes to its window. Any number of them.
+                if link.app.is_some() {
+                    self.next_link += 1;
+                    let id = self.next_link;
+                    link.id = id;
+                    info!("page {} linked", link.page.as_deref().unwrap_or(""));
+                    self.links.push(link);
+                    let hello = ToApp::Hello { version: proto::PROTOCOL_VERSION, build: web::page_build().into(), sandbox: self.cfg.sandbox.clone(), stats: false };
+                    self.send_to(id, &hello, &[]);
+                    return None;
+                }
                 // One page per run (and one for the rest). A run's window that is already linked
                 // stays: bringing it back sends its intent again, and Firefox then raises the
                 // window *and* loads a second copy nobody sees, which is told to stand down. Each
@@ -1027,7 +1084,7 @@ impl State {
                 }
                 // For the rest, the newest wins, and the one before is told why it lost the link
                 // (a browser tab then waits instead of taking it back).
-                let old: Vec<u64> = self.links.iter().filter(|l| l.run == run).map(|l| l.id).collect();
+                let old: Vec<u64> = self.links.iter().filter(|l| l.run == run && l.app.is_none()).map(|l| l.id).collect();
                 for id in old {
                     if let Some(l) = self.links.iter_mut().find(|l| l.id == id) {
                         l.send(&ToApp::Bye { reason: "another display took over".into() });
@@ -1142,6 +1199,7 @@ impl State {
                     }
                 }
             }
+            ToServer::Launch { id } => self.page_launch(from, id),
             ToServer::NewInstance => {
                 let run = self.links.iter().find(|l| l.id == from).and_then(|l| l.run);
                 self.new_instance(run);
@@ -1252,6 +1310,14 @@ impl State {
                 Some(CliReply::Ok { message: "noted".into() })
             }
             CliRequest::Info => Some(CliReply::Info { system: portal::system() }),
+            CliRequest::AppWindow { id, url } => Some(match self.page_launches.remove(&id) {
+                Some((link, at)) if at.elapsed() < Duration::from_secs(60) && self.links.iter().any(|l| l.id == link) => {
+                    info!("launch of {id}: its page goes to its window");
+                    self.send_to(link, &ToApp::Navigate { url }, &[]);
+                    CliReply::Ok { message: "the page that asked goes there".into() }
+                }
+                _ => CliReply::Error { message: format!("no page of {id} is waiting for its window") },
+            }),
             CliRequest::Notify { title, body } => {
                 if !self.linked() {
                     Some(no_app())
@@ -1479,6 +1545,7 @@ pub fn run(cfg: Config) -> i32 {
         scale,
         links: Vec::new(),
         next_link: 0,
+        page_launches: HashMap::new(),
         primary: None,
         pending: Vec::new(),
         relay_key,
@@ -1733,6 +1800,10 @@ pub fn run(cfg: Config) -> i32 {
                 // - Lost on screen (the browser crashed or was killed): `linger()`.
                 // A page that links again in time keeps the programs; otherwise they end.
                 let Some(l) = state.links.iter().find(|l| l.id == id) else { continue };
+                if l.app.is_some() {
+                    state.drop_link(id);
+                    continue;
+                }
                 let away = l.hidden_since.is_some_and(|t| t.elapsed() >= Duration::from_secs(3));
                 let grace = if l.closing || (!away && l.close_frame == Some(Some(1001))) {
                     Some(Duration::from_secs(5))
@@ -1755,7 +1826,7 @@ pub fn run(cfg: Config) -> i32 {
                     None => info!("page for {what} lost in the background ({how}{hidden}); what was started into it runs until a page links for it again"),
                 }
                 state.drop_link(id);
-                if !state.links.iter().any(|l| l.run == run) {
+                if !state.links.iter().any(|l| l.run == run && l.app.is_none()) {
                     state.unlinked.push((run, Instant::now(), grace));
                 }
             }
@@ -1865,6 +1936,13 @@ fn portal_request(msg: &ToApp) -> Option<u32> {
         _ => return None,
     };
     (r >= portal::FIRST_REQUEST).then_some(r)
+}
+
+/// The exported program whose own page this is (`/app/<id>/`).
+fn app_of_page(page: &str) -> Option<String> {
+    let path = page.split('?').next()?;
+    let id = path.strip_prefix("/app/")?.strip_suffix('/')?;
+    proto::valid_export_id(id).then(|| id.to_string())
 }
 
 /// The run a page shows: `?run=<pid>` in its URL.

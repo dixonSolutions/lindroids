@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0F1720">
+<title>@NAME@</title>
+<link rel="icon" type="image/png" href="icon.png">
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #000; color: #E8EEF4; font: 15px system-ui, sans-serif; }
+  body { display: flex; align-items: center; justify-content: center; padding: 24px; box-sizing: border-box; text-align: center; }
+  .box { max-width: 26em; line-height: 1.5; }
+  img { width: 96px; height: 96px; }
+  button { font: inherit; padding: 10px 20px; margin: 8px; border-radius: 6px; border: 0; background: #3DDC84; color: #0F1720; }
+  .dim { color: #9AA7B4; }
+  a { color: #9AA7B4; }
+</style>
+</head>
+<body data-launch="@LAUNCH@">
+<div class="box">
+  <img src="icon.png" alt="">
+  <p><b>@NAME@</b> runs in Termux, which is not running now.</p>
+  <p><button id="start">Start @NAME@</button></p>
+  <p class="dim">Choose <b>Termux</b> in the list that opens: it starts @NAME@ and shows it here.</p>
+  <p><a href="./">Try again</a></p>
+</div>
+<script src="offline.js"></script>
+</body>
+</html>

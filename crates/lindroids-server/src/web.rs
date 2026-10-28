@@ -18,6 +18,10 @@ const CLIENT_JS: &str = include_str!("../data/web/lindroids.js");
 const ICON_SVG: &str = include_str!("../data/web/icon.svg");
 /// The microphone's AudioWorklet module: a file of its own, as the page's CSP allows no blob: one.
 const MIC_WORKLET_JS: &str = include_str!("../data/web/mic-worklet.js");
+/// An exported program's own pages, when the server cannot be reached (`export --webapk`).
+const APP_SW_JS: &str = include_str!("../data/web/app-sw.js");
+const APP_OFFLINE_HTML: &str = include_str!("../data/web/app-offline.html");
+const APP_OFFLINE_JS: &str = include_str!("../data/web/app-offline.js");
 
 /// The build of the page as served: the program's build and a hash of the page itself, so that
 /// it changes with every change to the page, dev builds included. The server says it in its
@@ -155,6 +159,10 @@ pub fn answer(req: &Request, port: u16) -> Answer {
         "/lindroids.js" => ("text/javascript; charset=utf-8", CLIENT_JS.replace("@BUILD@", page_build()).into_bytes().into()),
         "/icon.svg" => ("image/svg+xml", ICON_SVG.as_bytes().into()),
         "/mic-worklet.js" => ("text/javascript; charset=utf-8", MIC_WORKLET_JS.as_bytes().into()),
+        p if p.starts_with("/app/") => match app_file(p, &req.query, port) {
+            Some(file) => file,
+            None => return Answer::Close(response(404, "text/plain", b"not found\n")),
+        },
         p if p.starts_with("/run-icon/") => match run_icon(p) {
             Some(png) => ("image/png", png.into()),
             None => return Answer::Close(response(404, "text/plain", b"not found\n")),
@@ -180,6 +188,87 @@ fn index_html(query: &str) -> String {
     INDEX_HTML
         .replacen("<title>Lindroids</title>", &format!("<title>{name}</title>"), 1)
         .replacen(r#"<link rel="icon" href="/icon.svg">"#, &format!(r#"<link rel="icon" type="image/png" sizes="192x192" href="/run-icon/{run}.png">"#), 1)
+}
+
+/// `/app/<id>/...`: an exported program's own pages (`lindroids export --webapk`), which the
+/// browser installs as an app of its own (a WebAPK: Chrome, Samsung Internet), named and iconed
+/// after the program, its scope `/app/<id>/`:
+/// - `/app/<id>/` the page: `?install` installs it; with no run, it is what the app opens with
+///   (it asks for the program and goes to its window); `?window&run=<pid>` is a run's window;
+/// - `manifest.webmanifest`, `icon.png` (512 pixels square), `maskable.png` (as Android's adaptive
+///   icons draw it), made by `export`;
+/// - `sw.js`, `offline`, `offline.js`: the page shown when the server cannot be reached (Termux
+///   closed), which starts the program through Termux.
+fn app_file(path: &str, query: &str, port: u16) -> Option<(&'static str, std::borrow::Cow<'static, [u8]>)> {
+    let (id, file) = path.strip_prefix("/app/")?.split_once('/')?;
+    let app = crate::load_exported(id)?;
+    app.webapk.as_ref()?;
+    let base = format!("/app/{id}/");
+    let apps = crate::state_dir().join("apps");
+    let icon = || std::fs::read(apps.join(format!("{id}.app.png"))).ok().or_else(|| base64::engine::general_purpose::STANDARD.decode(&app.icon_png_b64).ok());
+    let maskable = || std::fs::read(apps.join(format!("{id}.maskable.png"))).ok();
+    let html = |s: String| -> Option<(&'static str, std::borrow::Cow<'static, [u8]>)> { Some(("text/html; charset=utf-8", s.into_bytes().into())) };
+    match file {
+        "" => {
+            let page = if run_of_query(query).is_some() { index_html(query) } else { INDEX_HTML.to_string() };
+            let mut page = page.replacen(r#"<link rel="icon" href="/icon.svg">"#, &format!(r#"<link rel="icon" type="image/png" href="{base}icon.png">"#), 1);
+            if run_of_query(query).is_none() {
+                page = page.replacen("<title>Lindroids</title>", &format!("<title>{}</title>", html_escape(&app.name)), 1);
+            }
+            html(page.replacen("</title>", &format!("</title>\n<link rel=\"manifest\" href=\"{base}manifest.webmanifest\">"), 1))
+        }
+        "manifest.webmanifest" => Some(("application/manifest+json", app_manifest(&app, &icon()?, maskable().as_deref()).into_bytes().into())),
+        "icon.png" => Some(("image/png", icon()?.into())),
+        "maskable.png" => Some(("image/png", maskable()?.into())),
+        "sw.js" => Some(("text/javascript; charset=utf-8", APP_SW_JS.replace("@BUILD@", page_build()).into_bytes().into())),
+        "offline" => html(
+            APP_OFFLINE_HTML
+                .replace("@NAME@", &html_escape(&app.name))
+                .replace("@LAUNCH@", &html_escape(&format!("http://127.0.0.1:{port}/launch/termux/{id}"))),
+        ),
+        "offline.js" => Some(("text/javascript; charset=utf-8", APP_OFFLINE_JS.as_bytes().into())),
+        _ => None,
+    }
+}
+
+/// An exported program's web app manifest: what the browser installs it as. Full screen from the
+/// start; the icons' URLs change with them (Chrome takes an icon's URL as never changing).
+fn app_manifest(app: &lindroids_proto::Exported, icon: &[u8], maskable: Option<&[u8]>) -> String {
+    let base = format!("/app/{}/", app.id);
+    let tag = |png: &[u8]| {
+        let d = Sha1::digest(png);
+        format!("{:02x}{:02x}{:02x}{:02x}", d[0], d[1], d[2], d[3])
+    };
+    let size = |png: &[u8]| png_size(png).map_or_else(|| "192x192".to_string(), |(w, h)| format!("{w}x{h}"));
+    let mut icons = vec![serde_json::json!({ "src": format!("{base}icon.png?v={}", tag(icon)), "sizes": size(icon), "type": "image/png", "purpose": "any" })];
+    if let Some(m) = maskable {
+        icons.push(serde_json::json!({ "src": format!("{base}maskable.png?v={}", tag(m)), "sizes": size(m), "type": "image/png", "purpose": "maskable" }));
+    }
+    serde_json::json!({
+        "name": app.name,
+        "short_name": app.name,
+        "description": format!("{} from Linux, through Lindroids", app.name),
+        "id": base,
+        "start_url": base,
+        "scope": base,
+        "display": "fullscreen",
+        "background_color": "#000000",
+        "theme_color": "#0F1720",
+        "icons": icons,
+    })
+    .to_string()
+}
+
+/// Width and height from a PNG's header.
+fn png_size(png: &[u8]) -> Option<(u32, u32)> {
+    if png.len() < 24 || &png[..8] != b"\x89PNG\r\n\x1a\n" {
+        return None;
+    }
+    Some((u32::from_be_bytes(png[16..20].try_into().ok()?), u32::from_be_bytes(png[20..24].try_into().ok()?)))
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
 /// `/run-icon/<pid>.png`: a run's icon.

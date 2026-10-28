@@ -40,6 +40,11 @@ import java.util.concurrent.TimeUnit;
  *   app_process ... lindroids.Shortcut cancel &lt;package&gt; &lt;id&gt;
  *   app_process ... lindroids.Shortcut clip &lt;package&gt; &lt;text file&gt;
  *   app_process ... lindroids.Shortcut device
+ *   app_process ... lindroids.Shortcut app-browsers
+ *   app_process ... lindroids.Shortcut apps-for &lt;url&gt;
+ *   app_process ... lindroids.Shortcut view &lt;package&gt; &lt;target package&gt; &lt;url&gt;
+ *   app_process ... lindroids.Shortcut app-settings &lt;package&gt; &lt;app package&gt;
+ *   app_process ... lindroids.Shortcut app-icons &lt;icon.png&gt; &lt;maskable.png&gt; &lt;plain.png&gt;
  * </pre>
  *
  * Prints "ok", or "error: ..." and exits 1. Android's binder interfaces are hidden API, reached by
@@ -88,10 +93,21 @@ public final class Shortcut {
                 System.out.println("pinned " + pinned(service(), a[1], a[2]));
             } else if (a.length >= 3 && a[0].equals("cancel")) {
                 cancel(a[1], Integer.parseInt(a[2]));
+            } else if (a.length >= 1 && a[0].equals("app-browsers")) {
+                appBrowsers();
+            } else if (a.length >= 2 && a[0].equals("apps-for")) {
+                for (String p : appsFor(a[1])) System.out.println("app " + p);
+            } else if (a.length >= 4 && a[0].equals("view")) {
+                view(a[1], a[2], a[3]);
+            } else if (a.length >= 3 && a[0].equals("app-settings")) {
+                appSettings(a[1], a[2]);
+            } else if (a.length >= 4 && a[0].equals("app-icons")) {
+                appIcons(a[1], a[2], a[3]);
             } else {
                 throw new IllegalArgumentException("usage: pin <package> <id> <label> <icon> <action> <component> <type> <text> | remove <package> <id>"
                         + " | open <package> new|raise <url> <browser>... | notify|running <package> <id> <program> <title> <text> <icon> <small-icon> <url> <browser>..."
-                        + " | cancel <package> <id> | pinned <package> <id> | clip <package> <file> | device");
+                        + " | cancel <package> <id> | pinned <package> <id> | clip <package> <file> | device"
+                        + " | app-browsers | apps-for <url> | view <package> <target> <url> | app-settings <package> <app> | app-icons <icon> <maskable> <plain>");
             }
             System.out.println("ok");
             System.exit(0);
@@ -317,22 +333,17 @@ public final class Shortcut {
      * a null one asks for a tab without a session. Returns the browser used.
      */
     static String open(String pkg, String mode, String url, String[] browsers) throws Exception {
-        Class<?> sm = Class.forName("android.os.ServiceManager");
-        IBinder b = (IBinder) sm.getMethod("getService", String.class).invoke(null, "activity_task");
-        String stub = "android.app.IActivityTaskManager$Stub";
-        if (b == null) { // before Android 10
-            b = (IBinder) sm.getMethod("getService", String.class).invoke(null, "activity");
-            stub = "android.app.IActivityManager$Stub";
-        }
-        Object atm = Class.forName(stub).getMethod("asInterface", IBinder.class).invoke(null, b);
+        Object atm = taskManager();
         int flags = Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT;
         if (mode.equals("new")) flags |= Intent.FLAG_ACTIVITY_MULTIPLE_TASK;
         String last = "no browser given", tab = null;
         boolean strict = !mode.equals("raise");
         boolean wait = hasMethod(atm, "startActivityAndWait") && userId() == 0;
         for (String browser : withDefault(browsers)) {
+            // An installed web app (`export --webapk`) is a window of its own whatever it opens.
+            boolean app = !isBrowser(browser);
             Intent i = windowIntent(url, browser, flags);
-            Object r = wait ? call(atm, "startActivityAndWait", pkg, i) : call(atm, "startActivity", pkg, i);
+            Object r = wait && !app ? call(atm, "startActivityAndWait", pkg, i) : call(atm, "startActivity", pkg, i);
             String opened = null;
             if (r != null && r.getClass().getName().equals("android.app.WaitResult")) {
                 opened = window(r, strict);
@@ -615,6 +626,11 @@ public final class Shortcut {
     static Intent windowIntent(String url, String browser, int flags) {
         Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(withVia(url, browser)));
         i.setPackage(browser);
+        if (!isBrowser(browser)) {
+            // An installed web app: its own task already, which takes its URLs.
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            return i;
+        }
         i.addFlags(flags);
         android.os.Bundle extras = new android.os.Bundle();
         extras.putBinder("android.support.customtabs.extra.SESSION", null);
@@ -623,6 +639,175 @@ public final class Shortcut {
         extras.putInt("androidx.browser.customtabs.extra.SHARE_STATE", 2);
         i.putExtras(extras);
         return i;
+    }
+
+    /** Android's activity task manager (the activity manager before Android 10). */
+    static Object taskManager() throws Exception {
+        Class<?> sm = Class.forName("android.os.ServiceManager");
+        IBinder b = (IBinder) sm.getMethod("getService", String.class).invoke(null, "activity_task");
+        String stub = "android.app.IActivityTaskManager$Stub";
+        if (b == null) { // before Android 10
+            b = (IBinder) sm.getMethod("getService", String.class).invoke(null, "activity");
+            stub = "android.app.IActivityManager$Stub";
+        }
+        return Class.forName(stub).getMethod("asInterface", IBinder.class).invoke(null, b);
+    }
+
+    /**
+     * A package manager call. Its flags are an int before Android 13 and a long since: an Integer
+     * goes as a long where the method takes one.
+     */
+    static Object pmCall(String name, Object... args) throws Exception {
+        Object pm = Class.forName("android.app.ActivityThread").getMethod("getPackageManager").invoke(null);
+        for (Method m : pm.getClass().getMethods()) {
+            Class<?>[] t = m.getParameterTypes();
+            if (!m.getName().equals(name) || t.length != args.length) continue;
+            Object[] v = args.clone();
+            boolean fits = true;
+            for (int k = 0; k < t.length; k++) {
+                if (t[k] == long.class && v[k] instanceof Integer) v[k] = (long) (Integer) v[k];
+                if (t[k] == int.class) fits &= v[k] instanceof Integer;
+                else if (t[k] == long.class) fits &= v[k] instanceof Long;
+                else fits &= v[k] == null || t[k].isInstance(v[k]);
+            }
+            if (fits) return m.invoke(pm, v);
+        }
+        throw new IllegalStateException("the package manager has no " + name);
+    }
+
+    /** The packages with an activity that opens {@code url} from a link (BROWSABLE, any of them: MATCH_ALL). */
+    static java.util.Set<String> viewers(String url) throws Exception {
+        Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+        i.addCategory(Intent.CATEGORY_BROWSABLE);
+        Object r = pmCall("queryIntentActivities", i, null, 0x20000, userId());
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        if (r == null) return out;
+        List<?> list = r instanceof List ? (List<?>) r : (List<?>) r.getClass().getMethod("getList").invoke(r);
+        for (Object o : list) {
+            android.content.pm.ResolveInfo ri = (android.content.pm.ResolveInfo) o;
+            if (ri.activityInfo != null) out.add(ri.activityInfo.packageName);
+        }
+        return out;
+    }
+
+    static java.util.Set<String> browserPackages;
+
+    /** Whether {@code pkg} opens any web link (a browser), not only some site's (an installed web app). */
+    static boolean isBrowser(String pkg) {
+        try {
+            if (browserPackages == null) browserPackages = viewers("http://example.com/");
+            return browserPackages.contains(pkg);
+        } catch (Exception e) {
+            System.err.println("browsers: " + e);
+            return true;
+        }
+    }
+
+    /**
+     * The installed apps, other than browsers, that open {@code url}: an installed web app (a
+     * WebAPK, which Chrome or Samsung Internet had made) whose scope holds it.
+     */
+    static List<String> appsFor(String url) throws Exception {
+        java.util.Set<String> all = viewers(url);
+        all.removeAll(viewers("http://example.com/"));
+        all.removeAll(viewers("https://example.com/"));
+        return new java.util.ArrayList<>(all);
+    }
+
+    static android.content.pm.PackageInfo packageInfo(String pkg, int flags) {
+        try {
+            return (android.content.pm.PackageInfo) pmCall("getPackageInfo", pkg, flags, userId());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Installed and not turned off. */
+    static boolean usable(String pkg) {
+        android.content.pm.PackageInfo p = packageInfo(pkg, 0);
+        return p != null && p.applicationInfo != null && p.applicationInfo.enabled;
+    }
+
+    /**
+     * Google's own Play services, not microG's stand-in (same package name, its own activities
+     * under org.microg): Chrome makes installed web apps through them.
+     */
+    static String playServices() {
+        if (!usable("com.google.android.gms")) return "no Google Play services";
+        if (!usable("com.android.vending")) return "no Play Store";
+        android.content.pm.PackageInfo p = packageInfo("com.google.android.gms", 1 /* GET_ACTIVITIES */);
+        if (p != null && p.activities != null) {
+            for (android.content.pm.ActivityInfo a : p.activities) {
+                if (a.name.startsWith("org.microg.")) return "microG instead of Google Play services";
+            }
+        }
+        return null;
+    }
+
+    static final String[] CHROMES = {"com.android.chrome", "com.chrome.beta", "com.chrome.dev", "com.chrome.canary"};
+    static final String[] SAMSUNG_BROWSERS = {"com.sec.android.app.sbrowser", "com.sec.android.app.sbrowser.beta"};
+
+    /**
+     * The installed browsers that can install a page as an app of its own (a WebAPK), a line
+     * each: {@code can <package>}, or {@code cannot <package> <why>}. Only Chrome can, through
+     * Google Play services, and Samsung Internet, on Samsung's phones through the Galaxy Store;
+     * every other browser makes only a home screen shortcut.
+     */
+    static void appBrowsers() {
+        String play = playServices();
+        for (String c : CHROMES) {
+            if (packageInfo(c, 0) == null) continue;
+            String why = !usable(c) ? "turned off" : play;
+            System.out.println(why == null ? "can " + c : "cannot " + c + " " + why);
+        }
+        boolean samsung = "samsung".equalsIgnoreCase(android.os.Build.MANUFACTURER);
+        for (String c : SAMSUNG_BROWSERS) {
+            if (packageInfo(c, 0) == null) continue;
+            String why = !usable(c) ? "turned off" : !samsung ? "not a Samsung phone" : !usable("com.sec.android.app.samsungapps") ? "no Galaxy Store" : null;
+            System.out.println(why == null ? "can " + c : "cannot " + c + " " + why);
+        }
+    }
+
+    /** Opens {@code url} in {@code target} (a browser's ordinary tab, or an installed web app), as {@code pkg}. */
+    static void view(String pkg, String target, String url) throws Exception {
+        Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+        i.setPackage(target);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        Object r = call(taskManager(), "startActivity", pkg, i);
+        if (r instanceof Integer && (Integer) r < 0) throw new IllegalStateException(target + ": start result " + r);
+    }
+
+    /**
+     * Android's page for {@code app} in Settings, where it is uninstalled: asking for the uninstall
+     * itself (ACTION_DELETE) needs a permission the terminal app does not have.
+     */
+    static void appSettings(String pkg, String app) throws Exception {
+        Intent i = new Intent("android.settings.APPLICATION_DETAILS_SETTINGS", android.net.Uri.parse("package:" + app));
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        Object r = call(taskManager(), "startActivity", pkg, i);
+        if (r instanceof Integer && (Integer) r < 0) throw new IllegalStateException("settings: start result " + r);
+    }
+
+    /**
+     * A web app manifest's icons, as PNGs: {@code maskable}, the icon as {@code adaptive} draws it
+     * (what Android's launchers cut into their shape), and {@code plain}, the icon 512 pixels
+     * square (browsers install no app whose icon is under 144).
+     */
+    static void appIcons(String in, String maskable, String plain) throws Exception {
+        Bitmap icon = BitmapFactory.decodeFile(in);
+        if (icon == null) throw new IllegalArgumentException(in + ": not an image");
+        try (java.io.FileOutputStream f = new java.io.FileOutputStream(maskable)) {
+            adaptive(icon).compress(Bitmap.CompressFormat.PNG, 100, f);
+        }
+        int size = 512;
+        Bitmap out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        float k = Math.min((float) size / icon.getWidth(), (float) size / icon.getHeight());
+        int w = Math.round(icon.getWidth() * k), h = Math.round(icon.getHeight() * k);
+        new Canvas(out).drawBitmap(icon, null, new Rect((size - w) / 2, (size - h) / 2, (size - w) / 2 + w, (size - h) / 2 + h),
+                new Paint(Paint.FILTER_BITMAP_FLAG | Paint.ANTI_ALIAS_FLAG));
+        try (java.io.FileOutputStream f = new java.io.FileOutputStream(plain)) {
+            out.compress(Bitmap.CompressFormat.PNG, 100, f);
+        }
     }
 
     /** A pinned shortcut cannot be taken off the home screen by its app, only disabled. */
