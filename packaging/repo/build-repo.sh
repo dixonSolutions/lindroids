@@ -18,8 +18,6 @@
 #   dists/stable/{Release,InRelease,Release.gpg}
 #   dists/stable/main/binary-{arm64,armhf,amd64,i386}/Packages(.gz)
 #   pool/{termux,stable}/main/l/lindroids/lindroids_<version>_<arch>.deb
-#   pool/termux/main/l/lindroids-flatpak/lindroids-flatpak_<version>_<arch>.deb  Flatpak for Termux
-#     (packaging/termux-flatpak; the release takes them from the termux-flatpak-* GitHub release)
 #   pacman/termux/{aarch64,arm,x86_64,i686}/        Termux with pacman (packaging/build-pacman.sh)
 #   pacman/arch/{aarch64,armv7h,x86_64,i686}/       Arch Linux and derivatives
 #     lindroids.db{,.tar.gz}{,.sig}, lindroids-<version>-<rel>-<arch>.pkg.tar.xz{,.sig}
@@ -511,8 +509,7 @@ chmod 644 "$OUTDIR/install.sh"
 rm -rf "$OUTDIR/termux-flatpak"
 mkdir -p "$OUTDIR/termux-flatpak"
 install -m 644 "$ROOT"/packaging/termux-flatpak/* "$OUTDIR/termux-flatpak/"
-# VERSION: the newest lindroids in the pool (the static installer downloads that release; the pool
-# also has lindroids-flatpak, whose versions are Flatpak's).
+# VERSION: the newest lindroids in the pool (the static installer downloads that release).
 latest=$(find "$OUTDIR/pool" -name 'lindroids_*.deb' -printf '%f\n' | awk -F_ '{print $2}' | sort -uV | tail -1)
 [ -n "$latest" ] && echo "$latest" > "$OUTDIR/VERSION"
 touch "$OUTDIR/.nojekyll"

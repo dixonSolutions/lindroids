@@ -19,8 +19,7 @@
 # Termux, system changes need root: it runs them directly as root, else with sudo or doas.
 # It also checks for Flatpak and, when it is missing, asks to install it (with Flathub): with the
 # system's package manager, or in Termux (which has no Flatpak package) natively — Lindroids' own
-# build with its Android patches (the package lindroids-flatpak, else built here from source), no
-# root and no Linux distro needed.
+# build with its Android patches, built here from source, no root and no Linux distro needed.
 #
 # Safe to run again: it rewrites the same source and key files and upgrades the package.
 #
@@ -272,32 +271,10 @@ choose() {
   echo "${answer:-$2}"
 }
 
-# flatpak_package_there: the Lindroids APT repository has lindroids-flatpak for this Termux (apt,
-# and an architecture the release built it for). `lindroids setup flatpak` comes here without the
-# installer's apt update, so a package apt does not know yet gets one more look after an update.
-flatpak_package_there() {
-  [ "$PM" = apt ] || return 1
-  apt-cache policy lindroids-flatpak 2>/dev/null | grep -q 'Candidate: [0-9]' && return 0
-  [ -z "$APT_UPDATED" ] || return 1
-  APT_UPDATED=1
-  apt update > /dev/null 2>&1 || return 1
-  apt-cache policy lindroids-flatpak 2>/dev/null | grep -q 'Candidate: [0-9]'
-}
-
 # Flatpak natively in Termux: ostree and Flatpak built from their release sources with Lindroids'
 # Android patches (packaging/termux-flatpak, published on the site). No root, no Linux distro:
-# apps install per user and run with `lindroids run <app-id>`. The release builds them once per
-# architecture as the package lindroids-flatpak, which installs in seconds; where there is none
-# (pacman, or LINDROIDS_FLATPAK=build), the kit builds them here.
+# apps install per user and run with `lindroids run <app-id>`.
 flatpak_native() {
-  if [ "${LINDROIDS_FLATPAK:-}" != build ] && flatpak_package_there; then
-    say "Flatpak for Termux: apt install lindroids-flatpak (Lindroids' build, no compiling)"
-    if apt install -y lindroids-flatpak < /dev/null; then
-      flatpak --user remote-add --if-not-exists flathub "$FLATHUB" || warn "cannot add Flathub"
-      return 0
-    fi
-    warn "installing lindroids-flatpak failed; building Flatpak instead"
-  fi
   kit=${TMPDIR:-$PREFIX/tmp}/lindroids-termux-flatpak
   rm -rf "$kit"
   mkdir -p "$kit"
@@ -370,13 +347,8 @@ flatpak_termux() {
     *)
       echo
       echo "Flatpak: not installed. Termux has no Flatpak package. How should Lindroids get it?"
-      if flatpak_package_there; then
-        echo "  1) Lindroids' Flatpak for Termux (recommended): no root and no Linux distro;"
-        echo "     a minute or two (lindroids-flatpak and its libraries); apps install per user"
-      else
-        echo "  1) build it natively for Termux (recommended): no root and no Linux distro; once,"
-        echo "     about 20 minutes and 600 MB of build tools; apps install per user"
-      fi
+      echo "  1) build it natively for Termux (recommended): no root and no Linux distro; once,"
+      echo "     about 20 minutes and 600 MB of build tools; apps install per user"
       n=1
       for d in $distros; do
         n=$((n + 1))
