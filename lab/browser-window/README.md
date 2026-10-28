@@ -18,6 +18,7 @@ get without an APK, and what a relay sees when they open and close.
 - `TaskProbe.java` — what Recents draws for each task: the activity that owns it and the
   TaskDescription (label, icon) that activity set; run as adb's shell:
   `adb shell CLASSPATH=/data/local/tmp/taskprobe.dex app_process /system/bin probe.TaskProbe`; `probe.TaskProbe remove <task id>…` removes tasks (`lab/test-recents.sh` uses both).
+- `Route.java` — what the terminal app itself can do about a task, run with its uid (it names the package from the uid): its own tasks (`getAppTasks`), a Custom Tab started into one (`IAppTask.startActivity`, `setLaunchTaskId`), a TaskDescription or Recents entry without an activity token, one of its activities as a document. `ROUTES_ONLY=1 lab/test-recents.sh` runs it; results in docs/DISPLAY.md.
 - `b16-2026-10-27.log`, `b16-2026-10-27-customtabs.log` — the probe's logs from the runs below,
   without heartbeats.
 

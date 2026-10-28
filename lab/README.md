@@ -28,7 +28,7 @@ lab/vm.sh b16 wait-boot
 lab/provision.sh b16                  # setup wizard off, Termux + openssh + foot + lab key, sshd
 lab/test-lindroids.sh b16             # CLI + window + typing + closing + second run + shortcut -> lab/results/b16/<mode>/
 lab/test-windows.sh b16               # a Flatpak's window, run and from its exported icon: Recents icon, kept in the background, ✕ ends it, its end closes it
-lab/test-recents.sh b16               # whose icon each Custom Tab browser's window can get in Recents (TaskDescription, root activity), per intent shape
+lab/test-recents.sh b16               # whose icon each Custom Tab browser's window can get in Recents (TaskDescription, root activity), per intent shape; ROUTES_ONLY=1: only what the terminal app itself can do about a task (Route.java)
 lab/vm.sh b16 stop                    # adb `reboot -p`, then QMP quit
 ```
 

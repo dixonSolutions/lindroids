@@ -11,9 +11,12 @@
 #   - "app icon launcher" (Samsung One UI, reported: Chrome's logo on every Chrome window, with
 #     the page's title as the label): always the root activity's app icon.
 # And whether Firefox could open an installed web app (VIEW_PWA, the only Firefox window that
-# sets a task icon) for an http://*.localhost page.
+# sets a task icon) for an http://*.localhost page. Then what the terminal app itself could do
+# about a task's icon (browser-window/Route.java, run with its uid; see "From the terminal app's
+# side" below).
 #
 #   lab/test-recents.sh <vm>                       (default b16)
+#   ROUTES_ONLY=1 lab/test-recents.sh <vm>         only the terminal app's side (keeps the default browser)
 #
 # Needs a JDK (javac, java) and the Android SDK (android.jar, d8): ANDROID_HOME, JAVA_BIN.
 # Results: lab/results/<vm>/recents/ (result.txt, the icons Android kept). Leaves the default
@@ -47,6 +50,7 @@ build_dex() { # <java file> <out dex>
 }
 build_dex "$LAB_DIR/browser-window/Open.java" /tmp/lab-open.dex || { echo "cannot build Open.java" >&2; exit 1; }
 build_dex "$LAB_DIR/browser-window/TaskProbe.java" /tmp/lab-taskprobe.dex || { echo "cannot build TaskProbe.java" >&2; exit 1; }
+build_dex "$LAB_DIR/browser-window/Route.java" /tmp/lab-route.dex || { echo "cannot build Route.java" >&2; exit 1; }
 "$VM" "$NAME" scp /tmp/lab-open.dex open-recents.dex >/dev/null
 "$VM" "$NAME" scp "$LAB_DIR/browser-window/probe.py" probe-recents.py >/dev/null
 "$VM" "$NAME" adb push /tmp/lab-taskprobe.dex /data/local/tmp/taskprobe-recents.dex >/dev/null
@@ -67,7 +71,8 @@ log "Custom Tab browsers: $(echo $browsers)"
 
 opened=()
 n=0
-for b in $browsers; do
+[[ ${ROUTES_ONLY:-0} == 1 ]] && log "ROUTES_ONLY: browsers' windows skipped"
+for b in $([[ ${ROUTES_ONLY:-0} == 1 ]] || echo $browsers); do
   # Chromium takes Custom Tab intents from other apps only as the default browser (Cromite also
   # needs Settings → Privacy → Allow custom tab intents).
   sh_ "cmd role add-role-holder android.app.role.BROWSER $b 0" >/dev/null
@@ -106,11 +111,51 @@ for b in $browsers; do
 done
 
 # Firefox's installed web apps (VIEW_PWA) set a task icon; Firefox installs them only for https.
-for d in "http://rtpwa.localhost:$PORT/app/pwa/" https://example.com/; do
+for d in $([[ ${ROUTES_ONLY:-0} == 1 ]] || echo "http://rtpwa.localhost:$PORT/app/pwa/" https://example.com/); do
   r=$(sh_ "cmd package query-activities --brief -a mozilla.components.feature.pwa.VIEW_PWA -d $d" | grep -c '/')
   log "VIEW_PWA resolves for $d: $([[ $r -gt 0 ]] && echo yes || echo no)"
 done
 
 [[ ${#opened[@]} -gt 0 ]] && probe remove "${opened[@]}" >/dev/null
+
+# From the terminal app's side, as its uid (Route.java names the package from the uid: nothing here
+# assumes Termux). Could it put the window into a task of its own package, whose root activity
+# would then decide the icon on an "app icon launcher", or set a task's TaskDescription itself?
+"$VM" "$NAME" scp /tmp/lab-route.dex route-recents.dex >/dev/null
+route() { tsh "/system/bin/app_process -Djava.class.path=\$HOME/route-recents.dex /system/bin probe.Route $*" 2>&1 | grep -vE '^\s+at |^\s*$|Remote stack trace'; }
+host=$(route pkg | awk '{print $1}')
+log "terminal app (from this process' uid): ${host:-unknown}"
+tasks=$(route apptasks)
+apptask=$(sed -n 's/^app task \([0-9]*\).*/\1/p' <<<"$tasks" | head -1)
+log "its own tasks: $(sed 's/ baseActivity.* top/, top/' <<<"$tasks" | tr '\n' ';')"
+cct=$(sh_ 'cmd package query-services --brief -a android.support.customtabs.action.CustomTabsService' | sed -n 's#^ *\([a-zA-Z0-9_.]*\)/.*#\1#p' | head -1)
+if [[ -n $apptask && -n $cct ]]; then
+  log "$cct Custom Tab into its task $apptask, IAppTask.startActivity: $(route intask "$apptask" "$cct" "http://rtin.localhost:$PORT/app/in/" | grep '^intask' | head -1)"
+  log "    ActivityOptions.setLaunchTaskId / startActivityFromRecents: $(route launchtask "$apptask" "$cct" "http://rtin.localhost:$PORT/app/in/" | grep -E '^(launchtask|startActivityFromRecents)' | sed 's/Intent {.*}/Intent {…}/' | tr '\n' ' ')"
+fi
+log "TaskDescription without a token: $(route settd RouteProbe FF2E7D32 | tr '\n' ';')"
+launcher=$(sh_ "cmd package resolve-activity --brief -c android.intent.category.LAUNCHER $host" | tail -1)
+log "addAppTask (a Recents entry with an icon of its own): $(route addtask "$launcher" RouteProbe | grep -E '^addAppTask|Exception' | cut -c1-160 | tr '\n' ';')"
+# Its activities: which could root a window. Any one that is not singleTask opens as a document
+# of its own (NEW_DOCUMENT|MULTIPLE_TASK), but shows its own content, not the page.
+aapt=$(ls -d "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
+apk=$(sh_ "pm path $host" | sed -n 's/^package://p' | head -1)
+help=""
+if [[ -n $apk && -x $aapt ]] && "$VM" "$NAME" adb pull "$apk" /tmp/lab-host.apk >/dev/null 2>&1; then
+  "$aapt" dump xmltree /tmp/lab-host.apk --file AndroidManifest.xml >"$OUT/host-manifest.txt"
+  acts=$(awk '/E: activity/{a=1} a&&/android:name\(/{match($0,/"[^"]*"/); print substr($0,RSTART+1,RLENGTH-2); a=0}' "$OUT/host-manifest.txt")
+  log "its activities: $(echo $acts)"
+  help=$(grep -m1 -i help <<<"$acts")
+fi
+if [[ -n $help ]]; then
+  for d in doc1 doc2; do route doc "$host/$help" 18080000 "http://rt$d.localhost:$PORT/app/$d/" >/dev/null; done
+  sleep 3
+  "$VM" "$NAME" screenshot "$OUT/host-document.png" >/dev/null
+  docs=$(route apptasks | grep -F "$help" | sed -n 's/^app task \([0-9]*\).*/\1/p')
+  log "$help as documents: tasks $(echo $docs); the page was asked for $(tsh 'grep -c "/app/doc" ~/probe-recents.out') times (host-document.png)"
+  for t in $docs; do route remove "$t" >/dev/null; done
+  sh_ "input keyevent HOME" >/dev/null
+fi
+
 [[ -n $default_browser ]] && sh_ "cmd role add-role-holder android.app.role.BROWSER $default_browser 0" >/dev/null
 log "done; default browser back to ${default_browser:-none}"
