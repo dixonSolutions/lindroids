@@ -24,6 +24,9 @@ make one (below); otherwise the export is a home screen shortcut, as before.
 - `lindroids export <id or name> convert home-screen --to=webapk`: a shortcut becomes an app.
 - `lindroids export <id or name> convert webapk --to=home-screen`: an app becomes a shortcut.
   Android keeps the app until its Uninstall is tapped: lindroids opens the app's page for it.
+- Converting to a WebAPK disables the old home screen shortcut (Android lets its owner disable one,
+  but only the launcher unpin it): it stays greyed out until it is dragged off, and the WebAPK is
+  the icon left.
 - Porting an existing shortcut is the same export again with its id: `lindroids export --id <id>
   <program>` (the program's own command works too).
 - `lindroids export --run <program>` exports, then starts it. `lindroids run --export <program>`

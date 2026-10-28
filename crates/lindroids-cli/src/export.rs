@@ -317,6 +317,11 @@ fn export(args: &[String], suffix: &str, tag: Option<String>, launch: bool) -> i
                 if let Err(e) = save(&rec) {
                     return crate::fail(&e);
                 }
+                // The home screen shortcut is not the app: Android lets only its owner disable it,
+                // and only the launcher unpin it (the icon stays, greyed, until dragged off).
+                if shortcut::remove(&sb, &id).is_ok() {
+                    println!("Its old home screen shortcut is greyed out: drag it off (only the launcher can remove a pinned shortcut).");
+                }
                 return if launch { export_launch(&id) } else { 0 };
             }
             Ok(None) => {
