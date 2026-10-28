@@ -261,7 +261,7 @@ arguments, with the distro found pinned) and pins a shortcut — with no app of 
   (an app cannot take a pinned shortcut off the home screen); exporting the same id again
   enables it first, since a disabled shortcut can be neither updated nor pinned.
 - **What it does.** Its intent is a shared URL, `http://127.0.0.1:<port>/launch/termux/<id>`,
-  sent to Termux's share receiver (`TermuxFileReceiverActivity`): no permission or Termux setting
+  sent to Termux's share receiver (`TermuxFileReceiverActivity`; `.app.api.file.FileShareReceiverActivity` since Termux 0.119: the helper picks the one the installed Termux has, since a shortcut to a class that is gone shows "Can't open this app"): no permission or Termux setting
   is involved, Termux starts if it is closed, and it runs `~/bin/termux-url-opener <url>` in a
   session. `lindroids export` installs that opener; it runs `lindroids launch <id>` for these URLs
   and hands every other URL to the opener the user had (kept in

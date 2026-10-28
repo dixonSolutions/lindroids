@@ -39,6 +39,7 @@ from Android**, through the window page and Termux, never by giving the containe
 | `lindroids export <app>` pins a home-screen icon with the program's icon and name | ✅ | adaptive icon; Android badges it with Termux (every pinned shortcut shows its owner) |
 | Exporting again updates the icon in place | ✅ | no second icon |
 | Shortcut works with Termux closed | ✅ | [demo](../media/demos/launch-from-home.mp4) |
+| Shortcut works with Termux 0.119 (renamed share receiver) | ⚠️ | receiver found at pin time (names tried, then an intent query); tested on b16's 0.118.3 with the new name listed first and with only bogus names; 0.119 itself not installable there (signing key). Re-run `lindroids export <app>` to fix an icon pinned before |
 | Shortcut works right after a reboot, Termux never opened | ✅ | window in ~1–2 s, enforcing |
 | The window says the program ended even when Termux closes with it | ✅ | |
 | A program that exits before any window says so in its window | ✅ | "ended before showing a window (exit code N)" |

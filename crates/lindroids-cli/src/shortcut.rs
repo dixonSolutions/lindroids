@@ -22,8 +22,10 @@ use crate::sandbox::{self, Kind, Sandbox};
 
 const DEX: &[u8] = include_bytes!("../shortcut/shortcut.dex");
 
-/// Termux's share receiver: runs `~/bin/termux-url-opener` for a shared URL.
-const RECEIVER: &str = "com.termux/com.termux.filepicker.TermuxFileReceiverActivity";
+/// Termux's share receiver, which runs `~/bin/termux-url-opener` for a shared URL: its name in
+/// Termux 0.119 first, then 0.118's. The helper takes the first that exists in the installed
+/// Termux (else any activity of it that takes the share), so a rename cannot break the icon.
+const RECEIVER: &str = "com.termux/.app.api.file.FileShareReceiverActivity,com.termux/com.termux.filepicker.TermuxFileReceiverActivity";
 
 /// Marks the opener as ours, so it is replaced on updates and never saved as "the user's".
 const OPENER_MARK: &str = "# lindroids: termux-url-opener";

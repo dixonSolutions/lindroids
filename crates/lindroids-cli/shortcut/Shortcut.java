@@ -194,9 +194,9 @@ public final class Shortcut {
 
     static void pin(String pkg, String id, String label, String iconPath, String action, String component, String type, String text) throws Exception {
         Intent i = new Intent(action);
-        String[] cn = component.split("/", 2);
-        i.setClassName(cn[0], cn[1].startsWith(".") ? cn[0] + cn[1] : cn[1]);
         if (!type.isEmpty()) i.setType(type);
+        String[] cn = receiver(component, pkg, i).split("/", 2);
+        i.setClassName(cn[0], cn[1].startsWith(".") ? cn[0] + cn[1] : cn[1]);
         if (!text.isEmpty()) i.putExtra(Intent.EXTRA_TEXT, text);
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
 
@@ -230,6 +230,46 @@ public final class Shortcut {
         }
         Object r = call(svc, "requestPinShortcut", pkg, s, userId());
         if (Boolean.FALSE.equals(r)) throw new IllegalStateException("the launcher does not take pinned shortcuts");
+    }
+
+    /**
+     * The activity a shortcut sends {@code probe} to: the first of {@code candidates}
+     * (comma-separated {@code package/class}) that is installed and may be started from outside,
+     * else whichever activity of {@code pkg} takes the intent. Termux renamed its share receiver
+     * (0.119: {@code .app.api.file.FileShareReceiverActivity}); a shortcut to a class that is not
+     * there is one the launcher refuses ("Can't open this app"). With no match the first
+     * candidate is used as it is.
+     */
+    static String receiver(String candidates, String pkg, Intent probe) {
+        String[] list = candidates.split(",");
+        try {
+            Object pm = Class.forName("android.app.ActivityThread").getMethod("getPackageManager").invoke(null);
+            for (String c : list) {
+                String[] cn = c.split("/", 2);
+                if (cn.length < 2) continue;
+                String cls = cn[1].startsWith(".") ? cn[0] + cn[1] : cn[1];
+                for (Method m : pm.getClass().getMethods()) {
+                    Class<?>[] t = m.getParameterTypes();
+                    if (!m.getName().equals("getActivityInfo") || t.length != 3) continue;
+                    android.content.pm.ActivityInfo ai = (android.content.pm.ActivityInfo) m.invoke(pm,
+                            new android.content.ComponentName(cn[0], cls), t[1] == long.class ? (Object) 0L : (Object) 0, userId());
+                    if (ai != null && ai.exported) return cn[0] + "/" + cls;
+                }
+            }
+            Intent q = new Intent(probe);
+            q.setPackage(pkg);
+            for (Method m : pm.getClass().getMethods()) {
+                Class<?>[] t = m.getParameterTypes();
+                if (!m.getName().equals("resolveIntent") || t.length != 4) continue;
+                Object flags = t[2] == long.class ? (Object) (long) android.content.pm.PackageManager.MATCH_DEFAULT_ONLY
+                        : (Object) android.content.pm.PackageManager.MATCH_DEFAULT_ONLY;
+                android.content.pm.ResolveInfo r = (android.content.pm.ResolveInfo) m.invoke(pm, q, probe.getType(), flags, userId());
+                if (r != null && r.activityInfo != null) return r.activityInfo.packageName + "/" + r.activityInfo.name;
+            }
+        } catch (Exception e) {
+            System.err.println("receiver: " + e);
+        }
+        return list[0];
     }
 
     /** Whether shortcut {@code id} is pinned and enabled (FLAG_MATCH_PINNED = 4; before Android 11, getPinnedShortcuts). */
