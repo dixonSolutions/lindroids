@@ -397,6 +397,7 @@ const RUN = new URLSearchParams(location.search).get('run');
 // app opens with, which asks for the program (`launch`) and goes to its window (`navigate`).
 const APP = (/^\/app\/([A-Za-z0-9._-]+)\/$/.exec(location.pathname) || [])[1] || null;
 const INSTALL = !!APP && new URLSearchParams(location.search).has('install');
+const FRESH = INSTALL && new URLSearchParams(location.search).has('fresh');
 let ended = null, endedIcon = null, endTimer = null, endedNote = '', endedOutput = [], everShown = false;
 let program = null; // { name, icon } of this window's run, from the server
 // The server said the program ended; this page linked to its run before; tries at linking again
@@ -412,10 +413,44 @@ window.addEventListener('beforeinstallprompt', (e) => {
   installPrompt = e;
   if (INSTALL && ready) showInstall();
 });
+let installReported = false;
+function reportInstalled() {
+  if (!INSTALL || installReported) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) { setTimeout(reportInstalled, 500); return; }
+  installReported = true;
+  send({ t: 'installed', id: APP });
+}
+function installedAsWebApp() {
+  if (!navigator.getInstalledRelatedApps) return Promise.resolve(false);
+  return navigator.getInstalledRelatedApps()
+    .then((apps) => apps.some((a) => a.platform === 'webapp'))
+    .catch(() => false);
+}
 window.addEventListener('appinstalled', () => {
-  installed = true;
-  if (INSTALL) showInstall();
+  // Chrome fires this for a home-screen shortcut too. Only a real installed web app counts.
+  installedAsWebApp().then((webapp) => {
+    if (webapp) {
+      installed = true;
+      if (INSTALL) showInstall();
+      reportInstalled();
+    } else if (INSTALL) {
+      showPanel(`<p>Chrome added a <b>shortcut</b>, not an app of its own. This page cannot become a
+        WebAPK: Chrome builds those from a public HTTPS address, and Lindroids serves this page on
+        this phone only.</p><p>Use the Lindroids icon (with Termux's badge) for a window without tabs.</p>`, null, appIcon());
+    }
+  });
 });
+// Already installed (a second export, or the install finished after the export gave up): the
+// installed app names this page's manifest as its own. Chrome may hide its package from queries.
+if (INSTALL && !FRESH && navigator.getInstalledRelatedApps) {
+  navigator.getInstalledRelatedApps().then((apps) => {
+    if (apps.some((a) => a.platform === 'webapp')) {
+      installed = true;
+      if (ready) showInstall();
+      reportInstalled();
+    }
+  }).catch(() => {});
+}
 
 function appPage() {
   if (INSTALL) return showInstall();
@@ -997,7 +1032,7 @@ if (OWN_WINDOW) {
   const full = (e) => {
     // Not once the program has ended: the browser's close button is the way out then.
     if (ended !== null && !windows.size) return;
-    if (e.target instanceof Element && e.target.closest('.dialog, .toast')) return;
+    if (e.target instanceof Element && e.target.closest('.dialog, .toast, .picker')) return;
     if (!wantFull || askingFull || document.fullscreenElement) return;
     if (e.type === 'pointerdown' && e.pointerType !== 'mouse') return;
     if (e.type === 'keydown' && !fullKey(e)) return;

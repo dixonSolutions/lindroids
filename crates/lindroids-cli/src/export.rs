@@ -183,6 +183,30 @@ fn plan(choice: &str, explicit: bool) -> Result<Plan, String> {
     if let Some((b, why)) = cannot.iter().find(|(b, _)| b == choice) {
         return Err(format!("{} cannot make an app of its own: {why}", shortcut::browser_name(b)));
     }
+    let system = shortcut::system_browsers();
+    let found = if matches!(choice, "webapk" | "default") {
+        system.first()
+    } else {
+        system.iter().find(|(p, _)| p == choice)
+    };
+    if let Some((p, _)) = found {
+        if let Some((_, why)) = cannot.iter().find(|(b, _)| b == p) {
+            return Err(format!("{} cannot make an app of its own: {why}", shortcut::browser_name(p)));
+        }
+        // On the system image and hidden from lookups (or installed for the user and invisible):
+        // the install page will tell whether it opens. Android may have hidden the browser from
+        // queries but still runs it by package (the tablet's Chrome).
+        return Ok(Plan::App(p.clone()));
+    }
+    // Explicitly asked for a WebAPK, and Play services/Play Store leave Chrome possible but
+    // Android hides packages from lookups: try the install page. `view` says if Chrome is absent.
+    if explicit && matches!(choice, "webapk" | "com.android.chrome" | "com.chrome.beta" | "com.chrome.dev" | "com.chrome.canary") {
+        let pkg = if choice == "webapk" { "com.android.chrome".to_string() } else { choice.to_string() };
+        if let Some((_, why)) = cannot.iter().find(|(b, _)| b == &pkg) {
+            return Err(format!("{} cannot make an app of its own: {why}", shortcut::browser_name(&pkg)));
+        }
+        return Ok(Plan::App(pkg));
+    }
     if config::valid_browser(choice) && choice.contains('.') {
         return Err(format!("{choice} is not installed"));
     }
@@ -353,21 +377,41 @@ fn install_app(sb: &sandbox::Sandbox, id: &str, name: &str, icon: &[u8], browser
         other => return Err(format!("the server answered {other:?}")),
     };
     let scope = format!("{origin}/app/{id}/");
-    if let Some(app) = shortcut::app_for(&scope) {
-        println!("{name} is an app of its own already ({app}); {browser_name} updates its name and icon by itself.");
-        return Ok(Some(app));
+    let flag = sandbox::runtime_dir().join(format!("app-installed-{id}"));
+    let _ = std::fs::remove_file(&flag);
+    // `LINDROIDS_WEBAPK_FRESH=1`: install again, ignoring an app found by lookup or already
+    // recorded (a test: the install page's own `appinstalled` is the only yes).
+    let fresh = std::env::var_os("LINDROIDS_WEBAPK_FRESH").is_some();
+    if !fresh {
+        if let Some(app) = shortcut::app_for(&scope) {
+            println!("{name} is an app of its own already ({app}); {browser_name} updates its name and icon by itself.");
+            return Ok(Some(app));
+        }
     }
     // The ticket pairs the browser, if it has not shown a window yet: the app shares its storage.
-    shortcut::view(browser, &format!("{scope}?install#t={ticket}")).map_err(|e| format!("{browser_name} did not open: {e}"))?;
+    let fresh_query = if fresh { "&fresh" } else { "" };
+    shortcut::view(browser, &format!("{scope}?install{fresh_query}#t={ticket}")).map_err(|e| format!("{browser_name} did not open: {e}"))?;
     println!("{browser_name} shows {name}'s install page: tap Install, then Install in {browser_name}'s dialog.");
     let (t0, wait) = (std::time::Instant::now(), install_wait());
     while t0.elapsed() < wait {
         std::thread::sleep(std::time::Duration::from_secs(2));
-        if let Some(app) = shortcut::app_for(&scope) {
-            println!("{name} is an app of its own ({app}): its icon is on the home screen and in the app list.");
-            println!("Its icon starts {name}, in a window with its name and icon in Recents. With Termux closed, it asks to start Termux first.");
-            return Ok(Some(app));
+        if !fresh {
+            if let Some(app) = shortcut::app_for(&scope) {
+                println!("{name} is an app of its own ({app}): its icon is on the home screen and in the app list.");
+                println!("Its icon starts {name}, in a window with its name and icon in Recents. With Termux closed, it asks to start Termux first.");
+                return Ok(Some(app));
+            }
         }
+        if flag.exists() {
+            let _ = std::fs::remove_file(&flag);
+            println!("{name} is an app of its own: its icon is on the home screen and in the app list.");
+            println!("Android hides its package from lookups here, so its page opens the program in the app.");
+            return Ok(Some(String::new()));
+        }
+    }
+    if flag.exists() {
+        let _ = std::fs::remove_file(&flag);
+        return Ok(Some(String::new()));
     }
     Ok(None)
 }

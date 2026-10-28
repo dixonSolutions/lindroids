@@ -95,6 +95,10 @@ public final class Shortcut {
                 cancel(a[1], Integer.parseInt(a[2]));
             } else if (a.length >= 1 && a[0].equals("app-browsers")) {
                 appBrowsers();
+            } else if (a.length >= 1 && a[0].equals("system-browsers")) {
+                systemBrowsers();
+            } else if (a.length >= 1 && a[0].equals("diag")) {
+                diag();
             } else if (a.length >= 1 && a[0].equals("default-browser")) {
                 String d = defaultBrowser();
                 System.out.println("default " + (d == null ? "none" : d));
@@ -110,7 +114,7 @@ public final class Shortcut {
                 throw new IllegalArgumentException("usage: pin <package> <id> <label> <icon> <action> <component> <type> <text> | remove <package> <id>"
                         + " | open <package> new|raise <url> <browser>... | notify|running <package> <id> <program> <title> <text> <icon> <small-icon> <url> <browser>..."
                         + " | cancel <package> <id> | pinned <package> <id> | clip <package> <file> | device"
-                        + " | app-browsers | default-browser | apps-for <url> | view <package> <target> <url> | app-settings <package> <app> | app-icons <icon> <maskable> <plain>");
+                        + " | app-browsers | system-browsers | diag | default-browser | apps-for <url> | view <package> <target> <url> | app-settings <package> <app> | app-icons <icon> <maskable> <plain>");
             }
             System.out.println("ok");
             System.exit(0);
@@ -453,10 +457,22 @@ public final class Shortcut {
      * Android's services because this process has the terminal app's uid.
      */
     static Context appContext(String pkg) throws Exception {
+        return systemContext().createPackageContext(pkg, Context.CONTEXT_IGNORE_SECURITY);
+    }
+
+    /**
+     * The system Context app_process can make. Package lookups go through its PackageManager;
+     * Android may still hide a browser from queries (Chrome on a Samsung tablet), which is why
+     * known browsers are opened by explicit intent and looked for on the system image too.
+     */
+    static Context systemContext() throws Exception {
         Class<?> at = Class.forName("android.app.ActivityThread");
         Object thread = at.getMethod("systemMain").invoke(null);
-        Context sys = (Context) at.getMethod("getSystemContext").invoke(thread);
-        return sys.createPackageContext(pkg, Context.CONTEXT_IGNORE_SECURITY);
+        return (Context) at.getMethod("getSystemContext").invoke(thread);
+    }
+
+    static android.content.pm.PackageManager packageManager() throws Exception {
+        return systemContext().getPackageManager();
     }
 
     static Object notificationService() throws Exception {
@@ -564,9 +580,7 @@ public final class Shortcut {
 
     /** The package this process runs as (its uid's first package). */
     static String packageOf() throws Exception {
-        Class<?> ag = Class.forName("android.app.AppGlobals");
-        Object pmgr = ag.getMethod("getPackageManager").invoke(null);
-        String[] pkgs = (String[]) pmgr.getClass().getMethod("getPackagesForUid", int.class).invoke(pmgr, Process.myUid());
+        String[] pkgs = packageManager().getPackagesForUid(Process.myUid());
         return pkgs != null && pkgs.length > 0 ? pkgs[0] : "com.termux";
     }
 
@@ -603,18 +617,10 @@ public final class Shortcut {
     /** The package that opens web links, if one is chosen. */
     static String defaultBrowser() {
         try {
-            Object pm = Class.forName("android.app.ActivityThread").getMethod("getPackageManager").invoke(null);
             Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("http://example.com/"));
             i.addCategory(Intent.CATEGORY_BROWSABLE);
-            for (Method m : pm.getClass().getMethods()) {
-                Class<?>[] t = m.getParameterTypes();
-                if (!m.getName().equals("resolveIntent") || t.length != 4) continue;
-                // The flags are an int before Android 13, a long since.
-                Object flags = t[2] == long.class ? (Object) (long) android.content.pm.PackageManager.MATCH_DEFAULT_ONLY
-                        : (Object) android.content.pm.PackageManager.MATCH_DEFAULT_ONLY;
-                android.content.pm.ResolveInfo r = (android.content.pm.ResolveInfo) m.invoke(pm, i, null, flags, userId());
-                return r != null && r.activityInfo != null ? r.activityInfo.packageName : null;
-            }
+            android.content.pm.ResolveInfo r = packageManager().resolveActivity(i, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY);
+            return r != null && r.activityInfo != null ? r.activityInfo.packageName : null;
         } catch (Exception e) {
             System.err.println("default browser: " + e);
         }
@@ -656,38 +662,13 @@ public final class Shortcut {
         return Class.forName(stub).getMethod("asInterface", IBinder.class).invoke(null, b);
     }
 
-    /**
-     * A package manager call. Its flags are an int before Android 13 and a long since: an Integer
-     * goes as a long where the method takes one.
-     */
-    static Object pmCall(String name, Object... args) throws Exception {
-        Object pm = Class.forName("android.app.ActivityThread").getMethod("getPackageManager").invoke(null);
-        for (Method m : pm.getClass().getMethods()) {
-            Class<?>[] t = m.getParameterTypes();
-            if (!m.getName().equals(name) || t.length != args.length) continue;
-            Object[] v = args.clone();
-            boolean fits = true;
-            for (int k = 0; k < t.length; k++) {
-                if (t[k] == long.class && v[k] instanceof Integer) v[k] = (long) (Integer) v[k];
-                if (t[k] == int.class) fits &= v[k] instanceof Integer;
-                else if (t[k] == long.class) fits &= v[k] instanceof Long;
-                else fits &= v[k] == null || t[k].isInstance(v[k]);
-            }
-            if (fits) return m.invoke(pm, v);
-        }
-        throw new IllegalStateException("the package manager has no " + name);
-    }
-
     /** The packages with an activity that opens {@code url} from a link (BROWSABLE, any of them: MATCH_ALL). */
     static java.util.Set<String> viewers(String url) throws Exception {
         Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
         i.addCategory(Intent.CATEGORY_BROWSABLE);
-        Object r = pmCall("queryIntentActivities", i, null, 0x20000, userId());
+        List<android.content.pm.ResolveInfo> list = packageManager().queryIntentActivities(i, android.content.pm.PackageManager.MATCH_ALL);
         java.util.Set<String> out = new java.util.LinkedHashSet<>();
-        if (r == null) return out;
-        List<?> list = r instanceof List ? (List<?>) r : (List<?>) r.getClass().getMethod("getList").invoke(r);
-        for (Object o : list) {
-            android.content.pm.ResolveInfo ri = (android.content.pm.ResolveInfo) o;
+        for (android.content.pm.ResolveInfo ri : list) {
             if (ri.activityInfo != null) out.add(ri.activityInfo.packageName);
         }
         return out;
@@ -695,8 +676,18 @@ public final class Shortcut {
 
     static java.util.Set<String> browserPackages;
 
+    /** The browsers windows are opened in (the CLI's list). Known even when Android hides them from queries. */
+    static final String[] KNOWN_BROWSERS = {
+        "com.android.chrome", "com.microsoft.emmx", "com.brave.browser", "com.vivaldi.browser",
+        "com.sec.android.app.sbrowser", "com.chrome.beta", "org.chromium.chrome", "org.cromite.cromite",
+        "org.mozilla.firefox", "org.mozilla.firefox_beta", "org.mozilla.fenix",
+    };
+
     /** Whether {@code pkg} opens any web link (a browser), not only some site's (an installed web app). */
     static boolean isBrowser(String pkg) {
+        for (String b : KNOWN_BROWSERS) {
+            if (b.equals(pkg)) return true;
+        }
         try {
             if (browserPackages == null) browserPackages = viewers("http://example.com/");
             return browserPackages.contains(pkg);
@@ -719,7 +710,7 @@ public final class Shortcut {
 
     static android.content.pm.PackageInfo packageInfo(String pkg, int flags) {
         try {
-            return (android.content.pm.PackageInfo) pmCall("getPackageInfo", pkg, flags, userId());
+            return packageManager().getPackageInfo(pkg, flags);
         } catch (Exception e) {
             return null;
         }
@@ -736,8 +727,10 @@ public final class Shortcut {
      * under org.microg): Chrome makes installed web apps through them.
      */
     static String playServices() {
-        if (!usable("com.google.android.gms")) return "no Google Play services";
-        if (!usable("com.android.vending")) return "no Play Store";
+        boolean gms = usable("com.google.android.gms");
+        boolean store = usable("com.android.vending") || hasViewer("market://details?id=x", "com.android.vending");
+        if (!gms && !store) return "no Google Play services";
+        if (!store) return "no Play Store";
         android.content.pm.PackageInfo p = packageInfo("com.google.android.gms", 1 /* GET_ACTIVITIES */);
         if (p != null && p.activities != null) {
             for (android.content.pm.ActivityInfo a : p.activities) {
@@ -745,6 +738,30 @@ public final class Shortcut {
             }
         }
         return null;
+    }
+
+    /** Whether {@code pkg} opens {@code url} (for when getPackageInfo cannot see it). */
+    static boolean hasViewer(String url, String pkg) {
+        try {
+            return viewers(url).contains(pkg);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** The packages that open web links, by intent query: getPackageInfo may be refused. */
+    static java.util.Set<String> webViewers() {
+        try {
+            return viewers("http://example.com/");
+        } catch (Exception e) {
+            return java.util.Collections.emptySet();
+        }
+    }
+
+    /** The Galaxy Store, by package or by the links it opens. */
+    static boolean galaxyStore() {
+        return usable("com.sec.android.app.samsungapps")
+                || hasViewer("samsungapps://ProductDetail/com.sec.android.app.sbrowser", "com.sec.android.app.samsungapps");
     }
 
     static final String[] CHROMES = {"com.android.chrome", "com.chrome.beta", "com.chrome.dev", "com.chrome.canary"};
@@ -758,17 +775,138 @@ public final class Shortcut {
      */
     static void appBrowsers() {
         String play = playServices();
+        java.util.Set<String> web = webViewers();
         for (String c : CHROMES) {
-            if (packageInfo(c, 0) == null) continue;
-            String why = !usable(c) ? "turned off" : play;
+            android.content.pm.PackageInfo pi = packageInfo(c, 0);
+            if (pi == null && !web.contains(c)) continue;
+            String why = pi != null && pi.applicationInfo != null && !pi.applicationInfo.enabled ? "turned off" : play;
             System.out.println(why == null ? "can " + c : "cannot " + c + " " + why);
         }
         boolean samsung = "samsung".equalsIgnoreCase(android.os.Build.MANUFACTURER);
         for (String c : SAMSUNG_BROWSERS) {
-            if (packageInfo(c, 0) == null) continue;
-            String why = !usable(c) ? "turned off" : !samsung ? "not a Samsung phone" : !usable("com.sec.android.app.samsungapps") ? "no Galaxy Store" : null;
+            android.content.pm.PackageInfo pi = packageInfo(c, 0);
+            if (pi == null && !web.contains(c)) continue;
+            String why = pi != null && pi.applicationInfo != null && !pi.applicationInfo.enabled ? "turned off"
+                    : !samsung ? "not a Samsung phone"
+                    : !galaxyStore() ? "no Galaxy Store" : null;
             System.out.println(why == null ? "can " + c : "cannot " + c + " " + why);
         }
+    }
+
+    /**
+     * Known WebAPK browsers whose APK sits on the system image but which are not installed for
+     * this user (a preload uninstalled for the user). Android cannot start them until Play Store
+     * or the installer puts them back, but the export can say which one and how.
+     * A line each: {@code system <package> <apk path>}.
+     */
+    static void systemBrowsers() {
+        java.util.Set<String> wanted = new java.util.LinkedHashSet<>();
+        wanted.addAll(Arrays.asList(CHROMES));
+        wanted.addAll(Arrays.asList(SAMSUNG_BROWSERS));
+        for (String d : new String[]{"/product/app", "/product/priv-app", "/system/app", "/system/priv-app", "/system_ext/app", "/system_ext/priv-app", "/vendor/app"}) {
+            findSystemApks(new java.io.File(d), wanted, 0);
+        }
+    }
+
+    static void findSystemApks(java.io.File d, java.util.Set<String> wanted, int depth) {
+        if (d == null || depth > 3) return;
+        java.io.File[] fs = d.listFiles();
+        if (fs == null) return;
+        for (java.io.File f : fs) {
+            if (f.isDirectory()) {
+                findSystemApks(f, wanted, depth + 1);
+            } else if (f.getName().endsWith(".apk")) {
+                try {
+                    android.content.pm.PackageInfo pi = packageManager().getPackageArchiveInfo(f.getPath(), 0);
+                    if (pi != null && wanted.contains(pi.packageName)) {
+                        System.out.println("system " + pi.packageName + " " + f.getPath());
+                    }
+                } catch (Throwable t) {
+                }
+            }
+        }
+    }
+
+    /**
+     * What package lookups see on this Android: the hidden IPackageManager calls the export used
+     * to make, and the public PackageManager calls it makes now. For `lindroids doctor` reports
+     * (a failed lookup says why here).
+     */
+    static void out(String s) {
+        System.out.println(s);
+        System.out.flush();
+    }
+
+    static void diag() {
+        String[] pkgs = {"com.termux", "com.android.chrome", "com.sec.android.app.sbrowser", "com.google.android.gms", "com.android.vending", "com.sec.android.app.samsungapps"};
+        out("uid " + Process.myUid() + " user " + userId() + " " + android.os.Build.MANUFACTURER + " sdk " + android.os.Build.VERSION.SDK_INT);
+        try {
+            android.content.pm.PackageManager pm = packageManager();
+            out("public pm " + pm.getClass().getName());
+            for (String p : pkgs) {
+                try {
+                    out("public info " + p + " " + (pm.getPackageInfo(p, 0) == null ? "null" : "ok"));
+                } catch (Throwable t) {
+                    out("public info " + p + " " + cause(t));
+                }
+            }
+            for (android.content.pm.PackageInfo pi : pm.getInstalledPackages(0)) {
+                String n = pi.packageName.toLowerCase(java.util.Locale.ROOT);
+                if (n.contains("chrome") || n.contains("browser") || n.contains("samsung") || n.contains("vending") || n.contains("gms")) {
+                    out("public pkg " + pi.packageName + (pi.applicationInfo != null && !pi.applicationInfo.enabled ? " disabled" : ""));
+                }
+            }
+        } catch (Throwable t) {
+            out("public pm " + cause(t));
+        }
+        for (String url : new String[]{"http://example.com/", "market://details?id=x", "samsungapps://ProductDetail/com.sec.android.app.sbrowser"}) {
+            try {
+                out("public viewers " + url + " " + viewers(url));
+            } catch (Throwable t) {
+                out("public viewers " + url + " " + cause(t));
+            }
+        }
+        try {
+            Object pm = Class.forName("android.app.ActivityThread").getMethod("getPackageManager").invoke(null);
+            out("hidden pm " + (pm == null ? "null" : pm.getClass().getName()));
+            for (String p : pkgs) {
+                try {
+                    Object r = pm.getClass().getMethod("getPackageInfo", String.class, long.class, int.class).invoke(pm, p, 0L, userId());
+                    out("hidden info " + p + " " + (r == null ? "null" : "ok"));
+                } catch (Throwable t) {
+                    out("hidden info " + p + " " + cause(t));
+                }
+            }
+        } catch (Throwable t) {
+            out("hidden pm " + cause(t));
+        }
+        for (String url : new String[]{"http://example.com/", "market://details?id=x", "samsungapps://ProductDetail/com.sec.android.app.sbrowser"}) {
+            try {
+                out("hidden viewers " + url + " " + viewersHidden(url));
+            } catch (Throwable t) {
+                out("hidden viewers " + url + " " + cause(t));
+            }
+        }
+    }
+
+    static String cause(Throwable t) {
+        Throwable c = t;
+        while (c.getCause() != null) c = c.getCause();
+        return c.getClass().getSimpleName() + ": " + c.getMessage();
+    }
+
+    static java.util.Set<String> viewersHidden(String url) throws Exception {
+        Object pm = Class.forName("android.app.ActivityThread").getMethod("getPackageManager").invoke(null);
+        Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+        i.addCategory(Intent.CATEGORY_BROWSABLE);
+        Object r = pm.getClass().getMethod("queryIntentActivities", Intent.class, String.class, long.class, int.class).invoke(pm, i, null, (long) 0x20000, userId());
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        List<?> list = r instanceof List ? (List<?>) r : (List<?>) r.getClass().getMethod("getList").invoke(r);
+        for (Object o : list) {
+            android.content.pm.ResolveInfo ri = (android.content.pm.ResolveInfo) o;
+            if (ri.activityInfo != null) out.add(ri.activityInfo.packageName);
+        }
+        return out;
     }
 
     /** Opens {@code url} in {@code target} (a browser's ordinary tab, or an installed web app), as {@code pkg}. */

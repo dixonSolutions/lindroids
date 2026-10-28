@@ -122,17 +122,22 @@ Termux does not have. Long-pressing the app's icon also offers it.
   nothing; `app-icons` made the 432 px maskable and 512 px plain icons from a 48 px one;
   `apps-for` found the apps for `market:` and `mailto:` links and none for the program's scope.
 
-**Not tested:** a WebAPK actually being built and opened. That needs Chrome with Google Play
-services (or Samsung Internet on a Samsung phone), which the lab does not have. Open questions,
-for a real phone:
+**Tested on a real phone (2026-10-29):** Samsung SM-X306B, Android 16 (SDK 36), Chrome installed
+for the user but hidden from Termux's package lookups (`getPackageInfo`/`queryIntentActivities`
+return nothing; an explicit intent to `com.android.chrome` opens it). `lindroids export --webapk`
+opened Chrome's install page; Chrome installed a **home-screen shortcut, not a WebAPK**:
+`getInstalledRelatedApps()` reported no `webapp`, the icon stayed Chrome's, and the page opened in
+an ordinary tab with the other tabs. So the answer to the open question is no: Chrome's WebAPK
+minter does not build one for an `http://<label>.localhost:<port>` page. On such a phone the export
+falls back to a shortcut. A WebAPK would need a public HTTPS origin (which the local-only design
+does not have) or a real APK.
 
-- whether Google's (and Samsung's) server builds a WebAPK for an `http://<label>.localhost:<port>`
-  page. Chromium's own check refuses only URLs with a user name or password
-  (`webapps_utils.cc`, `IsUrlWebApkCompatible`), and the page is a secure context;
-- whether Recents shows the program's icon on One UI (the reason for all this);
-- whether Chrome keeps the `#t=` ticket on a `VIEW` intent to the app, and how a WebAPK raised with
-  its current URL behaves (reload or not);
-- Samsung Internet's apps (their packages, intent filters) at all.
+**Still open:** whether Recents shows a WebAPK's program icon on One UI (no WebAPK was installed);
+Samsung Internet's apps at all (no Galaxy Store on this tablet).
+
+The package lookups now use the public `PackageManager` and, for a known browser, an explicit
+intent even when Android hides its package. The install page reports a real installed web app
+(`getInstalledRelatedApps`, `appinstalled`) to the server, never a shortcut.
 
 Privacy: building the app sends the program's name, icon and page URL (with the origin label) to
 Google's or Samsung's server, once. The run tickets never leave the phone: they are in URL

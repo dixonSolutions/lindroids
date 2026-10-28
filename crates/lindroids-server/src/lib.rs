@@ -727,6 +727,21 @@ impl State {
     /// `lindroids launch <id>` for an exported program's own page (installed as an app, and opened
     /// from its icon): the program starts, or the one running is brought back, and the page goes
     /// to its window (`AppWindow`, `Navigate`). Only from that program's page.
+    /// An exported program's install page says the browser installed the app (`appinstalled`):
+    /// note it where `lindroids export` waits, since Android may hide the package from lookups.
+    fn page_installed(&mut self, from: u64, id: String) {
+        if self.links.iter().find(|l| l.id == from).and_then(|l| l.app.as_deref()) != Some(id.as_str()) {
+            warn!("install of {id:?}: not from its own page");
+            return;
+        }
+        let path = self.cfg.runtime_dir.join(format!("app-installed-{id}"));
+        if let Err(e) = std::fs::write(&path, b"") {
+            warn!("install of {id:?}: {}: {e}", path.display());
+            return;
+        }
+        info!("{id}: its page says the app is installed");
+    }
+
     fn page_launch(&mut self, from: u64, id: String) {
         if self.links.iter().find(|l| l.id == from).and_then(|l| l.app.as_deref()) != Some(id.as_str()) || load_exported(&id).is_none() {
             warn!("launch of {id:?}: not from its own page, or not exported");
@@ -1200,6 +1215,7 @@ impl State {
                 }
             }
             ToServer::Launch { id } => self.page_launch(from, id),
+            ToServer::Installed { id } => self.page_installed(from, id),
             ToServer::NewInstance => {
                 let run = self.links.iter().find(|l| l.id == from).and_then(|l| l.run);
                 self.new_instance(run);

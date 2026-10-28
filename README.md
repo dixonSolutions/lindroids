@@ -91,11 +91,11 @@ Details and the experiments behind them: [docs/DISPLAY.md](docs/DISPLAY.md),
   picked (copied to Linux, changes and new files written back; deletions are not).
 - Home screen icons carry Termux's badge (the launcher draws it on every app's shortcut), and
   `lindroids remove` can only grey one out (Android lets only the launcher unpin).
-- Exports become apps of their own where Chrome (with Google Play services) or Samsung Internet (on a
-  Samsung phone) install a program as an app of its own: no badge, its icon in Recents on every
-  launcher, full screen from the start. Other browsers cannot make such apps, so it errors where
-  neither is installed; nothing else depends on it. Not yet tested on a phone with Chrome:
-  [docs/WEBAPK.md](docs/WEBAPK.md).
+- Exports become apps of their own only where the browser can install one (a WebAPK: Chrome with
+  Google Play services, or Samsung Internet on a Samsung phone with the Galaxy Store). A phone
+  with Chrome tested on 2026-10-29 installed a **shortcut**, not a WebAPK, for Lindroids' local
+  `http://<label>.localhost` pages; the icon and tabs stay Chrome's. The local pages need a public
+  HTTPS origin for a WebAPK. See [docs/WEBAPK.md](docs/WEBAPK.md).
 
 ## Install
 

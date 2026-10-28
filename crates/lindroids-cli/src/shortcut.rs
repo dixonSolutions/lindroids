@@ -198,6 +198,21 @@ pub fn app_browsers() -> Result<(Vec<String>, Vec<(String, String)>), String> {
     helper(&["app-browsers"]).map(|out| parse_app_browsers(&out))
 }
 
+/// Known WebAPK browsers whose APK is on the device's system image but which are not installed
+/// for this user: `(package, apk path)`. Android cannot start them until they are installed.
+pub fn system_browsers() -> Vec<(String, String)> {
+    helper(&["system-browsers"]).map(|out| parse_system_browsers(&out)).unwrap_or_default()
+}
+
+fn parse_system_browsers(out: &str) -> Vec<(String, String)> {
+    out.lines()
+        .filter_map(|l| {
+            let (pkg, path) = l.strip_prefix("system ")?.split_once(' ')?;
+            Some((pkg.to_string(), path.to_string()))
+        })
+        .collect()
+}
+
 /// The browser that opens web links, if one is chosen.
 pub fn default_browser() -> Option<String> {
     let out = helper(&["default-browser"]).ok()?;
@@ -613,6 +628,15 @@ mod tests {
         let (can, cannot) = parse_app_browsers("cannot com.android.chrome microG instead of Google Play services\ncan com.sec.android.app.sbrowser\nok\n");
         assert_eq!(can, vec!["com.sec.android.app.sbrowser".to_string()]);
         assert_eq!(cannot, vec![("com.android.chrome".to_string(), "microG instead of Google Play services".to_string())]);
+    }
+
+    #[test]
+    fn system_browsers_answer() {
+        assert_eq!(
+            parse_system_browsers("system com.android.chrome /product/app/Chrome/Chrome.apk\nok\n"),
+            vec![("com.android.chrome".to_string(), "/product/app/Chrome/Chrome.apk".to_string())]
+        );
+        assert!(parse_system_browsers("ok\n").is_empty());
     }
 
     #[test]

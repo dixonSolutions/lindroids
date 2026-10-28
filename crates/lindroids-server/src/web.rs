@@ -385,6 +385,13 @@ fn app_manifest(app: &lindroids_proto::Exported, icon: &[u8], maskable: Option<&
         "background_color": "#000000",
         "theme_color": "#0F1720",
         "icons": icons,
+        // The app says it is this page's app: `getInstalledRelatedApps()` on the install page
+        // tells it when Android hides the installed package from lookups.
+        "related_applications": [{
+            "platform": "webapp",
+            "id": base,
+            "url": format!("{base}manifest.webmanifest"),
+        }],
     })
     .to_string()
 }

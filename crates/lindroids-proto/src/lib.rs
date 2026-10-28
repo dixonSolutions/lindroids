@@ -396,6 +396,9 @@ pub enum ToServer {
     /// From an exported program's own page (`/app/<id>/`): start the program, or bring back the
     /// one running; the server answers with its window's URL (`Navigate`).
     Launch { id: String },
+    /// From an exported program's install page: the browser installed it as an app of its own
+    /// (`appinstalled`). Android may hide the new package from queries; this says it is there.
+    Installed { id: String },
     Clipboard { text: String },
     FolderPicked { request: u32, path: Option<String> },
     /// Sound flow control: the app has room for this many more bytes of a stream.
