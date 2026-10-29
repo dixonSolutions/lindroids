@@ -71,7 +71,7 @@ terminal app:
 
 | Terminal app | Route | Taps |
 |---|---|---|
-| Termux from F-Droid or GitHub (declares `REQUEST_INSTALL_PACKAGES`) | Lindroids opens the installer itself, through Termux's file provider | *Install* (the first time: allow Termux to install apps) |
+| Termux from F-Droid or GitHub (declares `REQUEST_INSTALL_PACKAGES`) | Lindroids opens the installer itself, through Termux's file provider | *Install* (the first time: allow Termux to install apps, then export again) |
 | **Termux from Google Play** (does not declare it) | Lindroids writes `<Name>.apk` to **Download** and opens the file manager there (My Files on Samsung) | tap `<Name>.apk`, *Install* (the first time: allow the file manager, go back, tap it again) |
 | neither works (Download not writable) | the browser downloads it from the program's page (`/app/<id>/<Name>.apk`) | *Download*, *Open*, *Install* |
 
@@ -98,6 +98,29 @@ Samsung Galaxy Tab Active5 (SM-X306B), Android 16, One UI, Termux from Google Pl
 | *Start VSCodium* | `SEND` to `com.termux/.app.TermuxFileReceiverActivity` → `~/bin/termux-url-opener` → `lindroids launch` → VSCodium's window in the app, full screen, editor usable |
 | Recents and the taskbar | **VSCodium's own icon and name** (a browser's Custom Tab shows the browser's icon on One UI) |
 
+Then, driven by a second agent from a written plan (round 1, `0.1.0+dev`):
+
+| What | Result |
+|---|---|
+| Export again → *Update this app?* → *Update* | Play Protect showed "App scan recommended" again; *More details* opened a help page in the browser this time, and coming back left "App not installed". A second *Update* installed it with no Play Protect prompt (versionCode 29887615 → 29887635) and the installer opened the app |
+| Icon with the server stopped → *Start VSCodium* | VSCodium's window, one card in Recents, the start page's card gone. The first tap was lost: the offline page reloaded itself every 4 s while the server was down (fixed: it reloads only once the server answers) |
+| Card closed, icon tapped while VSCodium runs | its window comes back, no second instance |
+| Back in the window | the window stays (Back belongs to the program) |
+| `pkill` VSCodium | its card leaves Recents after about 6 s |
+| Termux's card closed (its process stays, for its notification), icon tapped | VSCodium opens directly |
+
+The installer's *Open* and the icon could each make a start-page task (two VSCodium cards before
+any window opened): the icon was an alias of the window activity, whose tasks are per document.
+The icon is now its own single-task activity (`org.lindroids.Launch`), and every window Lindroids
+opens for the program loads in that task: one program, one window.
+
+**Termux from F-Droid** (lab VM b15, Bliss OS, Android 12, Termux 0.118.0): `lindroids export
+foot` opened Android's installer directly. The first time it asks to allow Termux ("For your
+security, your tablet currently isn't allowed to install unknown apps from this source"); after
+*Settings → Allow from this source → Back* Android returned to the home screen, not the installer,
+so `lindroids export foot` again, then *Do you want to install this app? Foot → Install*. Foot's
+icon then opened foot in `org.lindroids.app.termux.foot`, full screen, first in Recents.
+
 Found and fixed on the way:
 
 - **Termux cannot see the app it offered.** Termux from Google Play targets Android 15+ without
@@ -112,8 +135,8 @@ Found and fixed on the way:
   program through Termux instead; the window then opened in the app carries its run's ticket and
   pairs it, and later starts need nothing.
 - **Two windows**: the start page ("not running") stayed in Recents as a second VSCodium card next
-  to the program's window. A run's window now closes the app's own tasks that were opened from its
-  icon.
+  to the program's window. Now the icon's activity is single-task and the program's windows load
+  in it (see above).
 - **MediaStore cannot be used from the helper**: `app_process` running as Termux is not an app
   Activity Manager knows ("Unable to find app for caller ... when getting content provider
   media"), and a Context made there calls itself `android` ("Given calling package android does
@@ -142,7 +165,6 @@ Checked on the tablet unless marked *assumed*:
 
 ## Still to test
 
-- The direct installer route with Termux from F-Droid (lab VM b16) and the browser route.
-- Updating an installed app (a new export) end to end; Play Protect on an update.
+- The browser route (a terminal app that may neither install nor write to Download).
 - Other launchers' and vendors' Recents (Pixel, Launcher3), Android 7–10 (minSdk 24).
 - An app installed but never started, then started from Termux (`lindroids launch`).
