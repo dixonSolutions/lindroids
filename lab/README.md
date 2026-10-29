@@ -30,6 +30,7 @@ lab/test-lindroids.sh b16             # CLI + window + typing + closing + second
 lab/test-windows.sh b16               # a Flatpak's window, run and from its exported icon: Recents icon, kept in the background, ✕ ends it, its end closes it
 lab/test-fullscreen.sh b16            # each browser: is the window full screen when it opens (no), and after one tap
 lab/test-window-app.sh b16            # the window app: task, full screen, Back, end, offline, bridge
+lab/test-recents.sh b16               # whose icon each Custom Tab browser's window can get in Recents (TaskDescription, root activity), per intent shape; ROUTES_ONLY=1: only what the terminal app itself can do about a task (Route.java)
 lab/vm.sh b16 stop                    # adb `reboot -p`, then QMP quit
 ```
 

@@ -156,6 +156,41 @@ where Chromium's bar may hide on a finger scroll.
 | The window | The page's favicon and title are the program's. While it starts, and after it ends, the page shows the program's icon and name full size *(tested: "Calculator closed." under the Calculator icon)*. |
 | Recents | Chromium-based browsers: **the program's icon and name** *(tested, Cromite)*, where the launcher draws a task's own icon. Samsung's One UI launcher draws the browser's icon on every Chrome window's card instead *(reported twice, Chrome on a Samsung phone)*. It is the launcher's choice: for a Custom Tab in a task of its own (`NEW_TASK`/`NEW_DOCUMENT`), Chromium's `CustomTabTaskDescriptionHelper` always sets a task icon, the favicon or, failing that, a generated letter icon (`CustomTabTaskDescriptionIconGenerator`), never null; a launcher that drew it would show the program's icon or a letter, not Chrome's logo. One UI draws the task's app icon (as its icon themes need). Nothing a page or an intent sends changes that; only an installed app of the program's own would. Chromium sets the page's title, favicon (32 dp or more; the program's is 192 px, at `/run-icon/<run>.png`: a `data:` favicon is not taken) and theme colour on a Custom Tab in a task of its own (`CustomTabTaskDescriptionHelper`). Firefox: **the browser's icon** *(tested)*, with a live thumbnail of the program; it sets a task's icon only for web apps installed through it, which are rejected above. |
 
+#### The Recents icon on One UI: every route, and why none works without an APK
+
+Re-examined 2026-10-28 (`lab/test-recents.sh`, b16 with Launcher3, Cromite 153, Firefox 158;
+neither Chrome nor One UI is in the lab), and again from the terminal app's side
+(`ROUTES_ONLY=1 lab/test-recents.sh`, `lab/browser-window/Route.java`: run with the terminal
+app's uid, it takes the package from the uid, so it applies as it is to Termux's forks or any other
+terminal app). The terminal app is an installed package, but outside its own process it cannot act
+as one in the activity manager: what decides a card (the task's root, the TaskDescription) is open
+only to a process Android started for the app (an `IApplicationThread`) or to an activity's token,
+and its `app_process` helper has neither.
+
+A launcher draws a card from what Android keeps for the task: the TaskDescription (label, icon)
+its activities set, and the components it runs (root and top activity). It can draw either the
+TaskDescription icon or an installed component's icon; nothing else is linked to a task (a pinned
+shortcut's icon is not). One UI draws the program's **name** on Chrome's windows (reported), and
+that name comes from the same TaskDescription, set in the same call as the icon by
+`CustomTabTaskDescriptionHelper`. So One UI most likely gets the program's icon and draws the root
+activity's app icon instead (an inference: One UI's launcher is closed source and not in the lab). Chromium hit the same thing with WebAPKs: "the icon shown in the recents is the
+application icon of the root activity in the task stack", so it made the WebAPK's own activity the
+task's root (Chromium change 2762873003, 2017). Under One UI only the package at the root of the
+task decides the icon, which means an installed package with the program's icon.
+
+| Route | Result |
+|---|---|
+| Other intent shapes: `NEW_TASK\|NEW_DOCUMENT` (Lindroids'), `NEW_TASK`, `NEW_TASK\|MULTIPLE_TASK` | Same in all three *(tested)*. Cromite: a task of its own, root `CustomTabActivity`, TaskDescription with the page's title and favicon (the icon file Android keeps is the page's icon). Firefox: root `ExternalAppBrowserActivity`, no label, no icon. The root is always the browser's activity. |
+| Firefox's web app window (`VIEW_PWA`, the only Firefox window that sets a task icon) | Its filter takes https only: `VIEW_PWA` for `http://*.localhost` resolves to nothing *(tested)*. Sent to `IntentReceiverActivity` by name it opens an ordinary tab (`HomeActivity`) *(tested)*: Firefox opens it only for a manifest it stored when the user installed the site (`WebAppIntentProcessor`), and it installs only pages with a valid TLS certificate (`installableManifest()` needs `securityInfo.isSecure`). |
+| Setting a browser task's TaskDescription from Termux | `ActivityClientController.setTaskDescription(token, …)` does not check the caller (Android 13), but it needs that activity's token, which only the activity's own process holds. Sent without one (null, or a Binder of its own) it returns quietly and changes nothing: no task of the terminal app took the label *(tested)*. No call open to the terminal app returns an activity token: `getActivityTokenBelow` needs one, `RecentTaskInfo` carries only a `WindowContainerToken` and launch cookies, `WaitResult` only the component *(tested, fields listed on the device)*. And it would not help One UI, which draws the root activity's icon even though Chrome sets one (inferred from the user's reports; One UI's launcher is closed). |
+| The window inside a task of the terminal app's own (its activity at the root: One UI would then draw the terminal app's icon, still not the program's) | Not possible from the terminal app's side *(tested as Termux's uid)*. `IAppTask.startActivity` into its own task: `IllegalArgumentException: Bad app thread null`; it needs the `IApplicationThread` of a process Android started for the app, which an `app_process` helper is not. `ActivityOptions.setLaunchTaskId`: `Permission Denial … with launchTaskId`; `startActivityFromRecents`: needs `START_TASKS_FROM_RECENTS`. Every other start from a process without an activity gets `NEW_TASK`, so the browser's activity lands in a task of its own affinity. None of Termux's activities starts a browser from its own task for an outside caller (its share receiver hands the URL to `termux-url-opener` and finishes). |
+| One of the terminal app's own activities as the window | Termux 0.118.3 has `TermuxActivity` (singleTask), `HomeActivity` (alias of it), `HelpActivity` (a WebView), `SettingsActivity`, `ReportActivity` (`documentLaunchMode=intoExisting`) and the share receiver. Started as Termux's uid with `NEW_DOCUMENT\|MULTIPLE_TASK`, `HelpActivity` opens as many Recents cards as asked (Termux's icon), but it loads Termux's wiki whatever URL it is given: the page was never requested *(tested)*. None shows a page of Lindroids', and all draw the terminal app's icon. |
+| A Recents entry of the terminal app's own (`addAppTask`, which takes a TaskDescription with any icon) | Needs an activity token too: `Activity does not exist; token=null` *(tested)*. It would also be a second card, beside the window's. |
+| A pinned or dynamic shortcut's icon (`ShortcutManager`, `updateShortcuts`) | Nothing links a shortcut to a task: `RecentTaskInfo`, what launchers get, has no shortcut field (only `mTopActivityLocusId`, which the activity in the task sets, i.e. the browser), and Android 13's system server reads `EXTRA_SHORTCUT_ID` only for drag and drop (`wm/Session`), never on a shortcut start *(checked on b16: fields listed on the device, `services.jar` dex)*. Launcher3's card takes the TaskDescription icon, else the root activity's. |
+| An activity with the program's icon at the task's root (Chromium's WebAPK fix) | Needs an installed package with that icon: an APK. |
+| Chrome's WebAPK, an APK Chrome has Google's server build and installs | The one route under One UI that does not need an APK from Lindroids. Not tested: it needs Chrome with Google Play services (the lab has microG). The user installs it from Chrome, once per program (rejected above, and offered and declined on 2026-10-28). Chromium's client allows any manifest URL without a user name or password (`IsUrlWebApkCompatible`), but whether Google's server builds one for `http://<label>.localhost:<port>` is not known. |
+
+
 ## The parts
 
 ```
