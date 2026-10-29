@@ -1,8 +1,12 @@
 # A window of its own, without a browser: the Lindroids window app
 
-*Design, 2026-10-29; the app and way A are built and are the default export. The choices marked
-**open** are still the project's: where the shared app is published, and whether B or C follows.
-Tested on the lab VM b16 (`lab/test-window-app.sh`, results below).*
+*Design, 2026-10-29. **Now the default export is B, built in Rust on the phone**: every exported
+program gets an app of its own (`org.lindroids.app.<id>`), made from a template in milliseconds
+with no SDK or Java on the phone, signed with a key made on the phone, and offered to Android's
+installer — see [docs/APPS.md](docs/APPS.md), which also records the tests on a Samsung tablet
+(Android 16, Termux from Google Play). The shared app (A) stays for windows of programs that are
+not exported (`config browser app`, `lindroids app install`). The rest of this page is the design
+as it was decided; where it says "A is the default", read B.*
 
 A Linux program's window used to be a browser's: a Custom Tab per run
 ([docs/DISPLAY.md](docs/DISPLAY.md)), or a WebAPK that Chrome or Samsung Internet makes
@@ -163,8 +167,10 @@ The app's code is the same in A, B and C; only how it is built and signed differ
    - A new value of `lindroids config browser` (and `export --browser`) picks it, beside `webapk`,
      `default`, a browser's package and `home-screen`; `convert` moves an export to and from it.
      `lindroids run` uses it too when the setting says `app`.
-4. **B: one app per program, on the phone** *(opt-in, after A)*, for users who want each program
-   in the app list and One UI Recents, and who choose to install the build tools. The same app,
+4. **B: one app per program, on the phone** *(done, and the default export, without the build
+   tools below: `crates/lindroids-apk` patches a prebuilt template's binary manifest and icons and
+   signs with APK Signature Scheme v2 in Rust, so nothing is installed on the phone; docs/APPS.md)*.
+   The original plan, kept for the record, needed the user to install the build tools: The same app,
    per program `org.lindroids.p<id>`, built from the release's `classes.dex`:
    ```sh
    keytool -genkeypair -keystore <state>/apk/key.p12 ...        # once per phone

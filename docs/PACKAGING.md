@@ -42,7 +42,11 @@ window app's build is the exception: it uses a JDK and the SDK's `android.jar`, 
 `zipalign` and `apksigner`.
 
 The display is a web page the server itself serves (embedded in the binary), so the CLI and its
-packages are complete on their own. Optionally, a release also carries the shared window app
+packages are complete on their own. So is the template of the programs' own apps
+(`crates/lindroids-apk/template/window-app.apk`, [APPS.md](APPS.md)): it is committed, as
+`shortcut.dex` is, and rebuilt with `packaging/build-app-template.sh` (a JDK and the SDK's
+`android.jar`, `aapt2`, `d8`, `zipalign`) only when `packaging/webview-app` changes; the phone fills
+it in and signs it in Rust. Optionally, a release also carries the shared window app
 ([BROWSER_AGNOSTIC_APK.md](../BROWSER_AGNOSTIC_APK.md)): a small APK built by
 `packaging/build-webview-apk.sh` with `javac`/`d8`/`aapt2`/`apksigner`, signed with
 `LINDROIDS_APP_KEYSTORE` (base64 PKCS#12), `LINDROIDS_APP_KEYSTORE_PASS` and

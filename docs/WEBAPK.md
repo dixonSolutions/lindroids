@@ -1,8 +1,7 @@
 # A program as an app of its own: WebAPK exports
 
-> The browser-independent alternative is the shared Lindroids window app (`lindroids app install`,
-> `config browser app`): one APK of ours, no Chrome or Samsung server. See
-> [BROWSER_AGNOSTIC_APK.md](../BROWSER_AGNOSTIC_APK.md).
+> The default export no longer needs a browser: Lindroids builds each program its own app on the
+> phone ([APPS.md](APPS.md)). A browser's WebAPK (this page) is opt-in: `export --webapk`.
 
 An export of a Linux program becomes an Android app of its own, with the program's name and icon:
 on the home screen, in the app list, and in Recents on every launcher, Samsung's One UI included.
@@ -11,8 +10,8 @@ make one (below); otherwise the export is a home screen shortcut, as before.
 
 ## Choosing
 
-- **The default is now the Lindroids window app** (`lindroids export`, no browser), not a browser
-  WebAPK: see [BROWSER_AGNOSTIC_APK.md](../BROWSER_AGNOSTIC_APK.md). `webapk` is opt-in.
+- **The default is now the program's own app, built by Lindroids** (`lindroids export`, no
+  browser), not a browser WebAPK: see [APPS.md](APPS.md). `webapk` is opt-in.
 - With `config browser webapk` (or `export --webapk`), the default browser wins: if it can make a
   WebAPK, it does, whatever the export or the setting says.
 - Otherwise the setting decides, `lindroids config browser`:

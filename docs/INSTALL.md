@@ -253,21 +253,31 @@ The apk and xbps repositories are signed with an RSA key, `lindroids.rsa.pub` on
 `packaging/repo/lindroids.rsa.pub` in the source tree.
 
 
-## The window app (default, no browser)
+## Programs as apps of their own (the default)
 
-The default window is our own small APK: it shows the pages in Android's own WebView, with no
-browser and no Google or Samsung server involved. The first `lindroids export` downloads it and
-Android asks to install it; `lindroids app install` only pre-installs it. To let Android's
-installer read the APK, Lindroids briefly turns on Termux's `allow-external-apps` setting and puts
-`termux.properties` back exactly as it was; the window paths themselves never need it.
+`lindroids export <program>` builds the program an Android app of its own on the phone (its name
+and icon in the app list and Recents, its window in Android's own WebView, no browser) and hands
+it to Android's installer. Nothing is downloaded and no build tools are needed: see
+[docs/APPS.md](APPS.md).
 
 ```sh
-lindroids export <program>            # installs the window app on first use
-lindroids app install                 # optional: install it before the first export
+lindroids export <program>            # builds its app; tap Install
 lindroids config browser app          # the default; explicit if you changed it before
 ```
 
-Its source and the design are in [BROWSER_AGNOSTIC_APK.md](../BROWSER_AGNOSTIC_APK.md).
+How the APK reaches the installer depends on where Termux came from:
+
+- **Termux from F-Droid or GitHub** may open the installer itself: tap *Install* (the first
+  time, allow Termux to install apps).
+- **Termux from Google Play** may not (it does not declare `REQUEST_INSTALL_PACKAGES`): Lindroids
+  puts `<Name>.apk` in Download and opens the file manager there. Tap it, then *Install*. The
+  first time, Android asks to allow the file manager to install apps: allow it, go back, tap the
+  APK again.
+- **Google Play Protect** may ask to scan the new app: *Scan app* sends it to Google; *More details
+  → Install without scanning* installs it after your PIN or fingerprint.
+
+The shared window app (`org.lindroids`, `lindroids app install`) is optional: it shows windows of
+programs that are not exported. Its design is in [BROWSER_AGNOSTIC_APK.md](../BROWSER_AGNOSTIC_APK.md).
 
 ## Troubleshooting
 
@@ -280,4 +290,7 @@ Its source and the design are in [BROWSER_AGNOSTIC_APK.md](../BROWSER_AGNOSTIC_A
   installer again.
 - `Gpg Keys not imported` / `Signature verification failed` from dnf or zypper: the repository
   key changed; run the installer again (dnf: `dnf clean all` first).
+- `lindroids export` said the app is in Download but nothing installs: the installer closes at once
+  when the source app may not install apps; allow the file manager in Android's *Install unknown
+  apps* settings, then tap the APK again.
 - `lindroids doctor` shows what the CLI found (sandbox, proot, Xwayland, xwayland-satellite, server, display, the X display).
