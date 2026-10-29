@@ -1,9 +1,57 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="18 18 72 72">
-  <rect x="18" y="18" width="72" height="72" rx="16" fill="#0F1720"/>
-  <path fill="#E8EEF4" d="M30,34h48a4,4 0,0 1,4 4v32a4,4 0,0 1,-4 4h-48a4,4 0,0 1,-4 -4v-32a4,4 0,0 1,4 -4z"/>
-  <path fill="#1B2430" d="M30,42h48v28h-48z"/>
-  <circle cx="33" cy="38" r="1.6" fill="#3DDC84"/>
-  <circle cx="38" cy="38" r="1.6" fill="#9AA7B4"/>
-  <path fill="#3DDC84" d="M36,49l9,7l-9,7l-2.4,-3l5.4,-4l-5.4,-4z"/>
-  <path fill="#3DDC84" d="M48,61h14v4h-14z"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="32%" r="78%">
+      <stop offset="0" stop-color="#1D2E48"/>
+      <stop offset="0.55" stop-color="#101B2B"/>
+      <stop offset="1" stop-color="#070C14"/>
+    </radialGradient>
+    <linearGradient id="frame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#D6E2EF"/>
+    </linearGradient>
+    <linearGradient id="backframe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2C405C"/>
+      <stop offset="1" stop-color="#1A2A40"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#101C2C"/>
+      <stop offset="1" stop-color="#09111B"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7BF0AE"/>
+      <stop offset="1" stop-color="#22C55E"/>
+    </linearGradient>
+    <filter id="shadow" x="-40%" y="-30%" width="180%" height="190%">
+      <feDropShadow dx="0" dy="20" stdDeviation="26" flood-color="#000000" flood-opacity="0.55"/>
+    </filter>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="16"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <circle cx="256" cy="330" r="190" fill="#22C55E" opacity="0.10" filter="url(#glow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="140" y="96" width="288" height="248" rx="28" fill="url(#backframe)" stroke="#486486" stroke-width="3"/>
+  </g>
+  <circle cx="172" cy="124" r="7" fill="#617892"/>
+  <circle cx="192" cy="124" r="7" fill="#617892"/>
+  <circle cx="212" cy="124" r="7" fill="#617892"/>
+
+  <g filter="url(#shadow)">
+    <rect x="84" y="160" width="320" height="264" rx="30" fill="url(#frame)"/>
+  </g>
+
+  <circle cx="118" cy="192" r="9" fill="#3DDC84"/>
+  <circle cx="145" cy="192" r="9" fill="#C3D1DF"/>
+  <circle cx="172" cy="192" r="9" fill="#9CB0C4"/>
+
+  <rect x="104" y="228" width="280" height="176" rx="16" fill="url(#screen)" stroke="#22344C" stroke-width="2"/>
+
+  <path d="M150 278 L190 315 L150 352" fill="none" stroke="url(#green)" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" opacity="0.45" filter="url(#glow)"/>
+  <path d="M150 278 L190 315 L150 352" fill="none" stroke="url(#green)" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="208" y="318" width="104" height="32" rx="9" fill="url(#green)" opacity="0.45" filter="url(#glow)"/>
+  <rect x="208" y="318" width="104" height="32" rx="9" fill="url(#green)"/>
 </svg>
