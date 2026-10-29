@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#12203A"/>
+      <stop offset="0.55" stop-color="#0B1420"/>
+      <stop offset="1" stop-color="#070C14"/>
+    </linearGradient>
+    <linearGradient id="frame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#D6E2EF"/>
+    </linearGradient>
+    <linearGradient id="backframe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2C405C"/>
+      <stop offset="1" stop-color="#1A2A40"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#101C2C"/>
+      <stop offset="1" stop-color="#09111B"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7BF0AE"/>
+      <stop offset="1" stop-color="#22C55E"/>
+    </linearGradient>
+    <filter id="shadow" x="-40%" y="-30%" width="180%" height="190%">
+      <feDropShadow dx="0" dy="20" stdDeviation="26" flood-color="#000000" flood-opacity="0.55"/>
+    </filter>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="16"/>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <circle cx="320" cy="380" r="290" fill="#22C55E" opacity="0.10" filter="url(#glow)"/>
+
+  <g transform="translate(56.8 73) scale(0.95)">
+    <g filter="url(#shadow)">
+      <rect x="140" y="96" width="288" height="248" rx="28" fill="url(#backframe)" stroke="#486486" stroke-width="3"/>
+    </g>
+    <circle cx="172" cy="124" r="7" fill="#617892"/>
+    <circle cx="192" cy="124" r="7" fill="#617892"/>
+    <circle cx="212" cy="124" r="7" fill="#617892"/>
+
+    <g filter="url(#shadow)">
+      <rect x="84" y="160" width="320" height="264" rx="30" fill="url(#frame)"/>
+    </g>
+
+    <circle cx="118" cy="192" r="9" fill="#3DDC84"/>
+    <circle cx="145" cy="192" r="9" fill="#C3D1DF"/>
+    <circle cx="172" cy="192" r="9" fill="#9CB0C4"/>
+
+    <rect x="104" y="228" width="280" height="176" rx="16" fill="url(#screen)" stroke="#22344C" stroke-width="2"/>
+
+    <path d="M150 278 L190 315 L150 352" fill="none" stroke="url(#green)" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" opacity="0.45" filter="url(#glow)"/>
+    <path d="M150 278 L190 315 L150 352" fill="none" stroke="url(#green)" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <rect x="208" y="318" width="104" height="32" rx="9" fill="url(#green)" opacity="0.45" filter="url(#glow)"/>
+    <rect x="208" y="318" width="104" height="32" rx="9" fill="url(#green)"/>
+  </g>
+
+  <g font-family="Noto Sans, DejaVu Sans, sans-serif">
+    <text x="560" y="284" font-size="104" font-weight="700" letter-spacing="-2" fill="#F3F8FD">Lindroids</text>
+    <rect x="564" y="310" width="110" height="6" rx="3" fill="#3DDC84"/>
+    <text x="560" y="366" font-size="31" fill="#A6B8CC">Linux apps on Android,</text>
+    <text x="560" y="407" font-size="31" fill="#A6B8CC">each in a window of its own.</text>
+    <text x="560" y="458" font-size="26" fill="#6E8399">github.com/dixonSolutions/lindroids</text>
+  </g>
+</svg>
