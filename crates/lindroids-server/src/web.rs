@@ -590,6 +590,7 @@ mod tests {
 
     #[test]
     fn a_runs_window_has_its_name_and_icon() {
+        let _s = crate::icons::tests::serial();
         // A live pid: launches whose process is gone are forgotten.
         let pid = std::process::id();
         crate::icons::register_launch(pid, "A <b>".into(), Some(base64::engine::general_purpose::STANDARD.encode(b"png")), true);

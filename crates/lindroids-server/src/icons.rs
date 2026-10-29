@@ -432,11 +432,18 @@ fn find_png(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    /// Tests that use the launch registry (one process-wide map) one at a time.
-    static SERIAL: Mutex<()> = Mutex::new(());
+    /// Tests that use the launch registry (one process-wide map) one at a time, from a clean
+    /// map: other modules' tests register launches too (the web page's title and icon test).
+    pub(crate) static TESTS: Mutex<()> = Mutex::new(());
+
+    pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
+        let g = TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        *LAUNCHES.lock().unwrap() = None;
+        g
+    }
 
     fn launch(key: &str) -> NewLaunch {
         NewLaunch { name: "VSCodium".into(), app_key: key.into(), window: true, ..Default::default() }
@@ -452,7 +459,7 @@ mod tests {
 
     #[test]
     fn instances_are_numbered_per_app_and_numbers_come_back() {
-        let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _s = serial();
         let mut kids: Vec<std::process::Child> = (0..4).map(|_| std::process::Command::new("sleep").arg("30").spawn().unwrap()).collect();
         let pids: Vec<u32> = kids.iter().map(|c| c.id()).collect();
         assert_eq!(register(pids[0], launch("t.a")), 1);
@@ -484,7 +491,7 @@ mod tests {
 
     #[test]
     fn a_launch_gone_without_a_word_is_lost() {
-        let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _s = serial();
         let mut k = std::process::Command::new("sleep").arg("30").spawn().unwrap();
         let pid = k.id();
         register(pid, launch("t.lost"));
@@ -502,7 +509,7 @@ mod tests {
 
     #[test]
     fn a_pid_used_again_is_not_the_launch() {
-        let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _s = serial();
         let k = std::process::Command::new("sleep").arg("30").spawn().unwrap();
         let pid = k.id();
         let mut k = k;
@@ -523,7 +530,7 @@ mod tests {
 
     #[test]
     fn a_claiming_run_lives_while_it_holds_windows() {
-        let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _s = serial();
         let mut k = std::process::Command::new("true").spawn().unwrap();
         let pid = k.id();
         register(pid, launch("t.claim"));
