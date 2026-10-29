@@ -45,6 +45,8 @@ if [[ -n ${LAB_BIN:-} ]]; then
   tsh 'chmod 755 ~/.lab-fullscreen/lindroids'
   LIND='~/.lab-fullscreen/lindroids'
 fi
+# Full screen is the browser's question; this test runs browser windows.
+tsh "$LIND config browser default" >/dev/null 2>&1 || true
 stop_all() {
   [[ -n ${LAB_RESTART:-} ]] || return 0
   tsh "$LIND stop >/dev/null 2>&1; pkill -f '[l]indroids server'; sleep 2; true"

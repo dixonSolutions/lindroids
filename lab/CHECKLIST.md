@@ -31,10 +31,10 @@ from Android**, through the window page and Termux, never by giving the containe
 | Back does not lose the program | ✅ | Back only sends the window behind |
 | Coming back to a window that left full screen in the background | 🟡 | Firefox lays the page under its toolbar until the next tap (which goes full screen again) |
 
-## Window app (no browser, optional)
+## Window app (no browser, the default)
 
-`lindroids app install`, `config browser app`; `lab/test-window-app.sh b16` (2026-10-29). It needs
-no browser, Chrome, Play services or Samsung store.
+`lindroids export` installs it (or `lindroids app install` first); `lab/test-window-app.sh b16`
+(2026-10-29). It needs no browser, Chrome, Play services or Samsung store.
 
 | Criterion | Status | Evidence / notes |
 |---|---|---|

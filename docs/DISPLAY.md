@@ -2,8 +2,9 @@
 
 How a Linux program started in Termux (or a proot distro, or a Flatpak) gets a window on Android,
 how that window and the program find and trust each other, and how they live and die together.
-This is the browser Custom Tab path, the default. An optional small app of ours can show the same
-pages in Android's WebView instead, without a browser: [BROWSER_AGNOSTIC_APK.md](../BROWSER_AGNOSTIC_APK.md).
+This is the browser Custom Tab path, the fallback (and `config browser default`). By default on
+Android a small app of ours shows the same pages in Android's WebView, without a browser:
+[BROWSER_AGNOSTIC_APK.md](../BROWSER_AGNOSTIC_APK.md).
 
 Claims marked *(tested)* were checked on the lab VM b16 on 2026-10-27:
 
@@ -18,7 +19,7 @@ Claims marked *(tested)* were checked on the lab VM b16 on 2026-10-27:
    The container is Termux's prefix, a proot distro or a Flatpak. One package, installed there.
 2. Nothing else on Android:
    - no root;
-   - no APK of our own (the optional window app is an alternative, not a requirement);
+   - no APK required (the browser path; the window app is now the default on Android);
    - no Termux setting (`allow-external-apps`);
    - no special permission;
    - nothing that depends on an Android version or vendor.
@@ -515,7 +516,7 @@ has a developer option to turn it off. Lindroids keeps its own process count low
 | Requirement | Met by |
 |---|---|
 | Everything in the container, one package | Yes. The relay, CLI, page, helper, keys and records are all in the package and in `$HOME`. |
-| No root, no APK, no special permission or setting | Yes on this path. Lindroids uses intents to the browser and to Termux's share receiver, and pinned shortcuts: nothing else. The optional window app is one APK, one INTERNET permission, and no root. |
+| No root, no APK, no special permission or setting | Yes on this path. Lindroids uses intents to the browser and to Termux's share receiver, and pinned shortcuts: nothing else. The default window app is one APK, one INTERNET permission, and no root. |
 | Any Android version and vendor | Yes, with a browser that has Custom Tabs, which every major one does. Without one, the windows fall back to a plain browser tab. |
 | A window of its own, not a tab, not installed through the browser | Yes. A Custom Tab in its own task per program, opened and raised by Lindroids. Full screen from the first tap (no browser allows it sooner, see *Full screen*); before that, a thin bar with close, title and menu. |
 | The program's icon | Yes on the home screen, in the status bar and notifications, in the window, as the favicon, and on the start and end screens. In recents too with a Chromium-based browser, except on Samsung's launcher; Firefox shows its own icon there. |

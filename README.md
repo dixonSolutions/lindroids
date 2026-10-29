@@ -4,8 +4,8 @@
 
 <p align="center"><b>Linux apps on Android, each in a window of its own.</b><br>
 Run Linux GUI programs from Termux, a proot distro or Flathub, with a home screen icon, Android's
-theme, notifications and files. One package in Termux; the window is the phone's browser, or an
-optional small window app of ours that needs no browser. No permission, no root.</p>
+theme, notifications and files. One package in Termux; the window is our own small APK or the phone's browser. No permission,
+no root.</p>
 
 <p align="center"><a href="https://discord.gg/aWQwxV4wm"><img alt="Discord: join the community" src="https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white"></a></p>
 
@@ -41,11 +41,11 @@ lindroids export org.gnome.Calculator  # a home screen icon; works with Termux c
   from Flathub (in Termux itself: `install.sh` sets Flatpak up there, no root), X11 programs.
 - **Home screen icons** (`lindroids export`) that start the program even when Termux is closed or
   the phone just restarted.
-- **A window without a browser** (optional): `lindroids app install` adds one small APK
-  (`org.lindroids`) that shows the page in Android's own WebView, full screen from the start, with
-  the program's name and icon in Recents, no Google or Samsung server involved, and Android's file
-  pickers, clipboard and share. `lindroids config browser app` (or `export --browser app`) uses it;
-  without it, everything stays in the browser as before. See
+- **A window without a browser** (the default): one small APK (`org.lindroids`) shows the page in
+  Android's own WebView, full screen from the start, with the program's name and icon in Recents,
+  no Google or Samsung server involved, and Android's file pickers, clipboard and share. The first
+  `lindroids export` downloads and installs it; `lindroids app install` only pre-installs it.
+  `lindroids config browser default` (or a browser's package) goes back to the browser. See
   [BROWSER_AGNOSTIC_APK.md](BROWSER_AGNOSTIC_APK.md).
 - **Android's side, piped in**: dark mode and accent colour; files (Android's picker for
   *Open…* and *Save As…*, *Open with* from the Files app, the Camera as a photo source; in
@@ -59,11 +59,13 @@ lindroids export org.gnome.Calculator  # a home screen icon; works with Termux c
 - **Programs and their data stay in the container** — Termux, a proot distro, a Flatpak.
   **Everything outside it comes from Android**: files, folders, the theme, notifications,
   hardware. Linux programs never get the device; Android stays in charge of it.
-- **The window is the phone's browser.** Android only draws windows for installed apps, so with
-  no app of our own, a browser is the one that can show them. Termux opens each program as a
-  *Custom Tab* in a task of its own — one entry in Recents per program, no tabs, no address bar —
-  through a small `app_process` helper that runs as Termux and needs no permission. The same
-  helper pins the home screen icons and posts notifications, so they belong to Termux.
+- **The window is our app, or the phone's browser.** Android only draws windows for installed
+  apps: one small APK of ours shows every program's page in its own WebView, one document task per
+  run, no browser at all. With `config browser default`, or where the app is not installed, Termux
+  opens each program as a *Custom Tab* in a task of its own — one entry in Recents per program, no
+  tabs, no address bar — through a small `app_process` helper that runs as Termux and needs no
+  permission. The same helper pins the home screen icons and posts notifications, so they belong
+  to Termux.
 - **The server** (`lindroids`, one Rust binary) is a Wayland compositor and a PulseAudio server.
   It serves the window page on a loopback port, sends the 64×64 tiles that changed (LZ4), and
   takes back touch, keys and text. Both ends prove themselves with P-256 keys before anything is
@@ -87,9 +89,9 @@ Details and the experiments behind them: [docs/DISPLAY.md](docs/DISPLAY.md),
 
 ## Limits
 
-- With the optional window app (`config browser app`), the browser limits below do not apply: it
-  is our own WebView activity, full screen before the first touch. Without it, windows open in a
-  Chromium-based browser (Chrome, Edge, Brave, Samsung Internet, Cromite…)
+- The default window app has none of the browser limits below: it is our own WebView activity,
+  full screen before the first touch. With `config browser default` (or a browser package),
+  windows open in a Chromium-based browser (Chrome, Edge, Brave, Samsung Internet, Cromite…)
   whatever the default browser is: there Recents shows the program's icon, and the window
   closes when the program ends. A browser that opens an ordinary tab instead of a window (Cromite
   without *Allow custom tab intents*) is passed over. With only Firefox, the window shows
@@ -133,9 +135,10 @@ lindroids run xterm                      # X11 programs too
 
 lindroids export <command> [args]        # home screen icon (again: updates it)
 lindroids export <command>               # an app of its own where Chrome or Samsung Internet can make one
-lindroids config browser default         # or webapk (the default), app, or a browser's package
-lindroids app install                    # the optional window app (no browser)
-lindroids export --browser app <program> # an icon whose windows use it
+lindroids config browser app             # the default: our window app, no browser
+lindroids config browser default         # or webapk (Chrome/Samsung), or a browser's package
+lindroids app install                    # only to pre-install the window app
+lindroids export <program>               # installs the window app on first use
 lindroids list | remove <id> | launch <id>
 
 lindroids open --linux <file>            # open a file in a Linux program (--with, --choose, --list)

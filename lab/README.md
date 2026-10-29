@@ -29,7 +29,7 @@ lab/provision.sh b16                  # setup wizard off, Termux + openssh + foo
 lab/test-lindroids.sh b16             # CLI + window + typing + closing + second run + shortcut -> lab/results/b16/<mode>/
 lab/test-windows.sh b16               # a Flatpak's window, run and from its exported icon: Recents icon, kept in the background, ✕ ends it, its end closes it
 lab/test-fullscreen.sh b16            # each browser: is the window full screen when it opens (no), and after one tap
-lab/test-window-app.sh b16            # the optional window app: task, full screen, Back, end, offline, bridge
+lab/test-window-app.sh b16            # the window app: task, full screen, Back, end, offline, bridge
 lab/vm.sh b16 stop                    # adb `reboot -p`, then QMP quit
 ```
 
@@ -88,7 +88,8 @@ the ticket, a replaced relay key is refused until the pairing code is entered.
 
 ## The window app: no browser (2026-10-29)
 
-`lab/test-window-app.sh` installs `org.lindroids` and runs a program with `config browser app`.
+`lab/test-window-app.sh` installs `org.lindroids` and runs a program with `config browser app`
+(now the default export).
 PASS on b16 (Android 13, SELinux enforcing, no Chrome, microG; `lab/results/b16/window-app/`):
 one immersive document task, Back kept, the program's end removed it, the app's own offline page,
 the bridge over WebView DevTools (clipboard round trip), and by hand the open/save pickers. Also

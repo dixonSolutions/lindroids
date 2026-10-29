@@ -17,7 +17,7 @@ Every push to `main` (unless the head commit message contains `[skip ci]`) is a 
 | `lindroids-<v>-r0.apk` for aarch64, armv7, x86_64, x86 | apk repository `apk/<arch>/` (Alpine, postmarketOS, Chimera) |
 | `lindroids-<v>_1.<arch>.xbps` for aarch64, armv7l, x86_64, i686 and the `-musl` ones (not i686) | xbps repository `xbps/` (Void) |
 | `lindroids-<v>-<arch>-linux-musl.tar.gz`        | GitHub Release (static installs): `bin/lindroids` + `libexec/lindroids/xwayland-satellite` |
-| `lindroids-<v>.apk` (the optional window app)   | GitHub Release, every release |
+| `lindroids-<v>.apk` (the window app)            | GitHub Release, every release |
 | `SHA256SUMS`                                    | GitHub Release                           |
 | the repositories + `install.sh`                 | `gh-pages` → https://dixonsolutions.github.io/lindroids/ |
 

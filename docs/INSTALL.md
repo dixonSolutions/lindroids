@@ -253,15 +253,16 @@ The apk and xbps repositories are signed with an RSA key, `lindroids.rsa.pub` on
 `packaging/repo/lindroids.rsa.pub` in the source tree.
 
 
-## A window without a browser (optional)
+## The window app (default, no browser)
 
-The default window is the phone's browser. A small app of ours can show the same pages in
-Android's own WebView instead, with no browser and no Google or Samsung server involved:
+The default window is our own small APK: it shows the pages in Android's own WebView, with no
+browser and no Google or Samsung server involved. The first `lindroids export` downloads it and
+Android asks to install it; `lindroids app install` only pre-installs it:
 
 ```sh
-lindroids app install                 # downloads the release APK; Android asks to install it
-lindroids config browser app          # windows use it from now on
-lindroids export --browser app <program>
+lindroids export <program>            # installs the window app on first use
+lindroids app install                 # optional: install it before the first export
+lindroids config browser app          # the default; explicit if you changed it before
 ```
 
 Its source and the design are in [BROWSER_AGNOSTIC_APK.md](../BROWSER_AGNOSTIC_APK.md).

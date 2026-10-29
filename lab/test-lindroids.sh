@@ -159,6 +159,8 @@ fi
   tsh 'mv $PREFIX/bin/lindroids.new $PREFIX/bin/lindroids && chmod 755 $PREFIX/bin/lindroids && lindroids version 2>&1 | grep -v "^WARNING: linker"' >"$OUT/cli-version.txt" 2>&1 &&
   R[cli_push]="ok ($(cat "$OUT/cli-version.txt"))" || fail "CLI push: $(cat "$OUT/cli-version.txt")"
 log "CLI: $(cat "$OUT/cli-version.txt")"
+# This test is the browser Custom Tab path: the default is now the window app.
+tsh 'lindroids config browser default' >/dev/null 2>&1 || true
 
 # --------------------------------------------------------------- server + program + page
 # Termux in front, as when the user types the command.

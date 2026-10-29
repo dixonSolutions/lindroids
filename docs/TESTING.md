@@ -48,7 +48,7 @@ Useful switches: `LINDROIDS_LOG=debug` (commits, configures, frames), `LINDROIDS
 provision (Termux, sshd), and `lab/test-lindroids.sh`: with no app and no Termux setting, it
 installs the CLI, has `lindroids run foot` open the page in the device's browser, types, checks
 that the page relinks after a server restart, then exports foot, adds its home screen shortcut,
-stops Termux and taps it. `lab/test-window-app.sh` installs the optional window app, runs foot in
+stops Termux and taps it. `lab/test-window-app.sh` installs the default window app, runs foot in
 it (`config browser app`), checks one full-screen task, Back, the program's end removing it, the
 offline page, and the bridge over WebView DevTools. Results: [lab/README.md](../lab/README.md).
 

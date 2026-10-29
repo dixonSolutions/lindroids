@@ -11,8 +11,10 @@ make one (below); otherwise the export is a home screen shortcut, as before.
 
 ## Choosing
 
-- The default browser wins: if it can make a WebAPK, it does, whatever the export or the setting
-  says.
+- **The default is now the Lindroids window app** (`lindroids export`, no browser), not a browser
+  WebAPK: see [BROWSER_AGNOSTIC_APK.md](../BROWSER_AGNOSTIC_APK.md). `webapk` is opt-in.
+- With `config browser webapk` (or `export --webapk`), the default browser wins: if it can make a
+  WebAPK, it does, whatever the export or the setting says.
 - Otherwise the setting decides, `lindroids config browser`:
   - `webapk` (the default): any browser that can, Chrome before Samsung Internet.
   - `default`: the default browser only, if it can; else a shortcut.

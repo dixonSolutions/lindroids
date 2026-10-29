@@ -35,7 +35,7 @@ USAGE
   lindroids run [options] \"<command line>\"
   lindroids export [options] <command> [args...]   a home screen shortcut that starts it
   lindroids export [--run] [--browser <value>] <program>   (--run: start it now too)
-  lindroids app [status|install [<file.apk>]]   the shared window app (no browser)
+  lindroids app [status|install [<file.apk>]]   the shared window app (export installs it)
   lindroids export <id|name> convert home-screen --to=webapk|app   (or convert webapk|app --to=home-screen)
   lindroids run --export <command> [args...]       export with the defaults, then run it
   lindroids config [browser [app|webapk|default|<browser package>]]
@@ -88,10 +88,11 @@ X11 programs need no option: every program gets DISPLAY as well as WAYLAND_DISPL
 (xwayland-satellite, started on the first X11 connection). `lindroids doctor` shows whether X11 is
 ready; `lindroids setup x11` installs what is missing.
 
-On Android every program gets a window of its own: a full-screen Custom Tab of a browser that has
-them (Firefox, Chrome, Edge, Samsung Internet, Brave…; LINDROIDS_BROWSER picks one), opened by
-Termux, with no app to install and no permission to grant. Closing the window ends the program;
-the program ending leaves its window saying so. Elsewhere the windows show in a browser page.
+On Android every program gets a window of its own: by default in the Lindroids window app (one
+small APK, no browser; `lindroids export` installs it), or in a full-screen Custom Tab of a browser
+that has them (Firefox, Chrome, Edge, Samsung Internet, Brave…; `config browser default` or a
+package). Closing the window ends the program; the program ending leaves its window saying so.
+Elsewhere the windows show in a browser page.
 The first time, the page pairs with a ticket in its URL; a page opened by hand asks for the code
 `lindroids pair` shows. `lindroids export` puts a program on the home screen (a shortcut, with the
 program's icon, that has Termux start it, or bring back its window).

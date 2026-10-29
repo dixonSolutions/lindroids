@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-pub const BROWSER_DEFAULT: &str = "webapk";
+pub const BROWSER_DEFAULT: &str = "app";
 
 fn path() -> PathBuf {
     lindroids_server::state_dir().join("config")
@@ -26,6 +26,12 @@ fn read() -> BTreeMap<String, String> {
 
 pub fn browser_setting() -> String {
     read().remove("browser").filter(|v| valid_browser(v)).unwrap_or_else(|| BROWSER_DEFAULT.to_string())
+}
+
+/// Whether the user chose a value, rather than the built-in default: a missing window app is a
+/// warning then, not a silent fallback to the browser.
+pub fn browser_configured() -> bool {
+    read().contains_key("browser")
 }
 
 /// Whether `v` is a browser setting or an export tag: `default`, `webapk`, `app`, `home-screen`,
@@ -50,9 +56,9 @@ pub fn cmd_config(args: &[String]) -> i32 {
     match args {
         [] => {
             println!("browser  {}", browser_setting());
-            println!("  default: webapk (an app of its own wherever a browser can make one; the default browser first)");
+            println!("  default: app (the Lindroids bundle: no browser; export installs it the first time)");
             println!("  app | webapk | default | <browser package>; an export's own: lindroids export --browser <value> <program>");
-            println!("  app: the shared Lindroids window app (`lindroids app install`), no browser");
+            println!("  webapk: an app made by Chrome or Samsung Internet (needs Play services or the Galaxy Store)");
             0
         }
         [key] if key == "browser" => {
@@ -81,6 +87,7 @@ mod tests {
 
     #[test]
     fn browser_values() {
+        assert_eq!(super::BROWSER_DEFAULT, "app");
         assert!(valid_browser("webapk") && valid_browser("app") && valid_browser("default") && valid_browser("home-screen"));
         assert!(valid_browser("com.android.chrome") && valid_browser("com.sec.android.app.sbrowser"));
         assert!(!valid_browser("chrome") && !valid_browser("") && !valid_browser("com.x/y"));

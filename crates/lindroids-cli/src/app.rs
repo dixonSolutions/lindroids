@@ -52,8 +52,13 @@ pub fn maybe_open(url: &str) -> Option<Result<String, String>> {
         return None;
     }
     if !installed() {
+        // The default is the shared app, but a run should not block on an install the user did
+        // not ask for: without it, the browser path goes on. An explicit choice says why.
+        if !config::browser_configured() && LAUNCH.get().is_none() {
+            return None;
+        }
         return Some(Err(format!(
-            "the Lindroids window app is not installed (lindroids app install){}",
+            "the Lindroids window app is not installed (lindroids app install, or export a program to install it){}",
             if sandbox::on_android() { "" } else { ": it is for Android" }
         )));
     }

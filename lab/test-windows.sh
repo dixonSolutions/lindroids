@@ -30,6 +30,9 @@ tsh() { timeout "${TSH_TIMEOUT:-60}" "$VM" "$NAME" ssh "$@"; }
 log() { echo "[$(date +%T)] $NAME: $*"; }
 declare -A R
 
+# These are the browser windows; the default export is now the window app.
+tsh 'lindroids config browser default' >/dev/null 2>&1 || true
+
 # uiautomator: "x y" of the first node whose text/resource-id/content-desc matches a regex.
 ui_find() {
   sh_ 'uiautomator dump /data/local/tmp/ui.xml >/dev/null 2>&1; cat /data/local/tmp/ui.xml' | python3 -c '

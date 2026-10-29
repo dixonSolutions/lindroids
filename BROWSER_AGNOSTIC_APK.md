@@ -1,14 +1,14 @@
 # A window of its own, without a browser: the Lindroids window app
 
-*Design, 2026-10-29; the app and way A are built. The choices marked **open** are still the
-project's: where the shared app is published, and whether B or C follows. Tested on the lab VM
-b16 (`lab/test-window-app.sh`, results below).*
+*Design, 2026-10-29; the app and way A are built and are the default export. The choices marked
+**open** are still the project's: where the shared app is published, and whether B or C follows.
+Tested on the lab VM b16 (`lab/test-window-app.sh`, results below).*
 
-A Linux program's window is a browser's by default: a Custom Tab per run
+A Linux program's window used to be a browser's: a Custom Tab per run
 ([docs/DISPLAY.md](docs/DISPLAY.md)), or a WebAPK that Chrome or Samsung Internet makes
-([docs/WEBAPK.md](docs/WEBAPK.md)). The third way is now built: a small Android app of ours
-(`org.lindroids`, one APK) that shows the program's page in Android's own WebView, with no browser
-at all.
+([docs/WEBAPK.md](docs/WEBAPK.md)). Now a small Android app of ours (`org.lindroids`, one APK) is
+the default: it shows the program's page in Android's own WebView, with no browser at all, and the
+browser paths stay for `config browser default` or `webapk`.
 
 ## Why
 
@@ -99,19 +99,20 @@ stay on. A free *limited distribution* account covers 20 devices: not for a publ
 So A is the only way that installs with no extra step everywhere after 2027. B works today and
 afterwards behind the advanced flow. C depends on a question to Google first.
 
-## Using it
+## Using it (the default export)
 
 ```sh
-lindroids app install                    # download the release APK; Android asks to Install
+lindroids export <program>               # installs the app on first use, then exports
+lindroids export --browser app <program> # the same, explicitly
+lindroids app install                    # optional: install before the first export
 lindroids app status                     # org.lindroids, installed yes/no
-lindroids config browser app             # windows use the app from now on
-lindroids export --browser app <program> # an icon whose windows use it
 ```
 
-`lindroids run` then opens `org.lindroids/WindowActivity` as one document task; the page is the
+`lindroids export` downloads the APK and opens Android's installer when the app is missing; there
+is no separate bundling step. `lindroids run` then opens `org.lindroids/WindowActivity` as one document task; the page is the
 same one the server serves (`http://<label>.localhost:<port>/?window&run=<pid>`), so runs, tickets
-and launches are unchanged. With the app not installed, the setting fails with the install command;
-without the setting, the browser path is exactly as before. The source is
+and launches are unchanged. With the app not installed, an explicit `config browser app` fails with the install command;
+with the default setting, a run falls back to the browser until an export installs it. The source is
 [`packaging/webview-app`](packaging/webview-app), built by
 [`packaging/build-webview-apk.sh`](packaging/build-webview-apk.sh); the CLI side is
 [`crates/lindroids-cli/src/app.rs`](crates/lindroids-cli/src/app.rs).
@@ -148,11 +149,11 @@ The app's code is the same in A, B and C; only how it is built and signed differ
 3. **A: the shared app**, the recommended default way (done in this tree):
    - Released with Lindroids (GitHub Releases; F-Droid or Google Play are **open**), signed by the
      project key, registered with Google's verification.
-   - `lindroids` checks whether it is installed; if not, it downloads the release APK for this
-     version and opens Android's installer (`termux-open --content-type
+   - `lindroids export` checks whether it is installed; if not, it downloads the release APK for
+     this version and opens Android's installer (`termux-open --content-type
      application/vnd.android.package-archive`). The first time, Android asks to allow Termux to
      install apps; then the user taps *Install*. From Google Play it would be the store page
-     instead, with no "unknown sources" step.
+     instead, with no "unknown sources" step. `lindroids app install` is only the pre-install.
    - `export` keeps the existing home screen shortcut (owned by Termux, with the program's name
      and icon), whose launch URL runs `lindroids launch <id>`; that window opens with an explicit
      intent to the app, as `Shortcut.java open` does for a Custom Tab. An app-owned shortcut
@@ -183,15 +184,17 @@ The app's code is the same in A, B and C; only how it is built and signed differ
 
 ## What stays open
 
-- **Which ways to build**: A alone, A then B, or C (the user's call). A is built; B and C are not.
+- **Which ways to build**: A alone, A then B, or C (the user's call). A is built and is the
+  default export; B and C are not.
 - **Where A is published**: GitHub Releases only, F-Droid, Google Play. Every release carries the
   APK, signed with the project key in CI (`LINDROIDS_APP_KEYSTORE`); the workflow fails without
   it, so a test-signed APK is never published.
 - **The project key**: the CI secret names are in
   [docs/PACKAGING.md](docs/PACKAGING.md#what-a-release-contains).
 - **The "no APK" rule** ([docs/DISPLAY.md](docs/DISPLAY.md), the project so far): this brings back an
-  Android app, opt-in. Unlike the old pairing app it pairs with nothing: it only shows pages from
-  the server, which already checks every page by its run ticket.
+  Android app, now the default export; `config browser default` keeps the browser path. Unlike the
+  old pairing app it pairs with nothing: it only shows pages from the server, which already checks
+  every page by its run ticket.
 - Untested: `aapt2 link` against the phone's `framework-res.apk` (B); Play Protect's reaction to
   the apps; how long B's build takes on a phone; pinned shortcut badges on One UI; Recents on
   Launcher3 and One UI with the shared app (b16's launcher is not one of them).
