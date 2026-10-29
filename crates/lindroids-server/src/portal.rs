@@ -347,6 +347,23 @@ fn opt_str(o: &HashMap<String, OwnedValue>, k: &str) -> Option<String> {
     }
 }
 
+/// A path option (`ay`, NUL-terminated, as the portal's current_folder and current_file are).
+fn opt_path(o: &HashMap<String, OwnedValue>, k: &str) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let v = o.get(k)?.try_clone().ok()?;
+    let bytes = <Vec<u8>>::try_from(v).ok()?;
+    let bytes = bytes.strip_suffix(&[0]).unwrap_or(&bytes);
+    (!bytes.is_empty()).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
+}
+
+/// The name a save dialog offers: `current_name`, else the name of `current_file` (GTK sends
+/// that for Save As of a file that has one).
+fn save_name(o: &HashMap<String, OwnedValue>) -> Option<String> {
+    opt_str(o, "current_name")
+        .filter(|n| !n.is_empty())
+        .or_else(|| opt_path(o, "current_file").and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())))
+}
+
 fn opt_bool(o: &HashMap<String, OwnedValue>, k: &str) -> bool {
     matches!(o.get(k).map(|v| &**v), Some(Value::Bool(true)))
 }
@@ -580,25 +597,47 @@ fn filter_mimes(options: &HashMap<String, OwnedValue>) -> Vec<String> {
     for (_, rules) in filters {
         for (kind, pattern) in rules {
             let m = if kind == 1 { Some(pattern) } else { mime_for_glob(&pattern).map(String::from) };
-            if let Some(m) = m {
-                if !out.contains(&m) {
-                    out.push(m);
-                }
+            match m {
+                // A glob of no type Android knows (Xournal++'s *.xopp): anything, rather than
+                // a picker that hides the program's own files.
+                None => return Vec::new(),
+                Some(m) if !out.contains(&m) => out.push(m),
+                Some(_) => {}
             }
         }
     }
-    // A glob nothing matched means "anything" rather than nothing.
-    if out.is_empty() {
-        out
-    } else if out.iter().any(|m| m == "*/*") {
+    if out.iter().any(|m| m == "*/*") {
         Vec::new()
     } else {
         out
     }
 }
 
+/// A glob's extension, lower case. Chromium (Electron) writes each letter as a case-insensitive
+/// class, as the portal's documentation suggests: `*.[tT][xX][tT]` is `txt`.
+fn glob_extension(glob: &str) -> Option<String> {
+    let ext = glob.rsplit('.').next()?;
+    let mut out = String::new();
+    let mut chars = ext.chars();
+    while let Some(c) = chars.next() {
+        if c != '[' {
+            out.push(c.to_ascii_lowercase());
+            continue;
+        }
+        let class: String = chars.by_ref().take_while(|&c| c != ']').collect();
+        let mut letters = class.chars().map(|c| c.to_ascii_lowercase());
+        let first = letters.next()?;
+        // Only a class of one letter in both cases names that letter.
+        if !letters.all(|c| c == first) {
+            return None;
+        }
+        out.push(first);
+    }
+    Some(out)
+}
+
 fn mime_for_glob(glob: &str) -> Option<&'static str> {
-    let ext = glob.rsplit('.').next()?.to_ascii_lowercase();
+    let ext = glob_extension(glob)?;
     Some(match ext.as_str() {
         "*" => "*/*",
         "png" => "image/png",
@@ -801,6 +840,17 @@ fn send_file(pid: Option<u32>, path: &Path, uri: &str) {
     forget(r);
 }
 
+/// A FileChooser's Response: always with `uris`, empty when nothing was picked. GTK 3's
+/// GtkFileChooserNative reads `uris` without checking it is there, and crashed (SIGSEGV in
+/// g_vfs_get_file_for_uri, Mousepad's Save As cancelled) on a Response without it.
+fn chooser_results(uris: Vec<String>) -> HashMap<&'static str, Value<'static>> {
+    [("uris", Value::from(uris))].into_iter().collect()
+}
+
+fn respond_files(sender: &str, handle: &OwnedObjectPath, response: u32, uris: Vec<String>) {
+    respond(sender, handle, response, chooser_results(uris));
+}
+
 struct FileChooser;
 
 impl FileChooser {
@@ -815,21 +865,21 @@ impl FileChooser {
             multiple: !save && opt_bool(&options, "multiple"),
             directory: !save && opt_bool(&options, "directory"),
             mime_types: filter_mimes(&options),
-            name: opt_str(&options, "current_name"),
+            name: save_name(&options),
         };
         std::thread::spawn(move || {
             let pid = caller_pid(&sender);
             let Some((request, rx)) = ask(pid, |r| (ToApp::PickFiles(PickFiles { request: r, ..req }), Vec::new())) else {
-                return respond(&sender, &h, 2, HashMap::new());
+                return respond_files(&sender, &h, 2, Vec::new());
             };
             let answer = rx.recv_timeout(Duration::from_secs(3600));
             forget(request);
             let files = match answer {
                 Ok(Answer::Picked(files)) => files,
-                _ => return respond(&sender, &h, 2, HashMap::new()),
+                _ => return respond_files(&sender, &h, 2, Vec::new()),
             };
             if files.is_empty() {
-                return respond(&sender, &h, 1, HashMap::new());
+                return respond_files(&sender, &h, 1, Vec::new());
             }
             let mut uris = Vec::new();
             if save {
@@ -846,7 +896,7 @@ impl FileChooser {
                         let dir = documents_dir(request);
                         let p = dir.join(safe_name(&f.name));
                         if std::fs::create_dir_all(&dir).is_err() || std::fs::File::create(&p).is_err() {
-                            return respond(&sender, &h, 2, HashMap::new());
+                            return respond_files(&sender, &h, 2, Vec::new());
                         }
                         write_back(pid, vec![(p.clone(), f.uri.clone())], None);
                         p
@@ -891,12 +941,11 @@ impl FileChooser {
                     write_back(pid, copies, None);
                 }
             }
-            if uris.is_empty() {
-                return respond(&sender, &h, 2, HashMap::new());
+            if !uris.is_empty() {
+                info!("FileChooser {log_title:?}: {}", uris.join(", "));
             }
-            info!("FileChooser {log_title:?}: {}", uris.join(", "));
-            let results: HashMap<&str, Value> = [("uris", Value::from(uris))].into_iter().collect();
-            respond(&sender, &h, 0, results);
+            let code = if uris.is_empty() { 2 } else { 0 };
+            respond_files(&sender, &h, code, uris);
         });
         handle
     }
@@ -914,11 +963,17 @@ impl FileChooser {
 
     // The portals' property is `version`; zbus would publish `Version`, which Chromium's
     // portal probe does not find (it then used its own GTK dialogs, never Android's picker).
+    // 4: OpenFile takes `current_folder` (Android's picker opens where it was last; the option
+    // is taken and left be). Electron uses its GTK dialog below a version given with
+    // --xdg-portal-required-version, which its log suggests as 4 for a portal at 3.
     #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
-        3
+        FILE_CHOOSER_VERSION
     }
 }
+
+/// The FileChooser's interface version (xdg-desktop-portal's current one).
+const FILE_CHOOSER_VERSION: u32 = 4;
 
 // ------------------------------------------------------------------ notifications
 
@@ -1357,5 +1412,111 @@ mod tests {
     fn globs_become_mime_types() {
         assert_eq!(mime_for_glob("*.PNG"), Some("image/png"));
         assert_eq!(mime_for_glob("*.unknownext"), None);
+        // Chromium's (Electron's) case-insensitive globs.
+        assert_eq!(mime_for_glob("*.[pP][nN][gG]"), Some("image/png"));
+        assert_eq!(mime_for_glob("*.[jJ][sS][oO][nN]"), Some("application/json"));
+        assert_eq!(mime_for_glob("*.[tT]x[tT]"), Some("text/plain"));
+        assert_eq!(mime_for_glob("*.[pj]ng"), None);
+        assert_eq!(mime_for_glob("*.[pP"), None);
+        assert_eq!(mime_for_glob("*"), Some("*/*"));
+    }
+
+    fn filters(list: Vec<(&str, Vec<(u32, &str)>)>) -> HashMap<String, OwnedValue> {
+        let list: Vec<(String, Vec<(u32, String)>)> =
+            list.into_iter().map(|(n, r)| (n.to_string(), r.into_iter().map(|(k, p)| (k, p.to_string())).collect())).collect();
+        [("filters".to_string(), owned(Value::from(list)))].into_iter().collect()
+    }
+
+    #[test]
+    fn responses_always_carry_uris() {
+        // Cancelled: an empty list, which GTK 3 needs to find (its D-Bus type is `as`).
+        let r = chooser_results(Vec::new());
+        assert_eq!(r.get("uris").map(|v| v.value_signature().to_string()), Some("as".into()));
+        assert_eq!(r.get("uris"), Some(&Value::from(Vec::<String>::new())));
+        let r = chooser_results(vec!["file:///sdcard/a.txt".into()]);
+        assert_eq!(r.get("uris"), Some(&Value::from(vec!["file:///sdcard/a.txt".to_string()])));
+    }
+
+    #[test]
+    fn save_dialogs_offer_a_name() {
+        let opts = |v: Vec<(&str, Value<'static>)>| -> HashMap<String, OwnedValue> { v.into_iter().map(|(k, v)| (k.to_string(), owned(v))).collect() };
+        assert_eq!(save_name(&opts(vec![("current_name", Value::from("notes.txt"))])), Some("notes.txt".into()));
+        // GTK's Save As of a file: its path, as bytes with a NUL.
+        let file = Value::from(b"/data/data/com.termux/files/home/meeting notes.txt\0".to_vec());
+        assert_eq!(save_name(&opts(vec![("current_file", file.try_clone().unwrap())])), Some("meeting notes.txt".into()));
+        assert_eq!(save_name(&opts(vec![("current_name", Value::from("")), ("current_file", file)])), Some("meeting notes.txt".into()));
+        assert_eq!(save_name(&HashMap::new()), None);
+        assert_eq!(opt_path(&opts(vec![("current_folder", Value::from(b"/sdcard\0".to_vec()))]), "current_folder"), Some(PathBuf::from("/sdcard")));
+    }
+
+    #[test]
+    fn filters_become_the_pickers_types() {
+        // VSCodium's Open File with filters, as Chromium sends them.
+        let o = filters(vec![("Images", vec![(0, "*.[pP][nN][gG]"), (0, "*.[jJ][pP][gG]")]), ("PDF", vec![(1, "application/pdf")])]);
+        assert_eq!(filter_mimes(&o), ["image/png", "image/jpeg", "application/pdf"]);
+        // "All files" among them: anything.
+        let o = filters(vec![("Text", vec![(0, "*.[tT][xX][tT]")]), ("All Files", vec![(0, "*")])]);
+        assert!(filter_mimes(&o).is_empty());
+        // Nothing known: anything rather than nothing.
+        assert!(filter_mimes(&filters(vec![("Rust", vec![(0, "*.[rR][sS]")])])).is_empty());
+        // Some unknown (Xournal++'s "Supported files"): anything, not only the PDFs.
+        let o = filters(vec![("Supported files", vec![(0, "*.xopp"), (0, "*.pdf"), (0, "*.PDF")])]);
+        assert!(filter_mimes(&o).is_empty());
+        // The same type twice is asked once.
+        let o = filters(vec![("PDF", vec![(0, "*.pdf"), (0, "*.PDF")])]);
+        assert_eq!(filter_mimes(&o), ["application/pdf"]);
+        assert!(filter_mimes(&HashMap::new()).is_empty());
+    }
+
+    /// Chromium's probe over D-Bus, as Electron 43 (VSCodium) sends it before its first file
+    /// dialog: Properties.Get("org.freedesktop.portal.FileChooser", "version") on the portal's
+    /// object, a u32 of at least 3 (else its own GTK dialog), here 4.
+    #[test]
+    fn file_chooser_version_over_dbus() {
+        // A bus like the server's, from the same configuration.
+        let Some(daemon) = crate::x11::which("dbus-daemon") else {
+            eprintln!("no dbus-daemon: skipped");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("lindroids-bus-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("bus");
+        std::fs::write(dir.join("bus.conf"), bus_config(&socket)).unwrap();
+        let mut bus = Command::new(daemon)
+            .arg(format!("--config-file={}", dir.join("bus.conf").display()))
+            .args(["--nofork", "--nopidfile"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let t0 = Instant::now();
+        while !socket.exists() && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let addr = format!("unix:path={}", socket.display());
+        let _portal = zbus::blocking::connection::Builder::address(addr.as_str())
+            .unwrap()
+            .serve_at(DESKTOP, FileChooser)
+            .unwrap()
+            .name("org.freedesktop.portal.Desktop")
+            .unwrap()
+            .build()
+            .unwrap();
+        let client = zbus::blocking::connection::Builder::address(addr.as_str()).unwrap().build().unwrap();
+        let props = zbus::blocking::fdo::PropertiesProxy::builder(&client)
+            .destination("org.freedesktop.portal.Desktop")
+            .unwrap()
+            .path(DESKTOP)
+            .unwrap()
+            .build()
+            .unwrap();
+        let iface = zbus::names::InterfaceName::try_from("org.freedesktop.portal.FileChooser").unwrap();
+        let v = props.get(iface.clone(), "version").unwrap();
+        assert_eq!(u32::try_from(v).unwrap(), 4);
+        // What b72e4af fixed: `Version` is not the property's name.
+        assert!(props.get(iface, "Version").is_err());
+        let _ = bus.kill();
+        let _ = bus.wait();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

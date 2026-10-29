@@ -214,8 +214,29 @@ the data belong in the same container as the server. Android's files stay outsid
 browser, as before.
 Each portal interface publishes its `version` property under that name (zbus would say `Version`):
 Chromium and Electron read it to decide whether there is a portal, and without it showed their own
-GTK dialogs instead of Android's picker *(tested: VSCodium's Open Folder now opens Android's
-folder picker and the folder)*.
+GTK dialogs instead of Android's picker. Electron 43 (VSCodium 1.140) reads FileChooser's
+`version` once at startup and uses its GTK dialog below 3; FileChooser is version 4, as
+xdg-desktop-portal's (Electron also takes `--xdg-portal-required-version=4`).
+
+GTK 3 asks the portal only for a GtkFileChooserNative; programs that build a
+GtkFileChooserDialog (Mousepad, Xournal++, GIMP, Inkscape, LibreOffice...) showed GTK's own
+"Open File" window on the Linux side. `liblindroids-gtk.so`
+([third_party/gtkpicker](../third_party/gtkpicker/lindroids-gtk.c)), which every run gets in
+`LD_PRELOAD` (written to `<runtime>/lib`), turns such a dialog into a native one with the same
+action, title, filters, multiple selection and file name, and hands its answer back as the
+dialog's (`gtk_dialog_run`'s result or its `response`, and `gtk_file_chooser_get_filename(s)` and
+friends); `LINDROIDS_GTK_DIALOGS=1` keeps GTK's. It has no libc and finds GTK with `dlsym`, so
+one file per CPU serves bionic and glibc programs. A Response always carries `uris` (empty when
+cancelled): GTK 3 reads it unchecked and crashed on a cancelled Save As without it. Globs become
+the picker's MIME types (Chromium's `*.[pP][nN][gG]` too); a glob of a type Android does not know
+(`*.xopp`) lets every file through rather than hiding the program's own.
+
+*Tested on b16 with `lab/test-file-picker.sh` (2026-10-28): VSCodium (Flatpak, Electron 43) Open
+File, Save Workspace As and Open Folder; Mousepad (Termux, GTK 3 dialog) Open and Save As; GNOME
+Text Editor (Flatpak, GTK 4) Open and Save As: each a FileChooser call and Android's picker, no
+GTK window; a picked Documents/meeting.txt opened in VSCodium, Mousepad and Text Editor.
+Xournal++ in a Debian proot (glibc, GTK 3 dialog): Open went to Android's picker. Not tested:
+several files picked at once, GIMP, a 32-bit or ARM device.*
 
 The soft keyboard follows taps as on Android (`seat.rs`). It never comes up without a tap; apps
 enable text input for a field that has the focus at start, and it used to pop up then. An app that
