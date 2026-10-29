@@ -76,6 +76,11 @@ public class WindowActivity extends Activity {
     private String launchUrl = "";
     private String termuxPackage = "com.termux";
     private boolean offline = false;
+    /** A program's own app: its start page (from the manifest), else null (the shared app). */
+    private String startUrl;
+    /** The program was started through Termux once already, when its page could not be reached. */
+    private boolean autoStarted = false;
+    private boolean resumed = false;
     private boolean pickerOpen = false;
 
     private final Bridge bridge = new Bridge();
@@ -98,8 +103,15 @@ public class WindowActivity extends Activity {
             WebView.setWebContentsDebuggingEnabled(true);
         }
         String start = programDefaults();
+        startUrl = start;
         String url = intent == null ? null : urlOf(intent);
         if (url == null) url = start;
+        if (url == null && this instanceof Launch) {
+            // The windows app's own icon: it has no page; Termux is where programs start.
+            startTermuxNow();
+            finish();
+            return;
+        }
         if (url == null || !local(Uri.parse(url))) {
             if (url != null) openExternal(Uri.parse(url));
             finish();
@@ -268,12 +280,14 @@ public class WindowActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        resumed = true;
         if (webView != null) webView.onResume();
         makeImmersive();
     }
 
     @Override
     protected void onPause() {
+        resumed = false;
         if (webView != null) webView.onPause();
         super.onPause();
     }
@@ -318,14 +332,62 @@ public class WindowActivity extends Activity {
         } catch (ActivityNotFoundException ignored) { }
     }
 
+    /** A run's window (`?window&run=<pid>`), not a program's start page. */
+    private static boolean isRun(String url) {
+        return url != null && url.contains("run=");
+    }
+
     private void loadOffline(WebResourceError error) {
         if (offline) return;
+        // A run's window in the shared app is a temporary window: the run is gone with the
+        // server (Termux closed), so is its window.
+        if (startUrl == null && isRun(originalUrl)) {
+            finishAndRemoveTask();
+            return;
+        }
         offline = true;
+        // Opened from the program's icon while Termux is not running: start it through Termux at
+        // once (this app is in front, so Android lets it), as the Start button would.
+        boolean auto = startUrl != null && !isRun(originalUrl) && !autoStarted;
+        if (auto) {
+            autoStarted = true;
+            startTermuxNow();
+        }
         String q = "?name=" + Uri.encode(programName)
+                + (auto ? "&auto=1" : "")
                 + "&launch=" + Uri.encode(launchUrl)
                 + "&termux=" + Uri.encode(termuxPackage)
                 + "&url=" + Uri.encode(originalUrl);
         if (webView != null) webView.loadUrl("file:///android_asset/offline.html" + q);
+    }
+
+    /**
+     * Hands the program's launch URL to Termux (its share receiver runs `lindroids launch <id>`,
+     * as a Termux home screen icon does); without one, opens Termux.
+     */
+    void startTermuxNow() {
+        if (launchUrl == null || launchUrl.isEmpty()) {
+            Intent launch = getPackageManager().getLaunchIntentForPackage(termuxPackage);
+            if (launch != null) {
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                try { startActivity(launch); } catch (Throwable ignored) { }
+            }
+            return;
+        }
+        Intent send = new Intent(Intent.ACTION_SEND);
+        send.setType("text/plain");
+        send.putExtra(Intent.EXTRA_TEXT, launchUrl);
+        send.setPackage(termuxPackage);
+        send.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            startActivity(send);
+        } catch (Throwable t) {
+            Intent launch = getPackageManager().getLaunchIntentForPackage(termuxPackage);
+            if (launch != null) {
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                try { startActivity(launch); } catch (Throwable ignored) { }
+            }
+        }
     }
 
     private final class Client extends WebViewClient {
@@ -776,37 +838,19 @@ public class WindowActivity extends Activity {
 
         @JavascriptInterface
         public void startTermux() {
-            runOnUiThread(() -> {
-                if (launchUrl == null || launchUrl.isEmpty()) {
-                    Intent launch = getPackageManager().getLaunchIntentForPackage(termuxPackage);
-                    if (launch != null) {
-                        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                        try { startActivity(launch); } catch (Throwable ignored) { }
-                    }
-                    return;
-                }
-                Intent send = new Intent(Intent.ACTION_SEND);
-                send.setType("text/plain");
-                send.putExtra(Intent.EXTRA_TEXT, launchUrl);
-                send.setPackage(termuxPackage);
-                send.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                try {
-                    startActivity(send);
-                } catch (Throwable t) {
-                    Intent launch = getPackageManager().getLaunchIntentForPackage(termuxPackage);
-                    if (launch != null) {
-                        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                        try { startActivity(launch); } catch (Throwable ignored) { }
-                    }
-                }
-            });
+            runOnUiThread(WindowActivity.this::startTermuxNow);
         }
 
         @JavascriptInterface
         public void retry() {
             // Reload only once the server answers: reloading while it is down shows this page
             // again, and a tap on Start during that reload is lost.
-            final String url = originalUrl;
+            // A program's own app goes back to its start page, which finds the program running or
+            // starts it: the run this window showed may be gone with the server. Only while the
+            // app is in front, so a server started later for something else does not start it.
+            if (!resumed) return;
+            final String url = startUrl != null ? startUrl : originalUrl;
+            if (startUrl != null) originalUrl = startUrl;
             new Thread(() -> {
                 Uri u = Uri.parse(url);
                 int port = u.getPort() > 0 ? u.getPort() : 80;

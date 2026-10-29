@@ -50,28 +50,19 @@ pub fn enabled() -> bool {
     LAUNCH.get().is_some()
 }
 
-pub fn installed() -> bool {
-    shortcut::app_installed()
-}
-
 /// Shows `url` in the shared app, when it is chosen and installed. None: not our business (the
 /// browser path goes on). Err: it was chosen but cannot open (the caller falls back and says so).
 pub fn maybe_open(url: &str) -> Option<Result<String, String>> {
-    if !enabled() {
+    if !enabled() || !sandbox::on_android() {
         return None;
     }
-    if !installed() {
-        // The default is the shared app, but a run should not block on an install the user did
-        // not ask for: without it, the browser path goes on. An explicit choice says why.
-        if !config::browser_configured() && LAUNCH.get().is_none() {
-            return None;
-        }
-        return Some(Err(format!(
-            "the Lindroids window app is not installed (lindroids app install, or export a program to install it){}",
-            if sandbox::on_android() { "" } else { ": it is for Android" }
-        )));
+    // Termux from Google Play cannot see other apps (no QUERY_ALL_PACKAGES), so the windows app
+    // is not looked up: opening it is the test, and the browser takes the window when it fails.
+    match open(url) {
+        Ok(p) => Some(Ok(p)),
+        Err(e) if config::browser_configured() => Some(Err(format!("{e} (lindroids app install builds the windows app)"))),
+        Err(_) => None,
     }
-    Some(open(url))
 }
 
 fn open(url: &str) -> Result<String, String> {
@@ -80,67 +71,23 @@ fn open(url: &str) -> Result<String, String> {
         .and_then(lindroids_server::icons::launch_info)
         .unwrap_or_else(|| ("Lindroids".to_string(), None));
     let launch = LAUNCH.get().map(|(_, u)| u.clone()).unwrap_or_default();
-    shortcut::open_app_window(PACKAGE, url, &name, icon.as_deref(), &launch, false)?;
-    shortcut::note_window(&sandbox::runtime_dir(), url, PACKAGE);
-    Ok(PACKAGE.to_string())
-}
-
-fn repo() -> String {
-    std::env::var("LINDROIDS_GITHUB_REPO")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "dixonSolutions/lindroids".into())
+    // The windows app built here first; the shared app of older releases (org.lindroids) if
+    // that is what is installed.
+    let mut last = String::new();
+    for app in [WINDOWS_PACKAGE, PACKAGE] {
+        match shortcut::open_app_window(app, url, &name, icon.as_deref(), &launch, false) {
+            Ok(()) => {
+                shortcut::note_window(&sandbox::runtime_dir(), url, app);
+                return Ok(app.to_string());
+            }
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
 }
 
 fn version() -> String {
     lindroids_server::BUILD.split('+').next().unwrap_or(lindroids_server::BUILD).to_string()
-}
-
-fn release_apk_url() -> Option<String> {
-    let v = version();
-    if v.ends_with("dev") {
-        return None;
-    }
-    let base = std::env::var("LINDROIDS_RELEASE_URL")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| format!("https://github.com/{}/releases/download", repo()));
-    Some(format!("{}/v{v}/lindroids-{v}.apk", base.trim_end_matches('/')))
-}
-
-fn fetch(url: &str, path: &Path) -> Result<(), String> {
-    let _ = std::fs::remove_file(path);
-    let curl = Command::new("curl")
-        .args(["-fsSL", "--retry", "3", "-o"])
-        .arg(path)
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    let wget = || {
-        Command::new("wget")
-            .args(["-q", "-O"])
-            .arg(path)
-            .arg(url)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    };
-    let downloaded = (curl || wget()) && path.metadata().map(|m| m.len() > 0).unwrap_or(false);
-    if downloaded {
-        Ok(())
-    } else {
-        let _ = std::fs::remove_file(path);
-        Err(format!(
-            "cannot download {url}: the APK is not in that release, or there is no network (needs curl or wget)"
-        ))
-    }
 }
 
 /// Termux's file provider refuses other apps unless `allow-external-apps=true`; the installer is
@@ -211,64 +158,36 @@ fn reload_settings() {
     let _ = Command::new(cmd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
-/// Downloads (or takes) the app's APK and opens Android's installer. `lindroids` cannot install it
-/// itself: tapping Install is the user's.
-fn install(arg: Option<&str>) -> Result<PathBuf, String> {
+/// Builds the windows app here (or takes an APK given) and offers it to Android's installer.
+fn install(arg: Option<&str>) -> Result<(), String> {
     let path = match arg.map(str::to_string).or_else(|| std::env::var("LINDROIDS_APP_APK").ok()).filter(|p| !p.is_empty()) {
         Some(p) => PathBuf::from(p),
         None => {
-            let url = release_apk_url().ok_or_else(|| {
-                "this is a development build: give the APK's path (`lindroids app install <file.apk>`) or set LINDROIDS_APP_APK".to_string()
-            })?;
-            let dir = std::env::temp_dir();
-            let file = dir.join(format!("lindroids-{}.apk", version()));
-            println!("Downloading the Lindroids window app from {url}");
-            fetch(&url, &file)?;
-            file
+            let (apk, _) = build_app(WINDOWS_PACKAGE, "windows", "Lindroids", LINDROIDS_ICON, "", "")?;
+            println!("Built the Lindroids windows app ({WINDOWS_PACKAGE}).");
+            apk
         }
     };
     if !path.is_file() {
         return Err(format!("{}: no such APK", path.display()));
     }
-    let path = std::fs::canonicalize(&path).unwrap_or(path);
-    // Open the installer's own activity directly: a plain VIEW of an APK often lands in a
-    // chooser (Files, archivers) instead. The guard allows Termux's provider to hand the APK over
-    // while the installer copies it, then restores the user's termux.properties.
-    let external = ExternalApps::enable();
-    let started = shortcut::install_apk(&path);
-    if !started {
-        let opener = if std::env::var_os("PATH").map_or(true, |p| std::env::split_paths(&p).any(|d| d.join("termux-open").exists())) {
-            "termux-open".to_string()
-        } else {
-            format!("{}/bin/termux-open", lindroids_proto::TERMUX_PREFIX)
-        };
-        let ok = Command::new(opener)
-            .arg("--content-type")
-            .arg("application/vnd.android.package-archive")
-            .arg(&path)
-            .stdin(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !ok {
-            drop(external);
-            return Err(format!(
-                "cannot open Android's installer for {} (needs termux-tools' termux-open, or \
-                 allow-external-apps=true in ~/.termux/termux.properties)",
-                path.display()
-            ));
-        }
-        std::thread::sleep(Duration::from_secs(5));
-    } else {
-        // The installer copies the APK before it asks; leave the provider on until it has.
-        std::thread::sleep(Duration::from_secs(10));
+    match offer(&path, "Lindroids", "")? {
+        Offered::Installer => println!("Android's installer is open: tap Install."),
+        Offered::Downloads(file) => println!("It is in Download as {file}, and the file manager is open there: tap it, then Install."),
+        Offered::Browser(_) => println!("The browser downloads it: open it, then Install."),
     }
-    drop(external);
-    println!("Android shows the installer: tap Install.");
-    Ok(path)
+    println!("Then `lindroids run <program>` opens each program in a window of its own, with its name and icon.");
+    Ok(())
 }
 
 // ------------------------------------------------------------------ a program's own app
+
+/// The windows app built on this phone (`lindroids app install`): windows of programs that are not
+/// exported, one task per run, each with the program's name and icon on its task. It closes with
+/// the program, and with Termux (the run is gone with the server).
+pub const WINDOWS_PACKAGE: &str = "org.lindroids.windows";
+
+static LINDROIDS_ICON: &[u8] = include_bytes!("../../../media/icon-512.png");
 
 /// The prefix of every program's own app (`lindroids_apk::package_for`).
 pub const PROGRAM_PREFIX: &str = "org.lindroids.app.";
@@ -337,8 +256,15 @@ fn icon_layers(icon: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {
 /// server (`http://<label>.localhost:<port>/app/<id>/`), `launch` what starts it through the
 /// terminal app when the server is not running. Returns the APK's path and its package.
 pub fn build_program_app(id: &str, name: &str, icon: &[u8], start: &str, launch: &str) -> Result<(PathBuf, String), String> {
+    build_app(&lindroids_apk::package_for(id), id, name, icon, start, launch)
+}
+
+/// Builds an app from the template: `<state>/apk/<file>.apk`. An empty `start` makes the windows
+/// app (no page of its own: only the windows Lindroids opens in it).
+fn build_app(package: &str, file: &str, name: &str, icon: &[u8], start: &str, launch: &str) -> Result<(PathBuf, String), String> {
+    let id = file;
     let key = signing_key()?;
-    let package = lindroids_apk::package_for(id);
+    let package = package.to_string();
     let (plain, fg, bg) = icon_layers(icon)?;
     // Minutes since 1970: a new export of the same program is always a newer version.
     let version_code = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) / 60) as u32;
@@ -359,7 +285,7 @@ pub fn build_program_app(id: &str, name: &str, icon: &[u8], start: &str, launch:
     let apk = lindroids_apk::build(&p, &key)?;
     let dir = lindroids_server::state_dir().join("apk");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let path = dir.join(format!("{id}.apk"));
+    let path = dir.join(format!("{file}.apk"));
     std::fs::write(&path, &apk).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok((path, package))
 }
@@ -424,17 +350,14 @@ pub fn offer(apk: &Path, name: &str, page: &str) -> Result<Offered, String> {
 pub fn cmd_app(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         None | Some("status") => {
-            println!("app      {PACKAGE}");
-            println!("installed {}", if installed() { "yes" } else { "no" });
-            println!("windows  {}", if enabled() { "the shared app" } else { "the browser (config browser app for the app)" });
+            println!("windows app  {WINDOWS_PACKAGE} (lindroids app install builds it here)");
+            println!("windows      {}", if enabled() { "the windows app when it is installed, else the browser" } else { "the browser (config browser app for the windows app)" });
+            println!("exports      each program's own app, org.lindroids.app.<id> (lindroids export)");
             0
         }
-        Some("install") if !sandbox::on_android() => crate::fail("the Lindroids window app is for Android"),
+        Some("install") if !sandbox::on_android() => crate::fail("the Lindroids windows app is for Android"),
         Some("install") => match install(args.get(1).map(String::as_str)) {
-            Ok(p) => {
-                println!("{}", p.display());
-                0
-            }
+            Ok(()) => 0,
             Err(e) => crate::fail(&e),
         },
         _ => crate::fail("usage: lindroids app [status|install [<file.apk>]]"),

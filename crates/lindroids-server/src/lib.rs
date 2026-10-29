@@ -1893,11 +1893,15 @@ pub fn run(cfg: Config) -> i32 {
         }
         let _ = display.flush_clients();
     }
+    // The programs `run` and `launch` started end with the server: without it they have no
+    // display, and a program under proot outlives it (seen on a Galaxy Tab: an orphaned VSCodium,
+    // not responding, that kept the next launch's window out of VSCodium's app).
+    end_all_launches();
     let _ = std::fs::remove_file(&wl_path);
     let _ = std::fs::remove_file(&cli_path);
     let _ = std::fs::remove_file(cfg.runtime_dir.join("server.pid"));
-    // The programs went with the server; so do their notifications (the helper takes a moment
-    // for each).
+    // The programs are gone with the server; so are their notifications (the helper takes a
+    // moment for each).
     let n = android::clear_running();
     if n > 0 {
         std::thread::sleep(Duration::from_secs(n.min(5) as u64));
@@ -2017,6 +2021,25 @@ fn end_launches(run: Option<u32>) {
             unsafe { libc::kill(p as i32, libc::SIGKILL) };
         }
     });
+}
+
+/// Every launched program's process tree: SIGTERM, then SIGKILL for what is left after 3 s.
+fn end_all_launches() {
+    let pids = icons::launched_pids();
+    if pids.is_empty() {
+        return;
+    }
+    info!("stopping: ending {pids:?}");
+    for p in pids.iter().flat_map(|p| icons::process_tree(*p)) {
+        unsafe { libc::kill(p as i32, libc::SIGTERM) };
+    }
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_secs(3) && pids.iter().any(|p| Path::new(&format!("/proc/{p}")).exists()) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    for p in pids.iter().flat_map(|p| icons::process_tree(*p)) {
+        unsafe { libc::kill(p as i32, libc::SIGKILL) };
+    }
 }
 
 /// Compose every window that changed and send what differs from what the app shows.

@@ -56,7 +56,7 @@ from Android**, through the window page and Termux, never by giving the containe
 | `lindroids run <app>` from Termux opens the window | ✅ | |
 | `lindroids export <app>` pins a home-screen icon with the program's icon and name | ✅ | adaptive icon; Android badges it with Termux (every pinned shortcut shows its owner) |
 | Exporting again updates the icon in place | ✅ | no second icon |
-| Shortcut works with Termux closed | ✅ | [demo](../media/demos/launch-from-home.mp4) |
+| Shortcut works with Termux closed | ✅ | [demo](evidence/launch-from-home.mp4) |
 | Shortcut works with Termux 0.119 (renamed share receiver) | ⚠️ | receiver found at pin time (names tried, then an intent query); tested on b16's 0.118.3 with the new name listed first and with only bogus names; 0.119 itself not installable there (signing key). Re-run `lindroids export <app>` to fix an icon pinned before |
 | Shortcut works right after a reboot, Termux never opened | ✅ | window in ~1–2 s, enforcing |
 | The window says the program ended even when Termux closes with it | ✅ | |
@@ -67,8 +67,8 @@ from Android**, through the window page and Termux, never by giving the containe
 
 | Criterion | Status | Evidence / notes |
 |---|---|---|
-| Open a file from Android (Files "Open with" / Share → Termux → Edit) in a Linux program | ✅ | `termux-file-editor` → `lindroids open --linux`; [demo](../media/demos/open-with.mp4); edits go to Termux's copy in `~/downloads` |
-| File > Open in a program shows the picker: Linux environment, Home, or Android | ✅ | portal programs (VSCodium): a closable sheet; Home/down `downloads/notes.txt` opened in VSCodium with the path handed over (no copy) on b16; Linux environment lists Termux's prefix (the container root under proot); Android opens DocumentsUI. [demo](../media/demos/file-picker.mp4); older GTK 3 dialogs browse Termux's files |
+| Open a file from Android (Files "Open with" / Share → Termux → Edit) in a Linux program | ✅ | `termux-file-editor` → `lindroids open --linux`; [demo](evidence/open-with.mp4); edits go to Termux's copy in `~/downloads` |
+| File > Open in a program shows the picker: Linux environment, Home, or Android | ✅ | portal programs (VSCodium): a closable sheet; Home/down `downloads/notes.txt` opened in VSCodium with the path handed over (no copy) on b16; Linux environment lists Termux's prefix (the container root under proot); Android opens DocumentsUI. [demo](evidence/file-picker.mp4); older GTK 3 dialogs browse Termux's files |
 | Edits reach the picked original | 🟡 | Chromium-based browsers (File System Access): Text Editor open → edit → Save wrote `/sdcard/Documents/meeting.txt`, one "Save changes?" prompt, later saves without one (b16, Cromite 153). ⛔ Firefox: a copy |
 | Save As goes where the user chose, again and again | 🟡 | Chromium-based: Android's save picker, then each save into that file (b16, Cromite). Firefox: to Downloads ✅ |
 | Folders (pick a folder) | 🟡 | Chromium-based: FileChooser `directory` → Android's folder picker; copied to Linux, a changed file and a new file in a new subfolder written back (b16, Cromite, via `gdbus`); deletions are not. ⛔ Firefox; `/sdcard` is there when Termux has storage access |
@@ -99,7 +99,7 @@ from Android**, through the window page and Termux, never by giving the containe
 
 ## Demos
 
-Recorded with `lab/record.sh` (the VM has no hardware encoder) in `media/demos/`:
+Recorded with `lab/record.sh` (the VM has no hardware encoder) in `lab/evidence/`:
 `launch-from-home` (icon → Calculator with Termux closed → close), `open-with` (Files → Termux →
-Mousepad), `file-picker` (Text Editor → Android's picker), `running-icon` (status bar icon and
-notification bring the window back).
+Mousepad), `file-picker` (Text Editor → Android's picker). The README's pictures are from the real tablet
+(docs/APPS.md).

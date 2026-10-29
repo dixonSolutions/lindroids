@@ -19,6 +19,9 @@ document.getElementById('retry').onclick = () => {
   if (window.lindroids && window.lindroids.retry) window.lindroids.retry();
 };
 
+if (q.get('auto')) {
+  document.getElementById('hint').textContent = `Starting ${name} in Termux…`;
+}
 if (!launch) {
   document.getElementById('hint').textContent = 'Open Termux and start the program there; this window follows.';
 }

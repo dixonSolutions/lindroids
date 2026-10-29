@@ -159,7 +159,9 @@ fn open_in_app(url: &str, id: &str, app: &str) -> Option<Result<String, String>>
     let via = if app.is_empty() { "app" } else { app };
     let notes = std::fs::read_to_string(rt.join("windows")).unwrap_or_default();
     let other = notes.lines().rev().find_map(|l| l.split_once(' ').filter(|(_, b)| b.trim() == via).and_then(|(u, _)| run_of_url(u)));
-    if let Some(o) = other.filter(|o| *o != run && Path::new(&format!("/proc/{o}")).exists()) {
+    // A browser's app is one window; so is a program's own app, but that one loads the new run in
+    // place (an older run noted here may be a leftover of a server that is gone).
+    if let Some(o) = other.filter(|o| *o != run && !crate::app::is_program_app(app) && Path::new(&format!("/proc/{o}")).exists()) {
         eprintln!("lindroids: {id}'s app shows another of its windows (run {o}): this one opens in the browser");
         return None;
     }
@@ -470,29 +472,6 @@ fn install_termux_script(sb: &Sandbox, name: &str, mark: &str, script: fn(&str, 
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(true)
-}
-
-/// Whether the shared Lindroids window app is installed. The helper's package lookup is tried
-/// first; Android 11+ may hide a package from it (as it hides Chrome on some phones), so `pm path`
-/// (which runs as the shell) is the fallback.
-pub fn app_installed() -> bool {
-    if helper(&["app-installed", crate::app::PACKAGE])
-        .map(|out| out.lines().any(|l| l.trim() == "installed"))
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    if !sandbox::on_android() {
-        return false;
-    }
-    let pm = if Path::new("/system/bin/pm").exists() { "/system/bin/pm" } else { "pm" };
-    Command::new(pm)
-        .args(["path", crate::app::PACKAGE])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("package:"))
-        .unwrap_or(false)
 }
 
 /// Opens Android's installer for an APK directly (no chooser), through the terminal app's

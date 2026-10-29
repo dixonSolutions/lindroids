@@ -4,14 +4,14 @@
 # here.
 #
 #   lab/record.sh b16 start <name>          # in the background until stopped
-#   lab/record.sh b16 stop <name> [width]   # -> media/demos/<name>.mp4 and .webp (README, 640 wide)
+#   lab/record.sh b16 stop <name> [width]   # -> lab/evidence/<name>.mp4 and .webp (640 wide)
 #
 # Frames come at an uneven rate; the video is retimed to the real duration when it stops.
 set -euo pipefail
 
 VM=${1:?vm}; ACTION=${2:?start|stop}; NAME=${3:?name}
 LAB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT_DIR=${OUT_DIR:-$LAB_DIR/../media/demos}
+OUT_DIR=${OUT_DIR:-$LAB_DIR/evidence}
 WORK=${TMPDIR:-/tmp}/lindroids-record/$VM-$NAME
 ADB=${ADB:-$HOME/Android/Sdk/platform-tools/adb}
 [[ -x $ADB ]] || ADB=$HOME/.local/opt/platform-tools/adb
