@@ -14,8 +14,12 @@ phone in milliseconds. No root, no browser, nothing to download.</p>
 
 <table>
 <tr>
-<td align="center" width="50%"><img src="media/screenshots/app-vscodium.png" width="320"><br><sub>VSCodium (Flathub) in its own app: full screen, no browser</sub></td>
-<td align="center" width="50%"><img src="media/screenshots/app-recents.png" width="240"><br><sub>Recents shows the program's own icon</sub></td>
+<td align="center" width="33%"><img src="media/screenshots/app-install.png" width="260"><br><sub><code>lindroids export</code> builds the app on the phone; Android installs it</sub></td>
+<td align="center" width="33%"><img src="media/screenshots/app-calculator.png" width="220"><br><sub>GNOME Calculator in its own app: full screen, no browser</sub></td>
+<td align="center" width="33%"><img src="media/screenshots/app-recents.png" width="200"><br><sub>Recents shows the program's own icon</sub></td>
+</tr>
+<tr>
+<td align="center" colspan="3"><img src="media/screenshots/app-vscodium.png" width="320"><br><sub>VSCodium from Flathub, in its own app on a Galaxy Tab (Android 16)</sub></td>
 </tr>
 </table>
 
