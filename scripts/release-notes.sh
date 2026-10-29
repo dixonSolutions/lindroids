@@ -14,6 +14,8 @@ Lindroids runs Linux GUI programs on Android — from Termux, a proot-distro dis
 and shows their windows in the phone's web browser. It is one package, installed with the
 package manager that is already there: no app to install, no permission to grant, no root.
 \`lindroids export <program>\` puts a program on the home screen as a shortcut owned by Termux.
+Optionally, \`lindroids app install\` adds a small window app of ours (no browser, no Google or
+Samsung server) and \`lindroids config browser app\` uses it.
 
 ## Install or upgrade
 

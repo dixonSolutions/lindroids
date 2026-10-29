@@ -18,6 +18,10 @@ try { localStorage.removeItem('lindroids.secret'); } catch (e) { /* storage off 
 const $ = (id) => document.getElementById(id);
 const tabsEl = $('tabs'), stage = $('stage'), panel = $('panel'), ime = $('ime'), toastsEl = $('toasts');
 const enc = new TextEncoder(), dec = new TextDecoder();
+// The Lindroids window app (BROWSER_AGNOSTIC_APK.md) shows this page in Android's own WebView and
+// exposes a small bridge for what WebView lacks: Android's file pickers and downloads, the
+// clipboard both ways, sharing, closing the task. In a browser there is no bridge.
+const NATIVE = window.lindroids || null;
 
 let ws = null;
 let ready = false;
@@ -520,7 +524,8 @@ function showEnded() {
   trace(`shows the end (${runOver ? 'the program ended' : 'the program is gone'})`);
   const icon = endedIcon || (program && program.icon);
   const out = endedOutput.length ? `<pre class="output">${esc(endedOutput.join('\n'))}</pre>` : '';
-  showPanel(`<p>${esc(program ? program.name : ended)} ${endedOutput.length ? 'stopped' : 'closed'}.</p>${endedNote ? `<p>${esc(endedNote)}</p>` : ''}${out}<p>Close this window with the ✕ at the top.</p>`, null,
+  const how = NATIVE ? 'The window closes with the program.' : 'Close this window with the ✕ at the top.';
+  showPanel(`<p>${esc(program ? program.name : ended)} ${endedOutput.length ? 'stopped' : 'closed'}.</p>${endedNote ? `<p>${esc(endedNote)}</p>` : ''}${out}<p>${how}</p>`, null,
     icon && `data:image/png;base64,${icon}`);
   // Back closes the window again: the program is gone.
   if (backWatcher) { backWatcher.destroy(); backWatcher = null; }
@@ -529,6 +534,7 @@ function showEnded() {
   endTimer = setTimeout(() => {
     if (windows.size) return;
     trace('closes itself (window.close)');
+    if (NATIVE && NATIVE.close) { NATIVE.close(); return; }
     window.close();
     // Still here a second later: the browser kept the window (Firefox's Custom Tabs always do).
     setTimeout(() => plog(`window.close() refused (history ${history.length}, ${navigator.userAgent.match(/(Firefox|Chrome)\/[\d.]+/)?.[0] || 'browser'})`), 1000);
@@ -1011,6 +1017,16 @@ function watchBack() {
 }
 watchBack();
 addEventListener('pointerup', watchBack, { capture: true });
+// The window app's Back: it keeps the window and says how to leave, as the page's own
+// CloseWatcher does in a browser. The app itself never finishes on Back while the program runs.
+if (NATIVE) addEventListener('lindroids:back', () => {
+  if (ended !== null && !windows.size && NATIVE.close) return NATIVE.close();
+  trace('Back: the window stays');
+  if (performance.now() - backHinted > 30000) {
+    backHinted = performance.now();
+    toast({ title: program ? program.name : 'Lindroids', body: 'Home or the app switcher leaves it running. This window closes when the program ends.' }, 4000);
+  }
+});
 
 // Once each time the window comes on screen: a user who left full screen (Back, Esc) meant it, and
 // asking on every tap took the taps (the resize closed the menu a tap opened).
@@ -1063,13 +1079,27 @@ let lastClipboard = null;
 
 function clipboardFromLinux(text) {
   lastClipboard = text;
+  if (NATIVE && NATIVE.writeClipboard) { try { NATIVE.writeClipboard(text); } catch (e) { plog(`clipboard: ${e}`); } return; }
   if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(() => {});
 }
 
 /// Hand the browser's clipboard to the Linux side, if it changed. Reading it needs the browser's
 /// permission (asked once, on a tap) or a tap right now.
 async function clipboardToLinux() {
-  if (!ready || !navigator.clipboard || !navigator.clipboard.readText) return false;
+  if (!ready) return false;
+  if (NATIVE && NATIVE.readClipboard) {
+    try {
+      const text = NATIVE.readClipboard();
+      if (text && text !== lastClipboard) {
+        lastClipboard = text;
+        send({ t: 'clipboard', text });
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  if (!navigator.clipboard || !navigator.clipboard.readText) return false;
   try {
     const text = await navigator.clipboard.readText();
     if (text && text !== lastClipboard) {
@@ -1085,6 +1115,7 @@ async function clipboardToLinux() {
 // Coming back to the page (from another Android app, where something may have been copied):
 // sync without asking, when the browser already allows it.
 async function clipboardOnReturn() {
+  if (NATIVE) return clipboardToLinux();
   try {
     const p = await navigator.permissions.query({ name: 'clipboard-read' });
     if (p.state === 'granted') clipboardToLinux();
@@ -1371,6 +1402,7 @@ function openFile(m, payload) {
 }
 
 function download(url, name) {
+  if (NATIVE && NATIVE.downloadStart) return downloadNative(url, name);
   const a = document.createElement('a');
   a.href = url;
   a.download = name;
@@ -1404,6 +1436,92 @@ const saves = new Map(); // uri -> {name, parts}
 // save is a download.
 const fsa = typeof window.showOpenFilePicker === 'function';
 const handles = new Map(); // uri -> the picked file's handle, or the picked folder's
+// The window app's Android pickers: the URI (and its token in the app) of every file or folder
+// picked through the bridge. Reading and writing go back through the app, in chunks.
+const nativeKeys = new Map(); // uri -> key in the app's picker
+let nativePickSeq = 0;
+
+function b64FromBytes(bytes) {
+  let all = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    all += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(all);
+}
+
+function bytesFromB64(s) {
+  const b = atob(s || '');
+  const out = new Uint8Array(b.length);
+  for (let i = 0; i < b.length; i++) out[i] = b.charCodeAt(i);
+  return out;
+}
+
+// Answers from the app's picker and downloads. The app calls these on the page's own thread.
+window.__lindroidsPicked = (request, result) => {
+  const id = Number(request);
+  if (!result || result.cancel) return send({ t: 'files_picked', request: id, files: [] });
+  if (result.error) {
+    plog(`picker: ${result.error}`);
+    return send({ t: 'files_picked', request: id, files: [] });
+  }
+  const files = (result.entries || []).map((e) => {
+    nativeKeys.set(e.uri, e.key);
+    return { uri: e.uri, name: e.name, size: e.size || 0, mime: e.mime, rel: e.rel, writable: !!e.writable };
+  });
+  send({ t: 'files_picked', request: id, files });
+};
+window.__lindroidsSaved = (token, result) => {
+  if (!result || !result.ok) plog(`download: ${result && result.error ? result.error : 'not saved'}`);
+};
+
+// Android's own picker through the window app. It answers asynchronously, through
+// window.__lindroidsPicked, so nothing here waits on a tap.
+function pickNative(p) {
+  const kind = p.directory ? 'dir' : p.save ? 'save' : 'open';
+  const req = String(p.request || ++nativePickSeq);
+  try {
+    NATIVE.pickFiles(req, kind, !!p.multiple, JSON.stringify(p.mime_types || []), p.name || '');
+  } catch (e) {
+    plog(`picker: ${e}`);
+    send({ t: 'files_picked', request: p.request, files: [] });
+  }
+}
+
+// A file picked through the app, in chunks of half a megabyte (the bridge's strings).
+function fetchNative(m, key) {
+  const CHUNK = 512 * 1024;
+  let off = 0;
+  for (;;) {
+    const part = NATIVE.readPicked(key, off);
+    if (part === null || part === undefined) {
+      return send({ t: 'file_chunk', request: m.request, index: m.index, last: true, error: 'the file could not be read', len: 0 });
+    }
+    const bytes = bytesFromB64(part);
+    const last = bytes.length < CHUNK;
+    send({ t: 'file_chunk', request: m.request, index: m.index, last, len: bytes.length }, bytes);
+    if (last) return;
+    off += bytes.length;
+  }
+}
+
+// A save the page could not hand to the app as a picked document (a blob from a program's Save).
+async function downloadNative(url, name) {
+  try {
+    const blob = await (await fetch(url)).blob();
+    const token = NATIVE.downloadStart(name || 'file');
+    if (!token) throw new Error('the app did not start a download');
+    const CHUNK = 512 * 1024;
+    for (let off = 0; off < blob.size || off === 0; off += CHUNK) {
+      const part = new Uint8Array(await blob.slice(off, off + CHUNK).arrayBuffer());
+      const last = off + CHUNK >= blob.size;
+      const r = NATIVE.downloadChunk(token, b64FromBytes(part), last);
+      if (r !== 'ok') throw new Error(r);
+      if (last) break;
+    }
+  } catch (e) {
+    plog(`download: ${e}`);
+  }
+}
 const writes = new Map(); // uri -> the write going on (a promise of its stream; null when done)
 
 // The last tap or click on the page, for what a browser allows only right after one.
@@ -1594,6 +1712,7 @@ function browseLinux(p, start) {
 // Android's picker: the one the browser has, over Android's documents (it needs a tap).
 function pickAndroid(p) {
   const cancel = () => send({ t: 'files_picked', request: p.request, files: [] });
+  if (NATIVE && NATIVE.pickFiles) return pickNative(p);
   if (fsa) return pickHandles(p, cancel);
   if (p.directory) return cancel();
   if (p.save) {
@@ -1735,6 +1854,8 @@ function writeHandle(m, payload) {
 }
 
 async function fetchFile(m) {
+  const nk = nativeKeys.get(m.uri);
+  if (nk) return fetchNative(m, nk);
   const f = (picked.get(m.request) || [])[m.index];
   if (!f) return send({ t: 'file_chunk', request: m.request, index: m.index, last: true, error: 'no such file', len: 0 });
   const CHUNK = 1 << 20;
@@ -1747,6 +1868,13 @@ async function fetchFile(m) {
 }
 
 function writeFile(m, payload) {
+  const nk = nativeKeys.get(m.uri);
+  if (nk) {
+    const r = NATIVE.writePicked(nk, b64FromBytes(payload), m.offset || 0, !!m.last);
+    if (r !== 'ok') return send({ t: 'write_result', request: m.request, ok: false, message: String(r) });
+    if (m.last) send({ t: 'write_result', request: m.request, ok: true });
+    return;
+  }
   if (handles.has(m.uri) || /^dir:\d+\//.test(m.uri)) return writeHandle(m, payload);
   const s = saves.get(m.uri);
   if (!s) return send({ t: 'write_result', request: m.request, ok: false, message: 'not a file picked for saving' });

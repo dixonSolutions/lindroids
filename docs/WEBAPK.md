@@ -1,5 +1,9 @@
 # A program as an app of its own: WebAPK exports
 
+> The browser-independent alternative is the shared Lindroids window app (`lindroids app install`,
+> `config browser app`): one APK of ours, no Chrome or Samsung server. See
+> [BROWSER_AGNOSTIC_APK.md](../BROWSER_AGNOSTIC_APK.md).
+
 An export of a Linux program becomes an Android app of its own, with the program's name and icon:
 on the home screen, in the app list, and in Recents on every launcher, Samsung's One UI included.
 Its windows open full screen from the start. This happens whenever a browser on the phone can

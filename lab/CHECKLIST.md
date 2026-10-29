@@ -31,6 +31,24 @@ from Android**, through the window page and Termux, never by giving the containe
 | Back does not lose the program | ✅ | Back only sends the window behind |
 | Coming back to a window that left full screen in the background | 🟡 | Firefox lays the page under its toolbar until the next tap (which goes full screen again) |
 
+## Window app (no browser, optional)
+
+`lindroids app install`, `config browser app`; `lab/test-window-app.sh b16` (2026-10-29). It needs
+no browser, Chrome, Play services or Samsung store.
+
+| Criterion | Status | Evidence / notes |
+|---|---|---|
+| One program, one full-screen task, no browser bars | ✅ | `org.lindroids/.WindowActivity`, immersive before the page is touched |
+| Program's name and icon on the task | ✅ | `setTaskDescription` from the run's name and icon |
+| Works with any default browser, or none | ✅ | WebView is part of Android |
+| Back keeps the window while the program runs | ✅ | the app hands Back to the page; task stays resumed |
+| Program ending closes and removes the task | ✅ | page's `window.close()` goes through the bridge (`finishAndRemoveTask`) |
+| Termux not running: our own page, not a WebView error | ✅ | "runs in Termux, which is not running now"; Start sends the launch URL to Termux |
+| File open/save/folder through Android's pickers | ✅ | bridge verified: open read back the picked file, save wrote the picked document (b16) |
+| Clipboard both ways | ✅ | bridge read/write verified over DevTools |
+| Downloads, share | ✅ | `CREATE_DOCUMENT` and `ACTION_SEND` through the bridge |
+| Offline, nothing sent to Google or Samsung | ✅ | no server involved; only the phone's own WebView |
+
 ## Launch and export
 
 | Criterion | Status | Evidence / notes |

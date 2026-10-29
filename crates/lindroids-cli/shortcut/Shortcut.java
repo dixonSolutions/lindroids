@@ -45,6 +45,8 @@ import java.util.concurrent.TimeUnit;
  *   app_process ... lindroids.Shortcut view &lt;package&gt; &lt;target package&gt; &lt;url&gt;
  *   app_process ... lindroids.Shortcut app-settings &lt;package&gt; &lt;app package&gt;
  *   app_process ... lindroids.Shortcut app-icons &lt;icon.png&gt; &lt;maskable.png&gt; &lt;plain.png&gt;
+ *   app_process ... lindroids.Shortcut app-installed &lt;app package&gt;
+ *   app_process ... lindroids.Shortcut app-open &lt;package&gt; &lt;app package&gt; &lt;url&gt; &lt;name&gt; &lt;icon base64&gt; &lt;launch url&gt; &lt;termux package&gt; raise|new
  * </pre>
  *
  * Prints "ok", or "error: ..." and exits 1. Android's binder interfaces are hidden API, reached by
@@ -110,11 +112,16 @@ public final class Shortcut {
                 appSettings(a[1], a[2]);
             } else if (a.length >= 4 && a[0].equals("app-icons")) {
                 appIcons(a[1], a[2], a[3]);
+            } else if (a.length >= 2 && a[0].equals("app-installed")) {
+                System.out.println(appInstalled(a[1]) ? "installed" : "missing");
+            } else if (a.length >= 9 && a[0].equals("app-open")) {
+                appOpen(a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8].equals("new"));
             } else {
                 throw new IllegalArgumentException("usage: pin <package> <id> <label> <icon> <action> <component> <type> <text> | remove <package> <id>"
                         + " | open <package> new|raise <url> <browser>... | notify|running <package> <id> <program> <title> <text> <icon> <small-icon> <url> <browser>..."
                         + " | cancel <package> <id> | pinned <package> <id> | clip <package> <file> | device"
-                        + " | app-browsers | system-browsers | diag | default-browser | apps-for <url> | view <package> <target> <url> | app-settings <package> <app> | app-icons <icon> <maskable> <plain>");
+                        + " | app-browsers | system-browsers | diag | default-browser | apps-for <url> | view <package> <target> <url> | app-settings <package> <app> | app-icons <icon> <maskable> <plain>"
+                        + " | app-installed <app> | app-open <package> <app> <url> <name> <icon base64> <launch> <termux> raise|new");
             }
             System.out.println("ok");
             System.exit(0);
@@ -916,6 +923,36 @@ public final class Shortcut {
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         Object r = call(taskManager(), "startActivity", pkg, i);
         if (r instanceof Integer && (Integer) r < 0) throw new IllegalStateException(target + ": start result " + r);
+    }
+
+    /** Whether the shared Lindroids window app is installed and not turned off. */
+    static boolean appInstalled(String app) {
+        android.content.pm.PackageInfo p = packageInfo(app, 0);
+        return p != null && p.applicationInfo != null && p.applicationInfo.enabled;
+    }
+
+    /**
+     * Opens a run's window in the shared Lindroids window app: an explicit intent to its
+     * WindowActivity, which loads the page itself (immersive, no browser), with the program's name
+     * and icon on the task and its launch URL for the offline page. {@code new}: another document
+     * task, as FLAG_ACTIVITY_MULTIPLE_TASK does for a Custom Tab.
+     */
+    static void appOpen(String pkg, String app, String url, String name, String iconB64, String launch, String termux, boolean fresh) throws Exception {
+        Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+        i.setClassName(app, app + ".WindowActivity");
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
+        if (fresh) i.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        i.putExtra("org.lindroids.NAME", name);
+        i.putExtra("org.lindroids.LAUNCH", launch);
+        i.putExtra("org.lindroids.TERMUX", termux);
+        if (iconB64 != null && !iconB64.isEmpty()) {
+            i.putExtra("org.lindroids.ICON", android.util.Base64.decode(iconB64, android.util.Base64.NO_WRAP));
+        }
+        if ("1".equals(System.getenv("LINDROIDS_APP_DEBUG")) || "1".equals(System.getenv("LINDROIDS_DEBUG_WEBVIEW"))) {
+            i.putExtra("org.lindroids.DEBUG", true);
+        }
+        Object r = call(taskManager(), "startActivity", pkg, i);
+        if (r instanceof Integer && (Integer) r < 0) throw new IllegalStateException(app + ": start result " + r);
     }
 
     /**

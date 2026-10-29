@@ -31,7 +31,7 @@ const RECEIVER: &str = "com.termux/.app.api.file.FileShareReceiverActivity,com.t
 const OPENER_MARK: &str = "# lindroids: termux-url-opener";
 
 /// The terminal app's package (Termux forks name theirs).
-fn package() -> String {
+pub(crate) fn package() -> String {
     ["TERMUX_APP__PACKAGE_NAME", "TERMUX_APP_PACKAGE_NAME"]
         .iter()
         .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
@@ -63,9 +63,18 @@ const WINDOW_BROWSERS: &[&str] = &[
 /// opens one (see `browsers`). Sending the same URL again brings that window back instead of
 /// opening another. Returns the browser used, which notifications then open windows in.
 pub fn open_window(url: &str) -> Result<String, String> {
+    // An export installed as an app of its own by a browser (a WebAPK) shows it there first.
     if let Some((id, app)) = APP_WINDOW.get() {
         if let Some(r) = open_in_app(url, id, app) {
             return r;
+        }
+    }
+    // The shared window app (BROWSER_AGNOSTIC_APK.md) shows every run, when it is installed and
+    // chosen: no browser, full screen from the start, the program's name and icon on its task.
+    if let Some(r) = crate::app::maybe_open(url) {
+        match r {
+            Ok(b) => return Ok(b),
+            Err(e) => eprintln!("lindroids: {e}; showing it in the browser"),
         }
     }
     let rt = sandbox::runtime_dir();
@@ -93,7 +102,7 @@ pub fn open_window(url: &str) -> Result<String, String> {
 }
 
 /// Notes in `<runtime>/windows` that the window for `url` went to `browser` (the last 64 kept).
-fn note_window(rt: &Path, url: &str, browser: &str) {
+pub(crate) fn note_window(rt: &Path, url: &str, browser: &str) {
     let opened = std::fs::read_to_string(rt.join("windows")).unwrap_or_default();
     let mut lines: Vec<&str> = opened.lines().collect();
     let line = format!("{url} {browser}");
@@ -103,7 +112,7 @@ fn note_window(rt: &Path, url: &str, browser: &str) {
 }
 
 /// The run a window's URL is for (`?window&run=<pid>`).
-fn run_of_url(url: &str) -> Option<u32> {
+pub(crate) fn run_of_url(url: &str) -> Option<u32> {
     let query = url.split('#').next()?.split_once('?')?.1;
     query.split('&').find_map(|kv| kv.strip_prefix("run=")).and_then(|v| v.parse().ok())
 }
@@ -334,7 +343,7 @@ fn android_env() -> Vec<(String, String)> {
 }
 
 /// Runs the helper; Ok with what it printed when it says "ok".
-fn helper(args: &[&str]) -> Result<String, String> {
+pub(crate) fn helper(args: &[&str]) -> Result<String, String> {
     if sandbox::native_bridge() {
         // app_process loads the ARM translation layer there, and seccomp kills it.
         return Err("this Android has an ARM translation layer (x86 image), which stops app_process: no shortcut".into());
@@ -444,6 +453,47 @@ fn install_termux_script(sb: &Sandbox, name: &str, mark: &str, script: fn(&str, 
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(true)
+}
+
+/// Whether the shared Lindroids window app is installed. The helper's package lookup is tried
+/// first; Android 11+ may hide a package from it (as it hides Chrome on some phones), so `pm path`
+/// (which runs as the shell) is the fallback.
+pub fn app_installed() -> bool {
+    if helper(&["app-installed", crate::app::PACKAGE])
+        .map(|out| out.lines().any(|l| l.trim() == "installed"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if !sandbox::on_android() {
+        return false;
+    }
+    let pm = if Path::new("/system/bin/pm").exists() { "/system/bin/pm" } else { "pm" };
+    Command::new(pm)
+        .args(["path", crate::app::PACKAGE])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("package:"))
+        .unwrap_or(false)
+}
+
+/// Shows a run's window in the shared Lindroids window app (`org.lindroids`): the app opens the
+/// page itself, immersive, with the program's name and icon on its task. `launch` is the URL its
+/// offline page hands to Termux when Termux is closed.
+pub(crate) fn open_app_window(url: &str, name: &str, icon_b64: Option<&str>, launch: &str, new: bool) -> Result<(), String> {
+    let args = [
+        "app-open",
+        &package(),
+        crate::app::PACKAGE,
+        url,
+        name,
+        icon_b64.unwrap_or(""),
+        launch,
+        &package(),
+        if new { "new" } else { "raise" },
+    ];
+    helper(&args).map(|_| ())
 }
 
 /// Put an exported program on the home screen (Android: the launcher asks the user first).

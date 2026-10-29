@@ -75,8 +75,10 @@ if [ $DRY = 1 ]; then
 fi
 
 echo "==> GitHub release $TAG"
+FILES=(dist/lindroids-*.tar.gz dist/debs/*.deb dist/SHA256SUMS)
+if [ -f "dist/lindroids-$VER.apk" ]; then FILES+=(dist/lindroids-$VER.apk); fi
 gh release create "$TAG" -R "$REPO" --target "$SHA" --title "Lindroids $VER" --generate-notes --latest \
-  dist/lindroids-*.tar.gz dist/debs/*.deb dist/SHA256SUMS
+  "${FILES[@]}"
 
 echo "==> gh-pages"
 PUB="$ROOT/target/publish-git"

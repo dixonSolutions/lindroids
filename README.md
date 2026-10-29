@@ -4,7 +4,8 @@
 
 <p align="center"><b>Linux apps on Android, each in a window of its own.</b><br>
 Run Linux GUI programs from Termux, a proot distro or Flathub, with a home screen icon, Android's
-theme, notifications and files. One package in Termux. No app to install, no permission, no root.</p>
+theme, notifications and files. One package in Termux; the window is the phone's browser, or an
+optional small window app of ours that needs no browser. No permission, no root.</p>
 
 <p align="center"><img src="media/demos/launch-from-home.webp" width="640" alt="Tapping GNOME Calculator's home screen icon with Termux closed: the window opens, 6×7=42, closing it"><br>
 <sub>The home screen icon, with Termux closed: GNOME Calculator (Flathub) opens in its own window, in Android's dark theme and accent colour, and closes with it. <a href="media/demos/launch-from-home.mp4">mp4</a></sub></p>
@@ -38,6 +39,12 @@ lindroids export org.gnome.Calculator  # a home screen icon; works with Termux c
   from Flathub (in Termux itself: `install.sh` sets Flatpak up there, no root), X11 programs.
 - **Home screen icons** (`lindroids export`) that start the program even when Termux is closed or
   the phone just restarted.
+- **A window without a browser** (optional): `lindroids app install` adds one small APK
+  (`org.lindroids`) that shows the page in Android's own WebView, full screen from the start, with
+  the program's name and icon in Recents, no Google or Samsung server involved, and Android's file
+  pickers, clipboard and share. `lindroids config browser app` (or `export --browser app`) uses it;
+  without it, everything stays in the browser as before. See
+  [BROWSER_AGNOSTIC_APK.md](BROWSER_AGNOSTIC_APK.md).
 - **Android's side, piped in**: dark mode and accent colour; files (Android's picker for
   *Open…* and *Save As…*, *Open with* from the Files app, the Camera as a photo source; in
   Chromium-based browsers saves go back into the picked file and folders can be picked);
@@ -76,9 +83,11 @@ lindroids export org.gnome.Calculator  # a home screen icon; works with Termux c
 Details and the experiments behind them: [docs/DISPLAY.md](docs/DISPLAY.md),
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). What is checked, and how: [lab/CHECKLIST.md](lab/CHECKLIST.md).
 
-## Limits (no app of our own)
+## Limits
 
-- Windows open in a Chromium-based browser (Chrome, Edge, Brave, Samsung Internet, Cromite…)
+- With the optional window app (`config browser app`), the browser limits below do not apply: it
+  is our own WebView activity, full screen before the first touch. Without it, windows open in a
+  Chromium-based browser (Chrome, Edge, Brave, Samsung Internet, Cromite…)
   whatever the default browser is: there Recents shows the program's icon, and the window
   closes when the program ends. A browser that opens an ordinary tab instead of a window (Cromite
   without *Allow custom tab intents*) is passed over. With only Firefox, the window shows
@@ -122,7 +131,9 @@ lindroids run xterm                      # X11 programs too
 
 lindroids export <command> [args]        # home screen icon (again: updates it)
 lindroids export <command>               # an app of its own where Chrome or Samsung Internet can make one
-lindroids config browser default         # or webapk (the default), or a browser's package
+lindroids config browser default         # or webapk (the default), app, or a browser's package
+lindroids app install                    # the optional window app (no browser)
+lindroids export --browser app <program> # an icon whose windows use it
 lindroids list | remove <id> | launch <id>
 
 lindroids open --linux <file>            # open a file in a Linux program (--with, --choose, --list)
@@ -141,12 +152,15 @@ server starts) shows the frame rate in the window.
 Android 13 lab VM (SELinux enforcing, Termux 0.118.3, Firefox): GNOME Calculator and Text Editor
 from Flathub, Mousepad and foot from Termux, Xournal++ from Debian, xclock (X11); home screen
 icons with Termux closed and after a reboot; Open with, the file picker, notifications, theme;
-55 fps scrolling. See [lab/CHECKLIST.md](lab/CHECKLIST.md) and [docs/TESTING.md](docs/TESTING.md).
+55 fps scrolling. The window app (b16): one full-screen task, Back kept, the program ending removed
+it, the offline page, and the bridge's clipboard, save and read (`lab/test-window-app.sh`). See
+[lab/CHECKLIST.md](lab/CHECKLIST.md) and [docs/TESTING.md](docs/TESTING.md).
 
 ## Build from source
 
 ```sh
-scripts/build-release.sh   # CLIs for 8 targets, packages, tarballs → dist/
+scripts/build-release.sh   # CLIs for 8 targets, packages, tarballs, the APK → dist/
+packaging/build-webview-apk.sh --version 0.1.0 --out target/apk-test --debug-sign
 cargo test --workspace
 ```
 

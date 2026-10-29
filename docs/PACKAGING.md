@@ -17,6 +17,7 @@ Every push to `main` (unless the head commit message contains `[skip ci]`) is a 
 | `lindroids-<v>-r0.apk` for aarch64, armv7, x86_64, x86 | apk repository `apk/<arch>/` (Alpine, postmarketOS, Chimera) |
 | `lindroids-<v>_1.<arch>.xbps` for aarch64, armv7l, x86_64, i686 and the `-musl` ones (not i686) | xbps repository `xbps/` (Void) |
 | `lindroids-<v>-<arch>-linux-musl.tar.gz`        | GitHub Release (static installs): `bin/lindroids` + `libexec/lindroids/xwayland-satellite` |
+| `lindroids-<v>.apk` (the optional window app)   | GitHub Release, when the project signing key is set |
 | `SHA256SUMS`                                    | GitHub Release                           |
 | the repositories + `install.sh`                 | `gh-pages` → https://dixonsolutions.github.io/lindroids/ |
 
@@ -34,12 +35,19 @@ in the kit whenever its patches change.
   (`*-unknown-linux-musl`, linked with `rust-lld`, see `.cargo/config.toml`): the same binary in
   the Debian `.deb`, the Arch package, the `.rpm`, the `.apk`, the `.xbps` and the tarball.
 
-The NDK is the only Android tooling the build uses (cargo-ndk): no Android SDK, no sdkmanager, no
-Java. CI takes NDK r27c (`27.2.12479018`) from the runner image when it has that version, else
-downloads `android-ndk-r27c-linux.zip` from Google, checks its sha256 and caches it.
+The NDK is the only Android tooling the CLI build uses (cargo-ndk): no Android SDK, no sdkmanager,
+no Java. CI takes NDK r27c (`27.2.12479018`) from the runner image when it has that version, else
+downloads `android-ndk-r27c-linux.zip` from Google, checks its sha256 and caches it. The optional
+window app's build is the exception: it uses a JDK and the SDK's `android.jar`, `aapt2`, `d8`,
+`zipalign` and `apksigner`.
 
-There is no Android app: the display is a web page the server itself serves (embedded in the
-binary), so a release is only the CLI and its packages.
+The display is a web page the server itself serves (embedded in the binary), so the CLI and its
+packages are complete on their own. Optionally, a release also carries the shared window app
+([BROWSER_AGNOSTIC_APK.md](../BROWSER_AGNOSTIC_APK.md)): a small APK built by
+`packaging/build-webview-apk.sh` with `javac`/`d8`/`aapt2`/`apksigner`, signed with
+`LINDROIDS_APP_KEYSTORE` (base64 PKCS#12) and `LINDROIDS_APP_KEYSTORE_PASS`. Without the key the
+APK is not built for a release; `LINDROIDS_APP_TEST_SIGN=1` builds a throwaway test-signed one for
+the lab, which must never be published.
 
 ### xwayland-satellite (X11)
 

@@ -131,7 +131,7 @@ pub fn cmd_export(args: &[String]) -> i32 {
     let tag = browser.or_else(|| webapk.then(|| "webapk".to_string()));
     if let Some(t) = &tag {
         if !config::valid_browser(t) {
-            return crate::fail(&format!("--browser {t:?}: use webapk, default, home-screen, or a browser's package (e.g. com.android.chrome)"));
+            return crate::fail(&format!("--browser {t:?}: use app, webapk, default, home-screen, or a browser's package (e.g. com.android.chrome)"));
         }
     }
     if let Some(pos) = args.iter().position(|a| a == "convert") {
@@ -151,6 +151,8 @@ pub fn cmd_export(args: &[String]) -> i32 {
 /// was wanted but no browser can make one).
 enum Plan {
     App(String),
+    /// The shared Lindroids window app (`org.lindroids`), which needs no browser.
+    Shared,
     Shortcut(bool),
 }
 
@@ -160,6 +162,14 @@ enum Plan {
 fn plan(choice: &str, explicit: bool) -> Result<Plan, String> {
     if choice == "home-screen" {
         return Ok(Plan::Shortcut(false));
+    }
+    if choice == "app" {
+        if !sandbox::on_android() {
+            return if explicit { Err("the Lindroids window app is for Android".into()) } else { Ok(Plan::Shortcut(false)) };
+        }
+        // The shared app: `export` makes sure it is installed (downloading the release APK and
+        // waiting for the user's Install, as A in BROWSER_AGNOSTIC_APK.md says).
+        return Ok(Plan::Shared);
     }
     if !sandbox::on_android() {
         return if explicit && choice != "default" {
@@ -299,7 +309,15 @@ fn export(args: &[String], suffix: &str, tag: Option<String>, launch: bool) -> i
         webapk: None,
         browser: kept_tag,
     };
-    if let Plan::App(browser) = &plan {
+    if matches!(&plan, Plan::Shared) {
+        if let Err(e) = crate::app::ensure() {
+            return crate::fail(&e);
+        }
+        rec.browser = Some("app".into());
+        if let Err(e) = save(&rec) {
+            return crate::fail(&e);
+        }
+    } else if let Plan::App(browser) = &plan {
         // An app found for it before stays (exported again: the browser updates it from its manifest).
         rec.webapk = Some(previous_app.clone().unwrap_or_default());
         if let Err(e) = save(&rec) {
@@ -469,16 +487,23 @@ fn convert(target: &[String], rest: &[String]) -> i32 {
         }
     }
     let to = to.unwrap_or_default();
-    if !matches!((from, to.as_str()), ("home-screen", "webapk") | ("webapk", "home-screen")) {
-        return crate::fail("convert home-screen --to=webapk, or convert webapk --to=home-screen");
+    if !matches!(to.as_str(), "home-screen" | "webapk" | "app") {
+        return crate::fail("convert home-screen --to=webapk|app, webapk --to=home-screen|app, or app --to=home-screen|webapk");
     }
     let Some(rec) = load_all().into_iter().find(|r| !target.is_empty() && (r.id == target || r.name == target)) else {
         return crate::fail(&format!("nothing exported as {target:?} (lindroids list)"));
     };
-    let is_app = rec.webapk.is_some();
-    if (from == "webapk") != is_app {
-        let now = if is_app { "an app of its own" } else { "a home screen icon" };
-        return crate::fail(&format!("{} is {now} already", rec.name));
+    let now = if rec.webapk.is_some() { "webapk" } else if rec.browser.as_deref() == Some("app") { "app" } else { "home-screen" };
+    if from != now {
+        let what = match now {
+            "webapk" => "an app of its own",
+            "app" => "the shared window app",
+            _ => "a home screen icon",
+        };
+        return crate::fail(&format!("{} is {what} already", rec.name));
+    }
+    if to == now {
+        return 0;
     }
     let mut again = vec!["--id".to_string(), rec.id.clone()];
     again.extend(rec.run.clone());
@@ -495,9 +520,14 @@ pub fn cmd_launch(args: &[String]) -> i32 {
     let Some(rec) = lindroids_server::load_exported(id) else {
         return crate::fail(&format!("nothing exported as {id:?} (lindroids list)"));
     };
+    let sb = sandbox::detect();
     // Installed as an app of its own (`export --webapk`): its window opens in that app.
     if let Some(app) = &rec.webapk {
         shortcut::set_app_window(id, app);
+    }
+    // The shared window app: this export's launch URL lets its offline page start Termux.
+    if rec.browser.as_deref() == Some("app") || config::browser_setting() == "app" {
+        crate::app::set_launch(id, &shortcut::launch_url(sb.uid, id));
     }
     let mut run = rec.run.clone();
     for (flag, on) in [("--new", new), ("--force", force)] {
@@ -505,7 +535,6 @@ pub fn cmd_launch(args: &[String]) -> i32 {
             run.insert(0, flag.into());
         }
     }
-    let sb = sandbox::detect();
     if !run.iter().any(|a| a == "--new") && sandbox::on_android() {
         if let Some(shown) = running_instance(&sb, &run) {
             return if shown { 0 } else { crate::fail("its window could not be opened") };
@@ -534,7 +563,7 @@ pub fn cmd_list() -> i32 {
         println!("Nothing exported from here yet.");
     }
     for r in recs {
-        let kind = if r.webapk.is_some() { "app" } else { "icon" };
+        let kind = if r.webapk.is_some() { "app" } else if r.browser.as_deref() == Some("app") { "window" } else { "icon" };
         println!("{:<40} {:<24} {:<5} lindroids run {}", r.id, r.name, kind, r.run.join(" "));
     }
     0

@@ -1,5 +1,6 @@
 //! `lindroids`: run Linux apps on Android, their windows shown in the phone's web browser.
 
+mod app;
 mod bwrap;
 mod client;
 mod config;
@@ -34,9 +35,10 @@ USAGE
   lindroids run [options] \"<command line>\"
   lindroids export [options] <command> [args...]   a home screen shortcut that starts it
   lindroids export [--run] [--browser <value>] <program>   (--run: start it now too)
-  lindroids export <id|name> convert home-screen --to=webapk   (or convert webapk --to=home-screen)
+  lindroids app [status|install [<file.apk>]]   the shared window app (no browser)
+  lindroids export <id|name> convert home-screen --to=webapk|app   (or convert webapk|app --to=home-screen)
   lindroids run --export <command> [args...]       export with the defaults, then run it
-  lindroids config [browser [webapk|default|<browser package>]]
+  lindroids config [browser [app|webapk|default|<browser package>]]
   lindroids list | remove <id> | launch [--new] <id>
   lindroids instances [<app>]        the programs running, numbered per app (VSCodium, VSCodium 2)
   lindroids show <pid|app>           bring back the window of a running program (`instances`)
@@ -147,6 +149,7 @@ fn main() {
         Some("run") => run::cmd_run(&args[1..]),
         Some("export") => export::cmd_export(&args[1..]),
         Some("config") => config::cmd_config(&args[1..]),
+        Some("app") => app::cmd_app(&args[1..]),
         Some("launch") => export::cmd_launch(&args[1..]),
         Some("instances") => cmd_instances(&args[1..]),
         Some("show") => cmd_show(&args[1..]),

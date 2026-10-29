@@ -252,6 +252,10 @@ What else differs from `flatpak run` *(tested on b16: Calculator, VSCodium)*:
 
 ## Home screen shortcuts
 
+With `lindroids config browser app`, the same shortcut's `lindroids launch` opens the run in the
+shared window app instead of a Custom Tab (BROWSER_AGNOSTIC_APK.md); the shortcut itself still
+belongs to Termux.
+
 `lindroids export <command>` writes `<state>/apps/<id>.json` (name, the `lindroids run`
 arguments, with the distro found pinned) and pins a shortcut — with no app of its own:
 

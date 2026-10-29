@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0F1720">
+<title>Lindroids</title>
+<style>
+  :root { color-scheme: dark; --fg: #E8EEF4; --dim: #9AA7B4; --accent: #3DDC84; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; color: var(--fg); font: 15px system-ui, sans-serif; }
+  body { display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; }
+  .box { max-width: 26em; line-height: 1.5; }
+  h1 { margin: 0 0 8px; font-size: 22px; font-weight: 600; }
+  p { margin: 12px 0; }
+  button { font: inherit; padding: 11px 22px; margin: 6px; border-radius: 8px; border: 0; background: var(--accent); color: #0F1720; cursor: pointer; }
+  button.ghost { background: none; border: 1px solid #334; color: var(--fg); }
+  .dim { color: var(--dim); font-size: 13px; }
+  code { background: #1B2430; padding: 2px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<main class="box">
+  <h1 id="name">This program</h1>
+  <p>runs in <b>Termux</b>, which is not running now.</p>
+  <p><button id="start">Start <span id="what">it</span></button></p>
+  <p class="dim" id="hint">Termux starts the program and it appears here.</p>
+  <p class="dim"><button class="ghost" id="retry">Try again</button></p>
+</main>
+<script src="offline.js"></script>
+</body>
+</html>

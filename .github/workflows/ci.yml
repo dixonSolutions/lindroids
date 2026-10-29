@@ -125,11 +125,20 @@ jobs:
       - name: Test dependencies
         run: sudo apt-get update -q && sudo apt-get install -y -q foot fonts-dejavu-core shellcheck
 
+      - name: JDK for the window app
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Window app
+        run: packaging/build-webview-apk.sh --version 0.0.0 --out target/ci-apk --debug-sign
+
       - name: Shell scripts
         run: |
           shellcheck -S warning scripts/build-release.sh scripts/version.sh \
             scripts/set-github-secrets.sh scripts/publish-local.sh scripts/build-xwayland-satellite.sh \
-            packaging/*.sh packaging/repo/*.sh tests/*.sh
+            packaging/*.sh packaging/repo/*.sh tests/*.sh lab/*.sh
           shellcheck -S warning -s sh install.sh
 
       - name: Tests

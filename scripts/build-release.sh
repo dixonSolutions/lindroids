@@ -13,6 +13,7 @@
 #   dist/xbps/lindroids-VERSION_1.<arch>.xbps           Void (glibc and musl)
 #   dist/lindroids-VERSION-<arch>-linux-musl.tar.gz     static CLI (bin/lindroids) + the glibc
 #                                                       libexec/lindroids/xwayland-satellite
+#   dist/lindroids-VERSION.apk                          the optional window app, with a release key
 #   dist/SHA256SUMS, dist/VERSION
 #
 # xwayland-satellite (X11 support) is built from its pinned source by
@@ -61,7 +62,7 @@ MUSL_TRIPLES="aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf x86_64-u
 DIST=$ROOT/dist
 if [ $CLEAN = 1 ]; then rm -rf "$DIST"; fi
 rm -rf "${DIST:?}/bin" "${DIST:?}/debs" "${DIST:?}/pacman" "${DIST:?}/rpm" "${DIST:?}/apk" "${DIST:?}/xbps" \
-  "${DIST:?}/xwayland-satellite" "$DIST"/lindroids-*.tar.gz "$DIST/SHA256SUMS"
+  "${DIST:?}/xwayland-satellite" "$DIST"/lindroids-*.tar.gz "$DIST"/lindroids-*.apk "$DIST/SHA256SUMS"
 mkdir -p "$DIST/bin"
 
 echo "==> CLI for Termux (bionic, API 24)"
@@ -98,6 +99,15 @@ for t in $MUSL_TRIPLES; do
 done
 
 # Both flavours before the .debs: a Termux .deb carries the glibc build too (for proot distros).
+echo "==> window app (APK, no browser)"
+if [ -n "${LINDROIDS_APP_KEYSTORE:-}${LINDROIDS_APP_KEYSTORE_FILE:-}" ]; then
+  packaging/build-webview-apk.sh --version "$VER" --out "$DIST"
+elif [ "${LINDROIDS_APP_TEST_SIGN:-}" = 1 ]; then
+  packaging/build-webview-apk.sh --version "$VER" --out "$DIST" --debug-sign
+else
+  echo "    skipped: no LINDROIDS_APP_KEYSTORE (set LINDROIDS_APP_TEST_SIGN=1 for a test-signed APK)"
+fi
+
 scripts/build-xwayland-satellite.sh all
 XWLS=$DIST/xwayland-satellite
 mkdir -p "$XWLS"
@@ -146,6 +156,6 @@ for t in $MUSL_TRIPLES; do
 done
 
 echo "$VER" > "$DIST/VERSION"
-( cd "$DIST" && sha256sum lindroids-*.tar.gz debs/*.deb > SHA256SUMS )
+( cd "$DIST" && { sha256sum lindroids-*.tar.gz debs/*.deb; if [ -f "lindroids-$VER.apk" ]; then sha256sum "lindroids-$VER.apk"; fi; } > SHA256SUMS )
 echo "==> dist/ ready"
 ( cd "$DIST" && ls -1sh lindroids-*.tar.gz debs/*.deb )

@@ -120,6 +120,20 @@ jobs:
           path: target/xwls/out
           key: xwls-${{ hashFiles('scripts/build-xwayland-satellite.sh', 'third_party/xwayland-satellite/*.patch') }}
 
+      - name: JDK for the window app
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK for the window app
+        run: |
+          SDK=${ANDROID_HOME:-/usr/local/lib/android/sdk}
+          if [ -x "$SDK/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+            "$SDK/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+          fi
+
       - name: Tests
         run: cargo test --workspace
 
@@ -131,6 +145,9 @@ jobs:
         env:
           HAVE_GPG_KEY: ${{ secrets.LINDROIDS_GPG_PRIVATE_KEY != '' && 'yes' || '' }}
           HAVE_RSA_KEY: ${{ secrets.LINDROIDS_APK_RSA_KEY != '' && 'yes' || '' }}
+          LINDROIDS_APP_KEYSTORE: ${{ secrets.LINDROIDS_APP_KEYSTORE }}
+          LINDROIDS_APP_KEYSTORE_PASS: ${{ secrets.LINDROIDS_APP_KEYSTORE_PASS }}
+          LINDROIDS_APP_KEY_ALIAS: ${{ secrets.LINDROIDS_APP_KEY_ALIAS }}
           LINDROIDS_GITHUB_REPO: ${{ github.repository }}
         run: |
           # Without the signing key (a fork, or before scripts/set-github-secrets.sh) everything
@@ -141,6 +158,7 @@ jobs:
             echo "publish=false" >> "$GITHUB_OUTPUT"
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
+            if [ -n "$LINDROIDS_APP_KEYSTORE" ]; then echo "app=yes" >> "$GITHUB_OUTPUT"; else echo "app=no" >> "$GITHUB_OUTPUT"; fi
             # The apk and xbps repositories are signed with their own (RSA) key.
             if [ -z "$HAVE_RSA_KEY" ]; then
               echo "::warning::LINDROIDS_APK_RSA_KEY is not set (scripts/set-github-secrets.sh): the apk and xbps repositories are not updated"
@@ -195,6 +213,13 @@ jobs:
             dist/debs/*.deb
             dist/rpm/*.rpm
             dist/SHA256SUMS
+
+      # The window app is signed with the project key; never publish a test-signed one.
+      - name: Upload the window app
+        if: steps.build.outputs.publish == 'true' && steps.build.outputs.app == 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "v$(cat dist/VERSION)" dist/lindroids-*.apk --clobber
 
       # After the release, so install.sh's VERSION never points at a release that does not exist.
       - name: Publish to gh-pages
