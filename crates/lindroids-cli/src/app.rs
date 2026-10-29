@@ -134,6 +134,74 @@ fn fetch(url: &str, path: &Path) -> Result<(), String> {
     }
 }
 
+/// Termux's file provider refuses other apps unless `allow-external-apps=true`; the installer is
+/// another app. Enable it only while the installer copies our APK, then put the user's file back
+/// exactly as it was (the window paths themselves never need it).
+struct ExternalApps {
+    path: PathBuf,
+    original: Option<Vec<u8>>,
+    changed: bool,
+}
+
+impl ExternalApps {
+    fn enable() -> Option<ExternalApps> {
+        if !sandbox::on_android() {
+            return None;
+        }
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.to_string_lossy().contains("com.termux/files/home"))
+            .unwrap_or_else(|| PathBuf::from(lindroids_proto::TERMUX_HOME));
+        let path = home.join(".termux/termux.properties");
+        let original = std::fs::read(&path).ok();
+        let text = original.as_deref().map(String::from_utf8_lossy).unwrap_or_default();
+        let active = text.lines().any(|l| {
+            let l = l.trim();
+            !l.starts_with('#') && l.split_once('=').map(|(k, v)| k.trim() == "allow-external-apps" && v.trim() == "true").unwrap_or(false)
+        });
+        if active {
+            return Some(ExternalApps { path, original, changed: false });
+        }
+        if let Some(d) = path.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let mut new = text.into_owned();
+        if !new.ends_with('\n') && !new.is_empty() {
+            new.push('\n');
+        }
+        new.push_str("allow-external-apps=true\n");
+        if std::fs::write(&path, new).is_err() {
+            return None;
+        }
+        reload_settings();
+        std::thread::sleep(Duration::from_millis(700));
+        Some(ExternalApps { path, original, changed: true })
+    }
+}
+
+impl Drop for ExternalApps {
+    fn drop(&mut self) {
+        if !self.changed {
+            return;
+        }
+        match &self.original {
+            Some(bytes) => {
+                let _ = std::fs::write(&self.path, bytes);
+            }
+            None => {
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+        reload_settings();
+    }
+}
+
+fn reload_settings() {
+    let path = format!("{}/bin/termux-reload-settings", lindroids_proto::TERMUX_PREFIX);
+    let cmd = if Path::new(&path).exists() { path } else { "termux-reload-settings".to_string() };
+    let _ = Command::new(cmd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+}
+
 /// Downloads (or takes) the app's APK and opens Android's installer. `lindroids` cannot install it
 /// itself: tapping Install is the user's.
 fn install(arg: Option<&str>) -> Result<PathBuf, String> {
@@ -154,25 +222,39 @@ fn install(arg: Option<&str>) -> Result<PathBuf, String> {
         return Err(format!("{}: no such APK", path.display()));
     }
     let path = std::fs::canonicalize(&path).unwrap_or(path);
-    let opener = if Path::new("termux-open").exists() || std::env::var_os("PATH").map_or(true, |p| std::env::split_paths(&p).any(|d| d.join("termux-open").exists())) {
-        "termux-open".to_string()
+    // Open the installer's own activity directly: a plain VIEW of an APK often lands in a
+    // chooser (Files, archivers) instead. The guard allows Termux's provider to hand the APK over
+    // while the installer copies it, then restores the user's termux.properties.
+    let external = ExternalApps::enable();
+    let started = shortcut::install_apk(&path);
+    if !started {
+        let opener = if std::env::var_os("PATH").map_or(true, |p| std::env::split_paths(&p).any(|d| d.join("termux-open").exists())) {
+            "termux-open".to_string()
+        } else {
+            format!("{}/bin/termux-open", lindroids_proto::TERMUX_PREFIX)
+        };
+        let ok = Command::new(opener)
+            .arg("--content-type")
+            .arg("application/vnd.android.package-archive")
+            .arg(&path)
+            .stdin(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            drop(external);
+            return Err(format!(
+                "cannot open Android's installer for {} (needs termux-tools' termux-open, or \
+                 allow-external-apps=true in ~/.termux/termux.properties)",
+                path.display()
+            ));
+        }
+        std::thread::sleep(Duration::from_secs(5));
     } else {
-        format!("{}/bin/termux-open", lindroids_proto::TERMUX_PREFIX)
-    };
-    let ok = Command::new(opener)
-        .arg("--content-type")
-        .arg("application/vnd.android.package-archive")
-        .arg(&path)
-        .stdin(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !ok {
-        return Err(format!(
-            "cannot open Android's installer for {} (termux-tools' termux-open is needed)",
-            path.display()
-        ));
+        // The installer copies the APK before it asks; leave the provider on until it has.
+        std::thread::sleep(Duration::from_secs(10));
     }
+    drop(external);
     println!("Android shows the installer: tap Install.");
     Ok(path)
 }

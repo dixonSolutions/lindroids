@@ -47,6 +47,7 @@ import java.util.concurrent.TimeUnit;
  *   app_process ... lindroids.Shortcut app-icons &lt;icon.png&gt; &lt;maskable.png&gt; &lt;plain.png&gt;
  *   app_process ... lindroids.Shortcut app-installed &lt;app package&gt;
  *   app_process ... lindroids.Shortcut app-open &lt;package&gt; &lt;app package&gt; &lt;url&gt; &lt;name&gt; &lt;icon base64&gt; &lt;launch url&gt; &lt;termux package&gt; raise|new
+ *   app_process ... lindroids.Shortcut install-apk &lt;package&gt; &lt;apk path&gt;
  * </pre>
  *
  * Prints "ok", or "error: ..." and exits 1. Android's binder interfaces are hidden API, reached by
@@ -116,12 +117,15 @@ public final class Shortcut {
                 System.out.println(appInstalled(a[1]) ? "installed" : "missing");
             } else if (a.length >= 9 && a[0].equals("app-open")) {
                 appOpen(a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8].equals("new"));
+            } else if (a.length >= 3 && a[0].equals("install-apk")) {
+                installApk(a[1], a[2]);
             } else {
                 throw new IllegalArgumentException("usage: pin <package> <id> <label> <icon> <action> <component> <type> <text> | remove <package> <id>"
                         + " | open <package> new|raise <url> <browser>... | notify|running <package> <id> <program> <title> <text> <icon> <small-icon> <url> <browser>..."
                         + " | cancel <package> <id> | pinned <package> <id> | clip <package> <file> | device"
                         + " | app-browsers | system-browsers | diag | default-browser | apps-for <url> | view <package> <target> <url> | app-settings <package> <app> | app-icons <icon> <maskable> <plain>"
-                        + " | app-installed <app> | app-open <package> <app> <url> <name> <icon base64> <launch> <termux> raise|new");
+                        + " | app-installed <app> | app-open <package> <app> <url> <name> <icon base64> <launch> <termux> raise|new"
+                        + " | install-apk <package> <apk path>");
             }
             System.out.println("ok");
             System.exit(0);
@@ -923,6 +927,58 @@ public final class Shortcut {
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         Object r = call(taskManager(), "startActivity", pkg, i);
         if (r instanceof Integer && (Integer) r < 0) throw new IllegalStateException(target + ": start result " + r);
+    }
+
+    /**
+     * Opens Android's installer for {@code path} directly, avoiding the chooser a plain VIEW of an
+     * APK can show. The file is shared through the terminal app's FileProvider
+     * ({@code content://<package>.files/<absolute path>}) with a read grant; the installer's own
+     * activity is found by its VIEW/package-archive filter, and known installer packages are tried
+     * when Android hides it from the query.
+     */
+    static void installApk(String pkg, String path) throws Exception {
+        java.io.File f = new java.io.File(path);
+        if (!f.isFile()) throw new IllegalArgumentException(path + ": no such APK");
+        // Start the installer's own activity with a content:// URI from Termux's FileProvider, so
+        // no chooser appears. The terminal app must allow external apps to read its files
+        // (`allow-external-apps=true`); the CLI sets that only for this install and restores it.
+        android.net.Uri uri = android.net.Uri.parse("content://" + pkg + ".files" + f.getAbsolutePath());
+        Intent base = new Intent(Intent.ACTION_VIEW);
+        base.setDataAndType(uri, "application/vnd.android.package-archive");
+        base.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        java.util.List<android.content.ComponentName> tries = new java.util.ArrayList<>();
+        try {
+            for (android.content.pm.ResolveInfo ri : packageManager().queryIntentActivities(base, android.content.pm.PackageManager.MATCH_ALL)) {
+                if (ri.activityInfo == null) continue;
+                String p = ri.activityInfo.packageName.toLowerCase(java.util.Locale.ROOT);
+                if (p.contains("packageinstaller")) tries.add(new android.content.ComponentName(ri.activityInfo.packageName, ri.activityInfo.name));
+            }
+        } catch (Exception e) {
+            System.err.println("installer query: " + e);
+        }
+        String[][] known = {
+            {"com.google.android.packageinstaller", ".InstallStart"},
+            {"com.android.packageinstaller", ".InstallStart"},
+            {"com.samsung.android.packageinstaller", ".PackageInstallerActivity"},
+            {"com.google.android.packageinstaller", ".PackageInstallerActivity"},
+            {"com.android.packageinstaller", ".PackageInstallerActivity"},
+        };
+        for (String[] k : known) tries.add(new android.content.ComponentName(k[0], k[0] + k[1]));
+
+        String last = "no installer";
+        for (android.content.ComponentName c : tries) {
+            try {
+                Intent i = new Intent(base);
+                i.setComponent(c);
+                Object r = call(taskManager(), "startActivity", pkg, i);
+                if (!(r instanceof Integer) || (Integer) r >= 0) return;
+                last = c.flattenToShortString() + ": start result " + r;
+            } catch (Exception e) {
+                last = c.flattenToShortString() + ": " + e;
+            }
+        }
+        throw new IllegalStateException(last);
     }
 
     /** Whether the shared Lindroids window app is installed and not turned off. */

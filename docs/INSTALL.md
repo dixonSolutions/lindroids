@@ -257,7 +257,9 @@ The apk and xbps repositories are signed with an RSA key, `lindroids.rsa.pub` on
 
 The default window is our own small APK: it shows the pages in Android's own WebView, with no
 browser and no Google or Samsung server involved. The first `lindroids export` downloads it and
-Android asks to install it; `lindroids app install` only pre-installs it:
+Android asks to install it; `lindroids app install` only pre-installs it. To let Android's
+installer read the APK, Lindroids briefly turns on Termux's `allow-external-apps` setting and puts
+`termux.properties` back exactly as it was; the window paths themselves never need it.
 
 ```sh
 lindroids export <program>            # installs the window app on first use

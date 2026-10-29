@@ -478,6 +478,12 @@ pub fn app_installed() -> bool {
         .unwrap_or(false)
 }
 
+/// Opens Android's installer for an APK directly (no chooser), through the terminal app's
+/// FileProvider. False when the helper cannot run: the caller can fall back to `termux-open`.
+pub(crate) fn install_apk(path: &Path) -> bool {
+    helper(&["install-apk", &package(), &path.display().to_string()]).is_ok()
+}
+
 /// Shows a run's window in the shared Lindroids window app (`org.lindroids`): the app opens the
 /// page itself, immersive, with the program's name and icon on its task. `launch` is the URL its
 /// offline page hands to Termux when Termux is closed.

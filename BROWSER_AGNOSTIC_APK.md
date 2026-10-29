@@ -150,10 +150,11 @@ The app's code is the same in A, B and C; only how it is built and signed differ
    - Released with Lindroids (GitHub Releases; F-Droid or Google Play are **open**), signed by the
      project key, registered with Google's verification.
    - `lindroids export` checks whether it is installed; if not, it downloads the release APK for
-     this version and opens Android's installer (`termux-open --content-type
-     application/vnd.android.package-archive`). The first time, Android asks to allow Termux to
-     install apps; then the user taps *Install*. From Google Play it would be the store page
-     instead, with no "unknown sources" step. `lindroids app install` is only the pre-install.
+     this version and opens Android's installer directly (Termux's FileProvider, temporarily
+     allowing external apps to read the APK; `termux.properties` is restored afterwards). The
+     first time, Android asks to allow Termux to install apps; then the user taps *Install*. From
+     Google Play it would be the store page instead, with no "unknown sources" step.
+     `lindroids app install` is only the pre-install.
    - `export` keeps the existing home screen shortcut (owned by Termux, with the program's name
      and icon), whose launch URL runs `lindroids launch <id>`; that window opens with an explicit
      intent to the app, as `Shortcut.java open` does for a Custom Tab. An app-owned shortcut
