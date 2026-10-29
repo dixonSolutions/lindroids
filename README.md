@@ -7,6 +7,8 @@ Run Linux GUI programs from Termux, a proot distro or Flathub, with a home scree
 theme, notifications and files. One package in Termux; the window is the phone's browser, or an
 optional small window app of ours that needs no browser. No permission, no root.</p>
 
+<p align="center"><a href="https://discord.gg/aWQwxV4wm"><img alt="Discord: join the community" src="https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white"></a></p>
+
 <p align="center"><img src="media/demos/launch-from-home.webp" width="640" alt="Tapping GNOME Calculator's home screen icon with Termux closed: the window opens, 6×7=42, closing it"><br>
 <sub>The home screen icon, with Termux closed: GNOME Calculator (Flathub) opens in its own window, in Android's dark theme and accent colour, and closes with it. <a href="media/demos/launch-from-home.mp4">mp4</a></sub></p>
 
