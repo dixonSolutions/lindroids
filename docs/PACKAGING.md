@@ -17,7 +17,7 @@ Every push to `main` (unless the head commit message contains `[skip ci]`) is a 
 | `lindroids-<v>-r0.apk` for aarch64, armv7, x86_64, x86 | apk repository `apk/<arch>/` (Alpine, postmarketOS, Chimera) |
 | `lindroids-<v>_1.<arch>.xbps` for aarch64, armv7l, x86_64, i686 and the `-musl` ones (not i686) | xbps repository `xbps/` (Void) |
 | `lindroids-<v>-<arch>-linux-musl.tar.gz`        | GitHub Release (static installs): `bin/lindroids` + `libexec/lindroids/xwayland-satellite` |
-| `lindroids-<v>.apk` (the optional window app)   | GitHub Release, when the project signing key is set |
+| `lindroids-<v>.apk` (the optional window app)   | GitHub Release, every release |
 | `SHA256SUMS`                                    | GitHub Release                           |
 | the repositories + `install.sh`                 | `gh-pages` → https://dixonsolutions.github.io/lindroids/ |
 
@@ -45,9 +45,10 @@ The display is a web page the server itself serves (embedded in the binary), so 
 packages are complete on their own. Optionally, a release also carries the shared window app
 ([BROWSER_AGNOSTIC_APK.md](../BROWSER_AGNOSTIC_APK.md)): a small APK built by
 `packaging/build-webview-apk.sh` with `javac`/`d8`/`aapt2`/`apksigner`, signed with
-`LINDROIDS_APP_KEYSTORE` (base64 PKCS#12) and `LINDROIDS_APP_KEYSTORE_PASS`. Without the key the
-APK is not built for a release; `LINDROIDS_APP_TEST_SIGN=1` builds a throwaway test-signed one for
-the lab, which must never be published.
+`LINDROIDS_APP_KEYSTORE` (base64 PKCS#12), `LINDROIDS_APP_KEYSTORE_PASS` and
+`LINDROIDS_APP_KEY_ALIAS` (default `lindroids`). The release workflow fails if the key is not set,
+so a published release always carries the APK; `LINDROIDS_APP_TEST_SIGN=1` builds a throwaway
+test-signed one for the lab, which is never published.
 
 ### xwayland-satellite (X11)
 

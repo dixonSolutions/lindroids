@@ -158,7 +158,11 @@ jobs:
             echo "publish=false" >> "$GITHUB_OUTPUT"
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
-            if [ -n "$LINDROIDS_APP_KEYSTORE" ]; then echo "app=yes" >> "$GITHUB_OUTPUT"; else echo "app=no" >> "$GITHUB_OUTPUT"; fi
+            if [ -z "$LINDROIDS_APP_KEYSTORE" ]; then
+              echo "::error::LINDROIDS_APP_KEYSTORE is not set: every release ships the window app (scripts/set-github-secrets.sh)"
+              exit 1
+            fi
+            echo "app=yes" >> "$GITHUB_OUTPUT"
             # The apk and xbps repositories are signed with their own (RSA) key.
             if [ -z "$HAVE_RSA_KEY" ]; then
               echo "::warning::LINDROIDS_APK_RSA_KEY is not set (scripts/set-github-secrets.sh): the apk and xbps repositories are not updated"

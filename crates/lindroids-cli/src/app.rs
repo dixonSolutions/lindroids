@@ -95,6 +95,7 @@ fn release_apk_url() -> Option<String> {
 }
 
 fn fetch(url: &str, path: &Path) -> Result<(), String> {
+    let _ = std::fs::remove_file(path);
     let curl = Command::new("curl")
         .args(["-fsSL", "--retry", "3", "-o"])
         .arg(path)
@@ -117,10 +118,14 @@ fn fetch(url: &str, path: &Path) -> Result<(), String> {
             .map(|s| s.success())
             .unwrap_or(false)
     };
-    if curl || wget() {
+    let downloaded = (curl || wget()) && path.metadata().map(|m| m.len() > 0).unwrap_or(false);
+    if downloaded {
         Ok(())
     } else {
-        Err(format!("cannot download {url} (needs curl or wget, and the network)"))
+        let _ = std::fs::remove_file(path);
+        Err(format!(
+            "cannot download {url}: the APK is not in that release, or there is no network (needs curl or wget)"
+        ))
     }
 }
 

@@ -184,8 +184,9 @@ The app's code is the same in A, B and C; only how it is built and signed differ
 ## What stays open
 
 - **Which ways to build**: A alone, A then B, or C (the user's call). A is built; B and C are not.
-- **Where A is published**: GitHub Releases only, F-Droid, Google Play. The release uploads the APK
-  when `LINDROIDS_APP_KEYSTORE` is set in CI; a test-signed APK is never published.
+- **Where A is published**: GitHub Releases only, F-Droid, Google Play. Every release carries the
+  APK, signed with the project key in CI (`LINDROIDS_APP_KEYSTORE`); the workflow fails without
+  it, so a test-signed APK is never published.
 - **The project key**: the CI secret names are in
   [docs/PACKAGING.md](docs/PACKAGING.md#what-a-release-contains).
 - **The "no APK" rule** ([docs/DISPLAY.md](docs/DISPLAY.md), the project so far): this brings back an

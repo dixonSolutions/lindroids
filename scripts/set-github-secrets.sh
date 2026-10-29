@@ -12,6 +12,11 @@
 #   LINDROIDS_GPG_PRIVATE_KEY  armored secret key of the APT repository signing key, exported
 #                              from the GNUPGHOME ~/.local/share/lindroids/gnupg (also signs the
 #                              pacman and RPM repositories)
+#   LINDROIDS_APP_KEYSTORE     base64 PKCS#12 keystore that signs the window app (org.lindroids),
+#                              from $DIR/lindroids-app.p12 (or LINDROIDS_APP_KEYSTORE_FILE); its
+#                              password from $DIR/lindroids-app.pass (or
+#                              LINDROIDS_APP_KEYSTORE_PASS_FILE), alias lindroids by default.
+#                              Losing this key means installed window apps cannot be updated.
 #   LINDROIDS_APK_RSA_KEY      PEM private RSA key that signs the apk (Alpine) and xbps (Void)
 #                              repositories: ~/.local/share/lindroids/lindroids.rsa. If neither it
 #                              nor packaging/repo/lindroids.rsa.pub exists yet, a 4096-bit key is
@@ -60,6 +65,24 @@ echo "Setting the secrets on $REPO (APT key $FPR, RSA key $RSA)"
 gpg --batch --pinentry-mode loopback --passphrase '' --armor --export-secret-keys "$FPR" \
   | gh secret set LINDROIDS_GPG_PRIVATE_KEY --repo "$REPO"
 gh secret set LINDROIDS_APK_RSA_KEY --repo "$REPO" < "$RSA"
+
+# The window app (org.lindroids): one key for every release, so Android accepts each update.
+APP_FILE=${LINDROIDS_APP_KEYSTORE_FILE:-$DIR/lindroids-app.p12}
+APP_PASS_FILE=${LINDROIDS_APP_KEYSTORE_PASS_FILE:-$DIR/lindroids-app.pass}
+APP_ALIAS=${LINDROIDS_APP_KEY_ALIAS:-lindroids}
+if [ -f "$APP_FILE" ] && [ -f "$APP_PASS_FILE" ]; then
+  base64 -w0 "$APP_FILE" | gh secret set LINDROIDS_APP_KEYSTORE --repo "$REPO"
+  gh secret set LINDROIDS_APP_KEYSTORE_PASS --repo "$REPO" --body "$(cat "$APP_PASS_FILE")"
+  gh secret set LINDROIDS_APP_KEY_ALIAS --repo "$REPO" --body "$APP_ALIAS"
+  echo "Window app signing key: $APP_FILE (alias $APP_ALIAS)"
+elif [ -n "${LINDROIDS_APP_KEYSTORE:-}" ]; then
+  printf '%s' "$LINDROIDS_APP_KEYSTORE" | gh secret set LINDROIDS_APP_KEYSTORE --repo "$REPO"
+  gh secret set LINDROIDS_APP_KEYSTORE_PASS --repo "$REPO" --body "${LINDROIDS_APP_KEYSTORE_PASS:?set LINDROIDS_APP_KEYSTORE_PASS}"
+  gh secret set LINDROIDS_APP_KEY_ALIAS --repo "$REPO" --body "$APP_ALIAS"
+  echo "Window app signing key: from LINDROIDS_APP_KEYSTORE"
+else
+  echo "set-github-secrets: warning: no window app keystore in $APP_FILE (or LINDROIDS_APP_KEYSTORE): releases will fail" >&2
+fi
 gh secret list --repo "$REPO"
 
 [ $RELEASE = 1 ] || exit 0
