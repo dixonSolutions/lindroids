@@ -144,6 +144,45 @@ Found and fixed on the way:
 - The service worker the browser apps use for their offline page is not registered inside a
   Lindroids app (the app shows its own offline page).
 
+## Clean starts and single runs (third round)
+
+Two errors the user saw on the tablet, and what caused them:
+
+- **"VSCodium runs in Termux, which is not running now", all the time.** The app's window still
+  showed a run whose server had gone (the binary was replaced while it ran); when a new server
+  answered, the offline page's retry loaded that dead run's page again. The retry now goes back to
+  the program's start page, which finds the program running or starts it, and only while the app
+  is in front.
+- **"Another instance of VSCodium is running but not responding".** That VSCodium (under proot) had
+  outlived its server: nothing ended the programs a stopping server had launched, and an orphan
+  without a display hangs. It also made the next launch think VSCodium's app was busy, so that
+  window went to Chrome. The server now ends every program it launched when it stops (the process
+  tree, SIGTERM then SIGKILL), and a program's app takes a new run in place.
+
+And two additions:
+
+- **A clean first start.** Opening a program's icon with Lindroids not running starts it through
+  Termux by itself (no *Start* tap): tested, the icon handed the launch to Termux within 0.2 s and
+  VSCodium's window loaded in the same task.
+- **Single runs in a window app of their own.** `lindroids app install` builds the windows app
+  (`org.lindroids.windows`, "Lindroids") on the phone from the same template, with no page of its
+  own. `lindroids run <program>` opens each run there as one task, with the program's name and icon
+  on it (`setTaskDescription`), closed when the program ends and when the server stops (tested:
+  GNOME Calculator's window opened in it and went with `lindroids stop`). One UI draws the windows
+  app's icon on such a card, not the program's: it ignores task icons (tested earlier with Chrome's
+  Custom Tabs). Only an installed app of the program's own (`export`) gets its icon there; installing
+  one per run would mean an installer prompt per run.
+
+Play Protect is not the same every time: the first install offered *More details → Install without
+scanning* (then the PIN); one update scanned the app by itself and installed it; later installs of
+a new app (Calculator, the windows app) offered only *Scan app* or *Don't install app*. For those
+tests the same APK, built by Termux, was installed with `adb install` instead.
+
+The demo (`media/demos/export-and-run.mp4`, 45 s) was recorded on the tablet with
+`adb shell screenrecord`: `lindroids run org.gnome.Calculator`, then `lindroids export
+org.gnome.Calculator` (built in 28 ms), the installer, the icon with Lindroids not running, and
+Recents. File names in My Files and other apps' Recents cards are blurred.
+
 ## What Android allows, and what we assume
 
 Checked on the tablet unless marked *assumed*:

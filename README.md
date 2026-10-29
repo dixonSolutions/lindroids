@@ -9,17 +9,20 @@ phone in milliseconds. No root, no browser, nothing to download.</p>
 
 <p align="center"><a href="https://discord.gg/aWQwxV4wm"><img alt="Discord: join the community" src="https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white"></a></p>
 
+<p align="center"><img src="media/demos/export-and-run.webp" width="300" alt="On a Galaxy Tab: lindroids run opens GNOME Calculator in a window of its own; lindroids export builds Calculator its own Android app in 28 ms and Android installs it; its icon starts it with Lindroids not running; Recents shows Calculator's own icon"><br>
+<sub>45 seconds on a Galaxy Tab (Android 16): <code>lindroids run</code>, then <code>lindroids export</code> builds Calculator its own app, which starts from its icon. <a href="media/demos/export-and-run.mp4">mp4</a></sub></p>
+
 <table>
 <tr>
-<td align="center" width="50%"><img src="media/screenshots/app-vscodium.png" width="360"><br><sub>VSCodium (Flathub) in its own app on a Galaxy Tab: full screen, no browser</sub></td>
-<td align="center" width="50%"><img src="media/screenshots/app-recents.png" width="360"><br><sub>Recents and the taskbar show the program's own icon and name</sub></td>
+<td align="center" width="50%"><img src="media/screenshots/app-vscodium.png" width="320"><br><sub>VSCodium (Flathub) in its own app: full screen, no browser</sub></td>
+<td align="center" width="50%"><img src="media/screenshots/app-recents.png" width="240"><br><sub>Recents shows the program's own icon</sub></td>
 </tr>
 </table>
 
 ```sh
 curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh | sh   # in Termux
 lindroids run org.gnome.Calculator         # a window of its own, now
-lindroids export com.vscodium.codium       # an app of its own: tap Install, then its icon
+lindroids export org.gnome.Calculator      # an app of its own: tap Install, then its icon
 ```
 
 ## What you get
@@ -29,6 +32,10 @@ lindroids export com.vscodium.codium       # an app of its own: tap Install, the
   and hands it to Android's installer. Its icon starts the program, also when Termux is not
   running; its window is Android's own WebView, full screen; Recents shows its icon.
   [How, and what was tested →](docs/APPS.md)
+- **Single runs get a window of their own too.** `lindroids run` opens the program in the
+  Lindroids windows app (`lindroids app install` builds it on the phone, once): one window per
+  run with the program's name, closed when the program ends or Termux stops. One UI draws the
+  windows app's icon on those cards; only an exported program's own app shows its own.
 - **Any Linux program with a window**: Termux packages, programs in a proot distro, Flatpaks
   from Flathub (set up in Termux by `install.sh`, no root), X11 programs.
 - **Android underneath**: dark mode and accent colour, Android's file picker for *Open…* and
