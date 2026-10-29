@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/lindroids-cli", "crates/lindroids-proto", "crates/lindroids-server"]
+members = ["crates/lindroids-apk", "crates/lindroids-cli", "crates/lindroids-proto", "crates/lindroids-server"]
 
 [workspace.package]
 version = "0.1.0"

@@ -328,7 +328,8 @@ fn index_html(query: &str) -> String {
 /// - `manifest.webmanifest`, `icon.png` (512 pixels square), `maskable.png` (as Android's adaptive
 ///   icons draw it), made by `export`;
 /// - `sw.js`, `offline`, `offline.js`: the page shown when the server cannot be reached (Termux
-///   closed), which starts the program through Termux.
+///   closed), which starts the program through Termux;
+/// - `<name>.apk`: the program's own app, when `export` built one (`<state>/apk/<id>.apk`).
 fn app_file(path: &str, query: &str, port: u16) -> Option<(&'static str, std::borrow::Cow<'static, [u8]>)> {
     let (id, file) = path.strip_prefix("/app/")?.split_once('/')?;
     let app = crate::load_exported(id)?;
@@ -357,6 +358,10 @@ fn app_file(path: &str, query: &str, port: u16) -> Option<(&'static str, std::bo
                 .replace("@LAUNCH@", &html_escape(&format!("http://127.0.0.1:{port}/launch/termux/{id}"))),
         ),
         "offline.js" => Some(("text/javascript; charset=utf-8", APP_OFFLINE_JS.as_bytes().into())),
+        // The program's own app (`lindroids export`, built on the phone), for a browser to
+        // download when the terminal app may not open Android's installer.
+        // Any `<name>.apk`, so the browser saves it under the program's name.
+        f if f.ends_with(".apk") && !f.contains('/') => Some(("application/vnd.android.package-archive", std::fs::read(crate::state_dir().join("apk").join(format!("{id}.apk"))).ok()?.into())),
         _ => None,
     }
 }

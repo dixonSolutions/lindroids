@@ -1,15 +1,24 @@
-//! The shared Lindroids window app: one small APK that shows every program's page in Android's
-//! own WebView, with no browser and no permission but INTERNET (BROWSER_AGNOSTIC_APK.md).
+//! Lindroids' Android apps: every exported program's own app, and the shared window app.
 //!
-//! The app's code is in `packaging/webview-app`; this module installs it and asks it to open a
-//! run's window. It is chosen with `lindroids config browser app` (or `export --browser app`),
-//! and preferred whenever it is installed and the setting asks for it. Nothing about the server,
-//! the pages or the runs changes: the app is one more place a page is shown.
+//! **A program's own app** (the default export): `lindroids export` builds an APK for the
+//! program here, on the phone, in Rust (`crates/lindroids-apk`): the window app's code under the
+//! program's package (`org.lindroids.app.<id>`), name and icon, signed with a key made once on this
+//! phone. Android then lists the program as an app: its icon opens its window, in Android's own
+//! WebView with no browser, and Recents shows its name and icon. Nothing is downloaded and nothing
+//! leaves the phone. The install itself is the user's tap in Android's installer, reached the way
+//! the terminal app allows (see [`offer`]).
+//!
+//! **The shared window app** (`org.lindroids`, BROWSER_AGNOSTIC_APK.md): one APK for every program,
+//! from the release; optional now (`lindroids app install`), for windows of programs that are not
+//! exported when `config browser app` asks for it.
+//!
+//! The app's code is in `packaging/webview-app`. Nothing about the server, the pages or the runs
+//! changes: an app is one more place a page is shown.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::{config, sandbox, shortcut};
 
@@ -71,7 +80,7 @@ fn open(url: &str) -> Result<String, String> {
         .and_then(lindroids_server::icons::launch_info)
         .unwrap_or_else(|| ("Lindroids".to_string(), None));
     let launch = LAUNCH.get().map(|(_, u)| u.clone()).unwrap_or_default();
-    shortcut::open_app_window(url, &name, icon.as_deref(), &launch, false)?;
+    shortcut::open_app_window(PACKAGE, url, &name, icon.as_deref(), &launch, false)?;
     shortcut::note_window(&sandbox::runtime_dir(), url, PACKAGE);
     Ok(PACKAGE.to_string())
 }
@@ -259,22 +268,157 @@ fn install(arg: Option<&str>) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Makes sure the app is installed, installing it if needed and waiting for the user's tap.
-pub fn ensure() -> Result<(), String> {
-    if installed() {
-        return Ok(());
+// ------------------------------------------------------------------ a program's own app
+
+/// The prefix of every program's own app (`lindroids_apk::package_for`).
+pub const PROGRAM_PREFIX: &str = "org.lindroids.app.";
+
+/// Whether `package` is a program's own app built here (not a browser's WebAPK).
+pub fn is_program_app(package: &str) -> bool {
+    package.starts_with(PROGRAM_PREFIX)
+}
+
+/// This phone's signing key for the programs' apps, made on first use and kept in Lindroids'
+/// state (`apk/signing.key`, private). Every app is updated only with it: an app installed with
+/// another key (another phone's, a cleared Termux) must be uninstalled first.
+fn signing_key() -> Result<lindroids_apk::Key, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let dir = lindroids_server::state_dir().join("apk");
+    let path = dir.join("signing.key");
+    if let Ok(b) = std::fs::read(&path) {
+        return lindroids_apk::Key::from_bytes(&b).map_err(|e| format!("{}: {e}", path.display()));
     }
-    install(None)?;
-    let wait = std::env::var("LINDROIDS_APP_WAIT").ok().and_then(|v| v.parse().ok()).unwrap_or(180);
-    let t0 = Instant::now();
-    while t0.elapsed() < Duration::from_secs(wait) {
-        std::thread::sleep(Duration::from_secs(1));
-        if installed() {
-            println!("The Lindroids window app is installed.");
-            return Ok(());
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let key = lindroids_apk::Key::generate("Lindroids on this phone")?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    std::io::Write::write_all(&mut f, &key.to_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(key)
+}
+
+/// The icon layers of a program's app, from its 512-pixel icon: the plain icon, the adaptive
+/// icon's foreground (the icon inside the middle 66 of 108, where every launcher's mask leaves it
+/// whole) and its background (a pale tint of the icon's own colour).
+fn icon_layers(icon: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {
+    use resvg::tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
+    let src = Pixmap::decode_png(icon).map_err(|e| format!("the icon: {e}"))?;
+    let place = |size: u32, inner: f32| -> Result<Pixmap, String> {
+        let mut out = Pixmap::new(size, size).ok_or("icon size")?;
+        let k = inner / src.width().max(src.height()) as f32;
+        let (tx, ty) = ((size as f32 - src.width() as f32 * k) / 2.0, (size as f32 - src.height() as f32 * k) / 2.0);
+        let paint = PixmapPaint { quality: FilterQuality::Bicubic, ..PixmapPaint::default() };
+        out.draw_pixmap(0, 0, src.as_ref(), &paint, Transform::from_row(k, 0.0, 0.0, k, tx, ty), None);
+        Ok(out)
+    };
+    let plain = place(512, 512.0)?;
+    let fg = place(432, 288.0)?;
+    let (mut r, mut g, mut b, mut n) = (0u64, 0u64, 0u64, 0u64);
+    for p in src.pixels() {
+        if p.alpha() >= 200 {
+            let c = p.demultiply();
+            r += c.red() as u64;
+            g += c.green() as u64;
+            b += c.blue() as u64;
+            n += 1;
         }
     }
-    Err("the Lindroids window app was not installed; tap Install in Android's dialog, then run this again".into())
+    let tint = |sum: u64| if n == 0 { 255 } else { (255.0 - (255.0 - sum as f32 / n as f32) * 0.3).round() as u8 };
+    let mut bg = Pixmap::new(432, 432).ok_or("icon size")?;
+    bg.fill(resvg::tiny_skia::Color::from_rgba8(tint(r), tint(g), tint(b), 255));
+    let enc = |p: &Pixmap| p.encode_png().map_err(|e| format!("the icon: {e}"));
+    Ok((enc(&plain)?, enc(&fg)?, enc(&bg)?))
+}
+
+/// Builds the program's own app: `<state>/apk/<id>.apk`. `start` is its page on this phone's
+/// server (`http://<label>.localhost:<port>/app/<id>/`), `launch` what starts it through the
+/// terminal app when the server is not running. Returns the APK's path and its package.
+pub fn build_program_app(id: &str, name: &str, icon: &[u8], start: &str, launch: &str) -> Result<(PathBuf, String), String> {
+    let key = signing_key()?;
+    let package = lindroids_apk::package_for(id);
+    let (plain, fg, bg) = icon_layers(icon)?;
+    // Minutes since 1970: a new export of the same program is always a newer version.
+    let version_code = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) / 60) as u32;
+    let termux = shortcut::package();
+    let p = lindroids_apk::Program {
+        package: &package,
+        name,
+        start,
+        launch,
+        termux: &termux,
+        id,
+        version_code,
+        version_name: &version(),
+        icon: &plain,
+        foreground: &fg,
+        background: &bg,
+    };
+    let apk = lindroids_apk::build(&p, &key)?;
+    let dir = lindroids_server::state_dir().join("apk");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let path = dir.join(format!("{id}.apk"));
+    std::fs::write(&path, &apk).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok((path, package))
+}
+
+/// How a program's app reached Android's installer.
+pub enum Offered {
+    /// The installer is open: the user taps Install.
+    Installer,
+    /// The APK is in Download and the file manager is open there: the user taps it, then Install.
+    Downloads(String),
+    /// The browser downloads it from the program's page: the user opens it, then Install.
+    Browser(String),
+}
+
+/// Whether the terminal app may open Android's installer: it declares
+/// REQUEST_INSTALL_PACKAGES (Termux from F-Droid or GitHub; not Termux from Google Play).
+pub fn terminal_can_install() -> bool {
+    shortcut::helper(&["can-install", &shortcut::package()]).map(|o| o.contains("can-install yes")).unwrap_or(false)
+}
+
+/// The shared Download folder, when the terminal app may write it (Termux with storage access:
+/// `termux-setup-storage`).
+fn writable_downloads() -> Option<PathBuf> {
+    let d = PathBuf::from("/storage/emulated/0/Download");
+    let probe = d.join(".lindroids-write-test");
+    std::fs::write(&probe, b"").ok()?;
+    let _ = std::fs::remove_file(&probe);
+    Some(d)
+}
+
+/// Puts a built app in front of Android's installer, the best way this terminal app allows:
+/// 1. the installer itself, when the terminal app may ask for installs;
+/// 2. else the Download folder in the file manager, when the terminal app can write there;
+/// 3. else the program's page serving the APK (`<page>/<name>.apk`) in the browser, which
+///    downloads it.
+/// Android's installer only acts for an app that declares REQUEST_INSTALL_PACKAGES: Termux from
+/// Google Play does not, and the installer then closes at once.
+pub fn offer(apk: &Path, name: &str, page: &str) -> Result<Offered, String> {
+    if terminal_can_install() {
+        let external = ExternalApps::enable();
+        let started = shortcut::install_apk(apk);
+        if started {
+            std::thread::sleep(Duration::from_secs(8));
+            drop(external);
+            return Ok(Offered::Installer);
+        }
+        drop(external);
+    }
+    let file = format!("{}.apk", name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '_' }).collect::<String>().trim());
+    if let Some(d) = writable_downloads() {
+        let to = d.join(&file);
+        if std::fs::copy(apk, &to).is_ok() {
+            let _ = shortcut::helper(&["show-downloads", &shortcut::package()]);
+            return Ok(Offered::Downloads(file));
+        }
+    }
+    let browser_url = format!("{page}{}", file.replace(' ', "%20"));
+    shortcut::view("default", &browser_url).map_err(|e| format!("cannot open the browser for the app's download: {e}"))?;
+    Ok(Offered::Browser(file))
 }
 
 pub fn cmd_app(args: &[String]) -> i32 {

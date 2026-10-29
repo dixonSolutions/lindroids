@@ -6,6 +6,8 @@
 
 const launch = document.body.dataset.launch;
 document.getElementById('start').onclick = () => {
+  // In a Lindroids app (an older one that registered this worker), the app hands it to Termux.
+  if (window.lindroids && window.lindroids.startTermux) return window.lindroids.startTermux();
   if (navigator.share) navigator.share({ url: launch }).catch(() => {});
 };
 setInterval(() => {

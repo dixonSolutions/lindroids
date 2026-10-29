@@ -151,8 +151,8 @@ pub fn cmd_export(args: &[String]) -> i32 {
 /// was wanted but no browser can make one).
 enum Plan {
     App(String),
-    /// The shared Lindroids window app (`org.lindroids`), which needs no browser.
-    Shared,
+    /// The program's own app, built here (`app.rs`): no browser, no download.
+    Own,
     Shortcut(bool),
 }
 
@@ -167,9 +167,8 @@ fn plan(choice: &str, explicit: bool) -> Result<Plan, String> {
         if !sandbox::on_android() {
             return if explicit { Err("the Lindroids window app is for Android".into()) } else { Ok(Plan::Shortcut(false)) };
         }
-        // The shared app: `export` makes sure it is installed (downloading the release APK and
-        // waiting for the user's Install, as A in BROWSER_AGNOSTIC_APK.md says).
-        return Ok(Plan::Shared);
+        // The program's own app, built on the phone and offered to Android's installer.
+        return Ok(Plan::Own);
     }
     if !sandbox::on_android() {
         return if explicit && choice != "default" {
@@ -297,6 +296,7 @@ fn export(args: &[String], suffix: &str, tag: Option<String>, launch: bool) -> i
     }
     let previous = lindroids_server::load_exported(&id);
     let previous_app = previous.as_ref().and_then(|r| r.webapk.clone());
+    let existed = previous.is_some();
     let kept_tag = tag.or_else(|| previous.and_then(|r| r.browser));
     if let Some(d) = path.parent() {
         let _ = std::fs::create_dir_all(d);
@@ -309,14 +309,23 @@ fn export(args: &[String], suffix: &str, tag: Option<String>, launch: bool) -> i
         webapk: None,
         browser: kept_tag,
     };
-    if matches!(&plan, Plan::Shared) {
-        if let Err(e) = crate::app::ensure() {
-            return crate::fail(&e);
-        }
-        rec.browser = Some("app".into());
+    if matches!(&plan, Plan::Own) {
+        // The server serves the app's pages (`/app/<id>/`) only for an export that is an app.
+        rec.webapk = Some(previous_app.clone().filter(|a| crate::app::is_program_app(a)).unwrap_or_else(|| lindroids_apk::package_for(&id)));
         if let Err(e) = save(&rec) {
             return crate::fail(&e);
         }
+        if let Err(e) = install_own_app(&sb, &id, &name, &icon) {
+            rec.webapk = previous_app.clone();
+            let _ = save(&rec);
+            return crate::fail(&e);
+        }
+        if let Some(old) = previous_app.as_deref().filter(|a| !a.is_empty() && !crate::app::is_program_app(a)) {
+            println!("{name} was a browser's app before ({old}): uninstall that one from Android's app settings.");
+        } else if existed && previous_app.is_none() {
+            println!("Its old home screen shortcut still starts it; drag it off once the app is installed.");
+        }
+        return if launch { export_launch(&id) } else { 0 };
     } else if let Plan::App(browser) = &plan {
         // An app found for it before stays (exported again: the browser updates it from its manifest).
         rec.webapk = Some(previous_app.clone().unwrap_or_default());
@@ -437,6 +446,45 @@ fn install_app(sb: &sandbox::Sandbox, id: &str, name: &str, icon: &[u8], browser
         return Ok(Some(String::new()));
     }
     Ok(None)
+}
+
+/// Builds the program's own app and offers it to Android's installer (the user taps Install).
+///
+/// Whether it gets installed, Lindroids cannot tell: Android hides other apps from a terminal app
+/// that targets Android 11 or later (Termux from Google Play has no QUERY_ALL_PACKAGES), and blocks
+/// it from opening one while it is in the background, behind the installer ("Abort background
+/// activity starts", result 102). Nothing more is needed: the app's first start hands its launch to
+/// Termux, and the window then opened in it, with its run's ticket, pairs it.
+fn install_own_app(sb: &sandbox::Sandbox, id: &str, name: &str, icon: &[u8]) -> Result<(), String> {
+    shortcut::save_app_icons(id, icon).and_then(|_| shortcut::prepare_termux(sb))?;
+    let rt = crate::ensure_server(sb)?;
+    let origin = match crate::client::request(&rt, &lindroids_proto::CliRequest::Ticket { run: None }, std::time::Duration::from_secs(3))
+        .map_err(|e| e.to_string())?
+    {
+        lindroids_proto::CliReply::Ticket { origin, .. } => origin,
+        other => return Err(format!("the server answered {other:?}")),
+    };
+    let start = format!("{origin}/app/{id}/");
+    let plain = std::fs::read(lindroids_server::state_dir().join("apps").join(format!("{id}.app.png"))).unwrap_or_else(|_| icon.to_vec());
+    let t0 = std::time::Instant::now();
+    let (apk, package) = crate::app::build_program_app(id, name, &plain, &start, &shortcut::launch_url(sb.uid, id))?;
+    let size = std::fs::metadata(&apk).map(|m| m.len()).unwrap_or(0);
+    println!("Built {name}'s app ({package}, {} KB, {} ms).", size / 1024, t0.elapsed().as_millis());
+    match crate::app::offer(&apk, name, &start)? {
+        crate::app::Offered::Installer => println!("Android's installer is open: tap Install (Update, if it is installed already)."),
+        crate::app::Offered::Downloads(file) => {
+            println!("Termux may not open Android's installer (Termux from Google Play cannot), so the app is in Download as {file}");
+            println!("and the file manager is open there: tap {file}, then Install. The first time, Android asks to allow the file");
+            println!("manager to install apps: allow it, go back, and tap {file} again.");
+        }
+        crate::app::Offered::Browser(file) => {
+            println!("Termux may not open Android's installer (Termux from Google Play cannot), so the browser downloads {file}:");
+            println!("open it when it is downloaded, then tap Install (the first time, allow the browser to install apps).");
+        }
+    }
+    println!("Once it is installed, tap Open (or its icon in the app list): {name} starts through Termux the first time, then by itself,");
+    println!("in a window of its own with its name and icon in Recents.");
+    Ok(())
 }
 
 /// `export --new-window <id or command>`: a second home screen icon, "<name> (new window)", that

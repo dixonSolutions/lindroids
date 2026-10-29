@@ -1,0 +1,12 @@
+[package]
+name = "lindroids-apk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Builds and signs a program's own Android app from the window app's template, in Rust: no Android SDK, aapt or Java on the phone"
+
+[dependencies]
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+sha2 = "0.10"
+flate2 = "1"
+crc32fast = "1"

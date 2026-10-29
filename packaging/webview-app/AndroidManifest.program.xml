@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The template of a program's own app: the window app's code under a package, name, icon and
+     start page of the program's. `lindroids export` builds one per program on the phone by
+     replacing the placeholder strings below (crates/lindroids-apk), never with aapt or Java.
+     Class names are written in full: the package changes, the code's package does not. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.lindroids.app.placeholder.package"
+    android:versionCode="1"
+    android:versionName="0.1.0">
+
+    <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="35" />
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="false"
+        android:enableOnBackInvokedCallback="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:label="@@LINDROIDS_PROGRAM_NAME@@"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme"
+        android:usesCleartextTraffic="false">
+
+        <meta-data android:name="org.lindroids.START" android:value="@@LINDROIDS_PROGRAM_START@@" />
+        <meta-data android:name="org.lindroids.LAUNCH" android:value="@@LINDROIDS_PROGRAM_LAUNCH@@" />
+        <meta-data android:name="org.lindroids.TERMUX" android:value="@@LINDROIDS_TERMUX_PACKAGE@@" />
+        <meta-data android:name="org.lindroids.ID" android:value="@@LINDROIDS_PROGRAM_ID@@" />
+
+        <!-- Windows that Lindroids opens for a run: explicit intents with the run's page. -->
+        <activity
+            android:name="org.lindroids.WindowActivity"
+            android:configChanges="density|keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:documentLaunchMode="intoExisting"
+            android:excludeFromRecents="false"
+            android:exported="true"
+            android:launchMode="standard"
+            android:resizeableActivity="true"
+            android:taskAffinity=""
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- The program's icon in the app list: opens its page, which starts it. One task,
+             whoever opens it (the launcher, the installer's Open). -->
+        <activity
+            android:name="org.lindroids.Launch"
+            android:configChanges="density|keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:resizeableActivity="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

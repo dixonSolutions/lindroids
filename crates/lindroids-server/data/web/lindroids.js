@@ -226,7 +226,16 @@ async function handle(m, payload) {
       if (pinned === m.relay_key && keys && display) {
         return send({ t: 'auth', display, proof: b64url(await crypto.subtle.sign(SIGN, keys.privateKey, signed)), ...(ticket ? { ticket } : {}) });
       }
-      if (!ticket && !code) return askCode(null, '');
+      if (!ticket && !code) {
+        // A program's own app, opened from its icon before it was ever paired (its WebView has
+        // storage of its own): Termux starts the program, and the run's window, opened in this
+        // app with its ticket, pairs it. No code to type.
+        if (APP && NATIVE && NATIVE.startTermux && !OWN_WINDOW) {
+          showPanel(`<p>Starting ${esc(document.title)} through Termux…</p>`, null, appIcon());
+          return NATIVE.startTermux();
+        }
+        return askCode(null, '');
+      }
       // Pairing: a new key pair whose private half never leaves WebCrypto.
       const fresh = await crypto.subtle.generateKey(ECDSA, false, ['sign', 'verify']);
       pairing = { keys: fresh, relayKey: m.relay_key };
@@ -488,7 +497,8 @@ function showInstall() {
 
 // What the app shows when the server cannot be reached (Termux closed): a page of ours that
 // starts the program through Termux, not the browser's error page (app-sw.js).
-if (APP && 'serviceWorker' in navigator) {
+// Not in a Lindroids app: it shows its own offline page, which starts Termux by itself.
+if (APP && !NATIVE && 'serviceWorker' in navigator) {
   navigator.serviceWorker.register(`/app/${APP}/sw.js`, { scope: `/app/${APP}/` }).catch((e) => console.warn('lindroids: service worker:', e));
 }
 

@@ -57,7 +57,7 @@ import java.util.Map;
  * pickers (open, save, folder) and downloads, the clipboard both ways, and sharing. Any other
  * address is handed to the user's browser, so the app can never be pointed at a website.</p>
  */
-public final class WindowActivity extends Activity {
+public class WindowActivity extends Activity {
     static final String EXTRA_URL = "org.lindroids.URL";
     static final String EXTRA_NAME = "org.lindroids.NAME";
     static final String EXTRA_ICON = "org.lindroids.ICON";
@@ -97,7 +97,9 @@ public final class WindowActivity extends Activity {
         if (intent != null && intent.getBooleanExtra(EXTRA_DEBUG, false)) {
             WebView.setWebContentsDebuggingEnabled(true);
         }
+        String start = programDefaults();
         String url = intent == null ? null : urlOf(intent);
+        if (url == null) url = start;
         if (url == null || !local(Uri.parse(url))) {
             if (url != null) openExternal(Uri.parse(url));
             finish();
@@ -106,6 +108,7 @@ public final class WindowActivity extends Activity {
         originalUrl = url;
         readIntent(intent);
         setTaskFromIntent(intent);
+        if (url.contains("run=")) closeLauncherTasks();
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -147,6 +150,45 @@ public final class WindowActivity extends Activity {
         String u = i.getDataString();
         if (u == null) u = i.getStringExtra(EXTRA_URL);
         return u;
+    }
+
+    /**
+     * A program's own app (built on the phone by {@code lindroids export}) carries its page, its
+     * launch URL and its terminal app in the manifest's meta-data, and its name as the app's label,
+     * so its icon opens it with no intent data. Returns the page; null for the shared app.
+     */
+    private String programDefaults() {
+        try {
+            Bundle meta = getPackageManager().getApplicationInfo(getPackageName(), PackageManager.GET_META_DATA).metaData;
+            if (meta == null) return null;
+            String start = meta.getString("org.lindroids.START");
+            if (start == null || start.isEmpty()) return null;
+            String l = meta.getString("org.lindroids.LAUNCH");
+            if (l != null) launchUrl = l;
+            String t = meta.getString("org.lindroids.TERMUX");
+            if (t != null && !t.isEmpty()) termuxPackage = t;
+            CharSequence label = getApplicationInfo().loadLabel(getPackageManager());
+            if (label != null && label.length() > 0) programName = label.toString();
+            return start;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * A run's window opened: the app's own tasks started from its icon (no URL in their intent:
+     * the offline page, or "Starting..." while Termux started the program) have done their part.
+     */
+    private void closeLauncherTasks() {
+        try {
+            ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+            for (ActivityManager.AppTask t : am.getAppTasks()) {
+                Intent base = t.getTaskInfo().baseIntent;
+                if (base != null && base.getData() == null && base.getStringExtra(EXTRA_URL) == null && t.getTaskInfo().taskId != getTaskId()) {
+                    t.finishAndRemoveTask();
+                }
+            }
+        } catch (Throwable ignored) { }
     }
 
     private void readIntent(Intent intent) {
@@ -762,7 +804,19 @@ public final class WindowActivity extends Activity {
 
         @JavascriptInterface
         public void retry() {
-            runOnUiThread(() -> load(originalUrl));
+            // Reload only once the server answers: reloading while it is down shows this page
+            // again, and a tap on Start during that reload is lost.
+            final String url = originalUrl;
+            new Thread(() -> {
+                Uri u = Uri.parse(url);
+                int port = u.getPort() > 0 ? u.getPort() : 80;
+                try (java.net.Socket sock = new java.net.Socket()) {
+                    sock.connect(new java.net.InetSocketAddress("127.0.0.1", port), 800);
+                } catch (Throwable t) {
+                    return;
+                }
+                runOnUiThread(() -> load(url));
+            }).start();
         }
 
         @JavascriptInterface

@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 lindroids-proto = { path = "../lindroids-proto" }
 lindroids-server = { path = "../lindroids-server" }
+lindroids-apk = { path = "../lindroids-apk" }
 serde.workspace = true
 serde_json.workspace = true
 libc.workspace = true

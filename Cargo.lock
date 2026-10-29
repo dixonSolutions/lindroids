@@ -756,6 +756,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "libc",
+ "lindroids-apk",
  "lindroids-proto",
  "lindroids-server",
  "log",
@@ -765,6 +766,16 @@ dependencies = [
  "serde_json",
  "tar",
  "x11rb",
+]
+
+[[package]]
+name = "lindroids-apk"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "p256",
+ "sha2",
 ]
 
 [[package]]

@@ -23,9 +23,10 @@ use crate::sandbox::{self, Kind, Sandbox};
 const DEX: &[u8] = include_bytes!("../shortcut/shortcut.dex");
 
 /// Termux's share receiver, which runs `~/bin/termux-url-opener` for a shared URL: its name in
-/// Termux 0.119 first, then 0.118's. The helper takes the first that exists in the installed
-/// Termux (else any activity of it that takes the share), so a rename cannot break the icon.
-const RECEIVER: &str = "com.termux/.app.api.file.FileShareReceiverActivity,com.termux/com.termux.filepicker.TermuxFileReceiverActivity";
+/// Termux 0.119 first, then 0.118's, then Termux from Google Play's (`.app.TermuxFileReceiverActivity`,
+/// seen in googleplay.2026.10.09). The helper takes the first that exists in the installed Termux
+/// (else any activity of it that takes the share), so a rename cannot break the icon.
+const RECEIVER: &str = "com.termux/.app.api.file.FileShareReceiverActivity,com.termux/com.termux.filepicker.TermuxFileReceiverActivity,com.termux/.app.TermuxFileReceiverActivity";
 
 /// Marks the opener as ours, so it is replaced on updates and never saved as "the user's".
 const OPENER_MARK: &str = "# lindroids: termux-url-opener";
@@ -175,6 +176,22 @@ fn open_in_app(url: &str, id: &str, app: &str) -> Option<Result<String, String>>
     }
     if app.is_empty() {
         return None;
+    }
+    // The program's own app, built by Lindroids: its window activity, by name (it takes no VIEW
+    // from other apps, so it can never be made to show a web site).
+    if crate::app::is_program_app(app) {
+        let (name, icon) = lindroids_server::icons::launch_info(run).unwrap_or_else(|| (id.to_string(), None));
+        let launch = launch_url(sandbox::detect().uid, id);
+        return match open_app_window(app, &sent, &name, icon.as_deref(), &launch, false) {
+            Ok(()) => {
+                note_window(&rt, &page, via);
+                Some(Ok(app.to_string()))
+            }
+            Err(e) => {
+                eprintln!("lindroids: {id}'s app ({app}) did not open ({e}): its window opens in the browser");
+                None
+            }
+        };
     }
     match helper(&["view", &package(), app, &sent]) {
         Ok(_) => {
@@ -484,14 +501,15 @@ pub(crate) fn install_apk(path: &Path) -> bool {
     helper(&["install-apk", &package(), &path.display().to_string()]).is_ok()
 }
 
-/// Shows a run's window in the shared Lindroids window app (`org.lindroids`): the app opens the
+/// Shows a run's window in a Lindroids app (`app`: the shared `org.lindroids`, or a program's own
+/// `org.lindroids.app.<id>`): the app opens the
 /// page itself, immersive, with the program's name and icon on its task. `launch` is the URL its
 /// offline page hands to Termux when Termux is closed.
-pub(crate) fn open_app_window(url: &str, name: &str, icon_b64: Option<&str>, launch: &str, new: bool) -> Result<(), String> {
+pub(crate) fn open_app_window(app: &str, url: &str, name: &str, icon_b64: Option<&str>, launch: &str, new: bool) -> Result<(), String> {
     let args = [
         "app-open",
         &package(),
-        crate::app::PACKAGE,
+        app,
         url,
         name,
         icon_b64.unwrap_or(""),

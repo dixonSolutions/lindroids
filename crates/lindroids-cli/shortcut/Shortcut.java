@@ -119,6 +119,12 @@ public final class Shortcut {
                 appOpen(a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8].equals("new"));
             } else if (a.length >= 3 && a[0].equals("install-apk")) {
                 installApk(a[1], a[2]);
+            } else if (a.length >= 2 && a[0].equals("can-install")) {
+                System.out.println(canInstall(a[1]) ? "can-install yes" : "can-install no");
+            } else if (a.length >= 4 && a[0].equals("save-download")) {
+                System.out.println("saved " + saveDownload(a[1], a[2], a[3]));
+            } else if (a.length >= 2 && a[0].equals("show-downloads")) {
+                System.out.println("files " + showDownloads(a[1]));
             } else {
                 throw new IllegalArgumentException("usage: pin <package> <id> <label> <icon> <action> <component> <type> <text> | remove <package> <id>"
                         + " | open <package> new|raise <url> <browser>... | notify|running <package> <id> <program> <title> <text> <icon> <small-icon> <url> <browser>..."
@@ -130,8 +136,10 @@ public final class Shortcut {
             System.out.println("ok");
             System.exit(0);
         } catch (Throwable t) {
+            // The innermost cause, but not Android's "Remote stack trace" note under a binder
+            // call's exception: that one hides the message.
             Throwable c = t;
-            while (c.getCause() != null) c = c.getCause();
+            while (c.getCause() != null && !String.valueOf(c.getCause().getMessage()).startsWith("Remote stack trace")) c = c.getCause();
             System.out.println("error: " + c);
             System.exit(1);
         }
@@ -988,6 +996,117 @@ public final class Shortcut {
     }
 
     /**
+     * Whether the terminal app may ask Android's installer to install an APK: it must declare
+     * REQUEST_INSTALL_PACKAGES. Termux from F-Droid and GitHub does; Termux from Google Play does
+     * not, and the installer then closes at once ("Requesting uid ... needs to declare permission
+     * android.permission.REQUEST_INSTALL_PACKAGES", seen on a Galaxy Tab, Android 16).
+     */
+    static boolean canInstall(String pkg) {
+        android.content.pm.PackageInfo p = packageInfo(pkg, android.content.pm.PackageManager.GET_PERMISSIONS);
+        if (p == null || p.requestedPermissions == null) return false;
+        for (String perm : p.requestedPermissions) {
+            if ("android.permission.REQUEST_INSTALL_PACKAGES".equals(perm)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Saves a file to the shared Download folder as the terminal app, through MediaStore (Android
+     * 10 and later let any app add its own downloads, with no storage permission). An APK the user
+     * then taps there is installed with the file manager as its source, which is how a terminal
+     * app without REQUEST_INSTALL_PACKAGES can still offer one. Replaces an earlier copy of ours
+     * with the same name. Prints the content URI and the name it got.
+     */
+    static String saveDownload(String pkg, String path, String name) throws Exception {
+        // MediaStore checks that the calling package belongs to the calling uid; a ContentResolver
+        // made here would say "android". So the provider is called directly, as the terminal
+        // app (AttributionSource, Android 12 and later).
+        if (android.os.Build.VERSION.SDK_INT < 31) throw new IllegalStateException("saving to Download from Termux needs Android 12");
+        Object media = provider(pkg, "media");
+        android.content.AttributionSource as = new android.content.AttributionSource.Builder(Process.myUid()).setPackageName(pkg).build();
+        android.net.Uri coll = android.provider.MediaStore.Downloads.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        String mime = name.endsWith(".apk") ? "application/vnd.android.package-archive" : "application/octet-stream";
+        try {
+            // Our earlier copy (this app owns it, so it may delete it): a re-export replaces it.
+            android.os.Bundle sel = new android.os.Bundle();
+            sel.putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, android.provider.MediaStore.MediaColumns.DISPLAY_NAME + "=?");
+            sel.putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, new String[] {name});
+            call(media, "delete", as, coll, sel);
+        } catch (Exception e) {
+            System.err.println("delete old: " + e);
+        }
+        android.content.ContentValues v = new android.content.ContentValues();
+        v.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
+        v.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime);
+        v.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS);
+        v.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
+        android.net.Uri uri = (android.net.Uri) call(media, "insert", as, coll, v, new android.os.Bundle());
+        if (uri == null) throw new IllegalStateException("MediaStore refused the download");
+        android.os.ParcelFileDescriptor fd = (android.os.ParcelFileDescriptor) call(media, "openFile", as, uri, "w");
+        if (fd == null) throw new IllegalStateException("cannot write " + uri);
+        try (java.io.InputStream in = new java.io.FileInputStream(path);
+             java.io.OutputStream out = new android.os.ParcelFileDescriptor.AutoCloseOutputStream(fd)) {
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        }
+        android.content.ContentValues done = new android.content.ContentValues();
+        done.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+        call(media, "update", as, uri, done, new android.os.Bundle());
+        return uri.toString();
+    }
+
+    /**
+     * A content provider's binder, asked for as the terminal app: Activity Manager checks that the
+     * package asking belongs to the calling uid, and a Context made in app_process would say
+     * "android".
+     */
+    static Object provider(String pkg, String authority) throws Exception {
+        systemContext();
+        Class<?> at = Class.forName("android.app.ActivityThread");
+        Object thread = at.getMethod("currentActivityThread").invoke(null);
+        Object appThread = at.getMethod("getApplicationThread").invoke(thread);
+        Object am = Class.forName("android.app.ActivityManager").getMethod("getService").invoke(null);
+        Object holder = call(am, "getContentProvider", appThread, pkg, authority, userId(), false);
+        if (holder == null) throw new IllegalStateException("no " + authority + " provider");
+        Object p = holder.getClass().getField("provider").get(holder);
+        if (p == null) throw new IllegalStateException("no " + authority + " provider");
+        return p;
+    }
+
+    /**
+     * Opens the Download folder in the phone's file manager, so the user can tap the APK there:
+     * Samsung's My Files at the folder when it is installed, else Android's Downloads view, else
+     * the Files app at the folder. Returns what opened.
+     */
+    static String showDownloads(String pkg) throws Exception {
+        java.util.List<Intent> tries = new java.util.ArrayList<>();
+        String dir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS).getAbsolutePath();
+        if (usable("com.sec.android.app.myfiles")) {
+            Intent my = new Intent("samsung.myfiles.intent.action.LAUNCH_MY_FILES");
+            my.setPackage("com.sec.android.app.myfiles");
+            my.putExtra("samsung.myfiles.intent.extra.START_PATH", dir);
+            tries.add(my);
+        }
+        tries.add(new Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS));
+        Intent root = new Intent(Intent.ACTION_VIEW);
+        root.setDataAndType(android.net.Uri.parse("content://com.android.externalstorage.documents/document/primary%3ADownload"), "vnd.android.document/directory");
+        tries.add(root);
+        String last = "no file manager";
+        for (Intent i : tries) {
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                Object r = call(taskManager(), "startActivity", pkg, i);
+                if (!(r instanceof Integer) || (Integer) r >= 0) return i.getAction() + (i.getPackage() == null ? "" : " " + i.getPackage());
+                last = i.getAction() + ": start result " + r;
+            } catch (Exception e) {
+                last = i.getAction() + ": " + e;
+            }
+        }
+        throw new IllegalStateException(last);
+    }
+
+    /**
      * Opens a run's window in the shared Lindroids window app: an explicit intent to its
      * WindowActivity, which loads the page itself (immersive, no browser), with the program's name
      * and icon on the task and its launch URL for the offline page. {@code new}: another document
@@ -995,9 +1114,16 @@ public final class Shortcut {
      */
     static void appOpen(String pkg, String app, String url, String name, String iconB64, String launch, String termux, boolean fresh) throws Exception {
         Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
-        i.setClassName(app, app + ".WindowActivity");
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
-        if (fresh) i.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        // A program's own app (org.lindroids.app.*) is one window: its single-task Launch activity,
+        // which loads the run's page in place. The shared app opens a document task per run.
+        if (app.startsWith("org.lindroids.app.")) {
+            i.setClassName(app, "org.lindroids.Launch");
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        } else {
+            i.setClassName(app, "org.lindroids.WindowActivity");
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
+            if (fresh) i.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        }
         i.putExtra("org.lindroids.NAME", name);
         i.putExtra("org.lindroids.LAUNCH", launch);
         i.putExtra("org.lindroids.TERMUX", termux);
@@ -1008,7 +1134,11 @@ public final class Shortcut {
             i.putExtra("org.lindroids.DEBUG", true);
         }
         Object r = call(taskManager(), "startActivity", pkg, i);
-        if (r instanceof Integer && (Integer) r < 0) throw new IllegalStateException(app + ": start result " + r);
+        // 0..3: started, delivered, brought to front. 102 (START_ABORTED): Android blocked a start
+        // from the background (the terminal app is not in front), which is not an error code.
+        if (r instanceof Integer && ((Integer) r < 0 || (Integer) r > 3)) {
+            throw new IllegalStateException(app + ": start result " + r + ((Integer) r == 102 ? " (blocked: the terminal app is in the background)" : ""));
+        }
     }
 
     /**
