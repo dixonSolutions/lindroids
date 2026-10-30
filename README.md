@@ -8,7 +8,7 @@ Flatpak) that opens their GUI programs as Android windows. <code>lindroids expor
 program into a real Android app, with its name and icon in the app list and Recents, built on the
 phone in milliseconds. No root, no browser, nothing to download.</p>
 
-<p align="center"><a href="https://discord.gg/aWQwxV4wm"><img alt="Discord: join the community" src="https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white"></a></p>
+<p align="center"><a href="https://dixonsolutions.github.io/lindroids/discord"><img alt="Discord: join the community" src="https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white"></a></p>
 
 <p align="center"><img src="media/demos/export-and-run.webp" width="300" alt="On a Galaxy Tab: lindroids run opens GNOME Calculator in a window of its own; lindroids export builds Calculator its own Android app in 28 ms and Android installs it; its icon starts it with Lindroids not running; Recents shows Calculator's own icon"><br>
 <sub>45 seconds on a Galaxy Tab (Android 16): <code>lindroids run</code>, then <code>lindroids export</code> builds Calculator its own app, which starts from its icon. <a href="media/demos/export-and-run.mp4">mp4</a></sub></p>

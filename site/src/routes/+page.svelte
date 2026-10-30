@@ -193,7 +193,7 @@ xbps-install -S lindroids`
 	</section>
 
 	<section class="py-10">
-		<h2 class="mb-6 text-2xl font-semibold tracking-tight">On a real tablet</h2>
+		<h2 class="mb-6 text-2xl font-semibold tracking-tight">On a real Android device</h2>
 		<div class="grid grid-cols-3 gap-3 sm:gap-6">
 			{#each shots as s (s.src)}
 				<figure>
