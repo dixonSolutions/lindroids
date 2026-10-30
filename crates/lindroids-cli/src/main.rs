@@ -17,6 +17,7 @@ mod open;
 mod setup_x11;
 mod shortcut;
 mod update;
+mod upstream;
 mod x11wm;
 
 use std::io::Write;
@@ -47,6 +48,10 @@ USAGE
   lindroids setup flatpak            install Flatpak: natively in Termux (no root), in a proot-distro
                                      distro (yours or a new Debian), or the system's package
   lindroids update [--check]         update lindroids to the latest release
+  lindroids upstream switch [latest|<version>] [--yes]   install an official release over this
+                                     one (asks which, Enter: the latest; asks to confirm)
+  lindroids upstream list            the releases, newest first
+  lindroids dev-build [help]         whether this is a development build, and how to go back
   lindroids open <file|URI>          open with Android (what xdg-open does for Linux programs)
   lindroids open --linux <file>      open in the Linux program for its type, in a window of its own
         [--with <program>] [--choose] [--list]   (asks once when several can; --choose asks again)
@@ -105,13 +110,16 @@ choice of program per file type is kept in ~/.config/mimeapps.list.
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    upstream::notice(args.first().map(String::as_str));
     let code = match args.first().map(String::as_str) {
         None | Some("-h") | Some("--help") | Some("help") => {
             print!("{HELP}");
             0
         }
         Some("version") | Some("--version") | Some("-V") => {
-            println!("lindroids {}", lindroids_server::BUILD);
+            // The build is the second word: scripts read it so.
+            let dev = if upstream::dev() { " (development build: `lindroids dev-build`)" } else { "" };
+            println!("lindroids {}{dev}", lindroids_server::BUILD);
             0
         }
         Some("server") => cmd_server(&args[1..]),
@@ -134,6 +142,8 @@ fn main() {
         // Older releases run `<new binary> update --app-only` after upgrading; there is no app now.
         Some("update") if args.iter().any(|a| a == "--app-only") => update::cmd_update_app_only(),
         Some("update") => update::cmd_update(&args[1..]),
+        Some("dev-build") => upstream::cmd_dev_build(&args[1..]),
+        Some("upstream") => upstream::cmd_upstream(&args[1..]),
         // `open` alone hands a file or link to Android (what Linux programs' xdg-open runs);
         // `--linux`/`--with` open a file in a Linux program here instead.
         Some("open") if args[1..].iter().any(|a| matches!(a.as_str(), "--linux" | "--with" | "--choose" | "--list") || a.starts_with("--with=")) => {

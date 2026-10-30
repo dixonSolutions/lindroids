@@ -35,7 +35,7 @@ fn parse(v: &str) -> Option<Vec<u64>> {
 
 /// Whether `latest` is newer than `current` (dev builds are always older).
 pub fn newer(latest: &str, current_build: &str) -> bool {
-    if current_build.ends_with("+dev") {
+    if crate::upstream::is_dev(current_build) {
         return true;
     }
     match (parse(latest), parse(version_of(current_build))) {
@@ -166,6 +166,14 @@ fn installed_build(exe: &Path) -> Option<String> {
 pub fn cmd_update(args: &[String]) -> i32 {
     let check = args.iter().any(|a| a == "--check");
     let force = args.iter().any(|a| a == "--force");
+    // A development build may be numbered past the latest release, and its package does not
+    // upgrade to an older one: going to the latest is `upstream switch`, which installs over it.
+    if crate::upstream::dev() && !check {
+        println!("This is a development build: updating installs the latest release over it.");
+        let mut a = vec!["switch".to_string(), "latest".to_string()];
+        a.extend(args.iter().filter(|x| matches!(x.as_str(), "--yes" | "-y")).cloned());
+        return crate::upstream::cmd_upstream(&a);
+    }
     let current = lindroids_server::BUILD;
     let latest = match latest_version() {
         Ok(v) => v,
@@ -235,6 +243,7 @@ mod tests {
         assert!(!newer("0.1.8", "0.1.9+abc"));
         assert!(newer("0.2.0", "0.1.99+abc"));
         assert!(newer("0.1.0", "0.1.0+dev"));
+        assert!(newer("0.1.139", "0.1.140+abc1234-dev"));
         assert!(!newer("garbage", "0.1.0+abc"));
     }
 }
