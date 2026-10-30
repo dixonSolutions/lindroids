@@ -91,6 +91,8 @@ pub fn find_satellite() -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(bin_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
         candidates.push(bin_dir.join("../libexec/lindroids/xwayland-satellite"));
+        // The glibc CLI for Cortex lives in that directory itself.
+        candidates.push(bin_dir.join("xwayland-satellite"));
     }
     candidates.extend(which("xwayland-satellite"));
     candidates.into_iter().filter(|p| p.is_file()).find(|p| {
@@ -292,6 +294,16 @@ impl Drop for X11 {
     }
 }
 
+/// Cortex Terminal's Ubuntu (no proot; an LD_PRELOAD library maps its paths and fakes uid 0).
+/// Xwayland lets in only clients of its own uid, which it takes from getuid() (0 there) while a
+/// client's socket says the real one: no X client would get in. There Xwayland runs with `-ac`,
+/// and listens only on the socket file inside Cortex's private storage, which no other app can
+/// reach (no abstract sockets). The same uid mix-up keeps the portal off D-Bus's EXTERNAL auth
+/// there (portal.rs).
+pub(crate) fn in_cortex() -> bool {
+    std::env::var_os("CORTEX_ROOT").is_some() && std::env::var("LD_PRELOAD").map_or(false, |p| p.contains("libcortex-hook"))
+}
+
 /// `<dir>/Xwayland`, which runs `real` with `-shm`. Satellite cannot pass Xwayland that flag, and
 /// Lindroids only takes CPU buffers (wl_shm), so glamor (GPU rendering) could never show anything
 /// here; worse, probing for it aborts Xwayland inside libepoxy where there is no libEGL (Debian's
@@ -300,7 +312,8 @@ pub fn write_xwayland_wrapper(dir: &Path, real: &str) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir)?;
     let p = dir.join("Xwayland");
-    std::fs::write(&p, format!("#!/bin/sh\n# Lindroids: CPU buffers only (see x11.rs).\nexec {real} -shm \"$@\"\n"))?;
+    let ac = if in_cortex() { " -ac" } else { "" };
+    std::fs::write(&p, format!("#!/bin/sh\n# Lindroids: CPU buffers only (see x11.rs).\nexec {real} -shm{ac} \"$@\"\n"))?;
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755))
 }
 
@@ -352,6 +365,9 @@ pub fn reserve(dir: &Path, lock: bool) -> Result<Reservation, String> {
         let own = sock_path.display().to_string();
         if !names.contains(&own) {
             names.push(own);
+        }
+        if in_cortex() {
+            names.clear();
         }
         let mut taken = false;
         for name in &names {

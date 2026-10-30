@@ -4,6 +4,7 @@ mod app;
 mod bwrap;
 mod client;
 mod config;
+mod cortex;
 mod debug;
 mod desktop;
 mod export;
@@ -104,6 +105,7 @@ choice of program per file type is kept in ~/.config/mimeapps.list.
 ";
 
 fn main() {
+    cortex::hand_over();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.first().map(String::as_str) {
         None | Some("-h") | Some("--help") | Some("help") => {

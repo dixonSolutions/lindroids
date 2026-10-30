@@ -255,6 +255,8 @@ pub fn start(runtime: &Path) -> Result<Portal, String> {
     let _ = shared().runtime.set(runtime.to_path_buf());
     write_gtk3_dark_theme(runtime);
     let conn = zbus::blocking::connection::Builder::address(format!("unix:path={}", socket.display()).as_str())
+        // Cortex fakes uid 0, so EXTERNAL fails there (x11::in_cortex); the bus takes ANONYMOUS.
+        .map(|b| if crate::x11::in_cortex() { b.auth_mechanism(zbus::AuthMechanism::Anonymous) } else { b })
         .and_then(|b| b.serve_at(DESKTOP, Settings))
         .and_then(|b| b.serve_at(DESKTOP, OpenUri))
         .and_then(|b| b.serve_at(DESKTOP, FileChooser))
