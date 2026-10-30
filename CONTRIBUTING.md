@@ -17,7 +17,7 @@ Questions: [Discord](https://discord.gg/gBbW9mNr9P) or an issue.
 | `crates/lindroids-proto` | the messages between them, and the authentication |
 | `crates/lindroids-apk` | builds a program's own app from the committed template, on the phone (`lindroids export`) |
 | `packaging/` | packages (deb, pacman, rpm, apk, xbps), the window app's Java source, Flatpak for Termux |
-| `scripts/` | the release build, versions, xwayland-satellite |
+| `scripts/` | dev builds (`build.sh`, `use-release.sh`), the release build, versions, xwayland-satellite |
 | `tests/` | the host integration test and the package/install test |
 | `lab/` | QEMU Android VMs and the end-to-end tests run in them |
 | `site/` | the website (SvelteKit) |
@@ -42,20 +42,42 @@ opens the page in your browser (`xdg-open`). `LINDROIDS_LOG=debug` logs more; th
 `server.log` in its runtime directory (`lindroids status` shows it). More, including
 `lindroids debug-app` for scripted input: [docs/TESTING.md](docs/TESTING.md).
 
-## Run your build on a phone
-
-A running server is kept when the protocol version has not changed, so **always
-`lindroids stop` before trying a new build**, or the old server keeps serving.
+## Test a dev build
 
 `scripts/build.sh` is **for development only**: it builds your checkout into a `lindroids`
-package, version `<release>~dev.<commit>` (`lindroids version` says `+<commit>-dev`), that
-installs over the release. Everyone else installs Lindroids with `install.sh` (README).
-`scripts/use-release.sh` puts a release back. Both have `--help`.
+package that installs over the release, so you can try a change before it is released. Everyone
+else installs Lindroids with `install.sh` (README). `scripts/use-release.sh` goes back to an
+official release. Both have `--help`.
 
-`build.sh` checks for everything the build needs and offers to install what is missing (Rust,
-clang, cargo-ndk, the NDK, dpkg-deb, adb); `--yes` installs it without asking.
+| Where you test | Run there | It makes |
+|---|---|---|
+| Termux, on the phone | `scripts/build.sh --install` | Termux's `.deb` (or pacman package, in a Termux with pacman) |
+| A Linux distro: a container, a proot distro, a desktop | `scripts/build.sh --install` | that system's package: `.deb` (apt), pacman, `.rpm` (dnf, yum, zypper) or `.apk` (Alpine) |
+| A phone, building on a PC (USB debugging on) | `scripts/build.sh --device --push` | the phone's Termux `.deb`, copied to its Download folder |
 
-### Build it in Termux
+`build.sh` finds the package manager of the system it runs in (or takes `--format
+deb|pacman|rpm|apk`), checks for everything the build needs and **offers to install what is
+missing** with that package manager: Rust (rustup, or Termux's `rust`), a C compiler, clang,
+the Rust target, cargo-ndk and the Android NDK for phone builds on a PC, `dpkg-deb`, `bsdtar`,
+adb. `--yes` installs it without asking; without a terminal it stops and prints the command.
+The first build compiles every dependency (two minutes on a fast machine, longer on a phone;
+about 1 GB with Rust), later ones only what changed. Clone the whole history (no `--depth`):
+the version is counted from it.
+
+A dev package is the release this commit would be, marked as a dev build: it installs over the
+releases before it, and the release itself replaces it on a later upgrade.
+
+| Package | Version | `lindroids version` |
+|---|---|---|
+| deb, rpm | `0.1.136~dev.<commit>` (`.dirty` with uncommitted changes) | `0.1.136+<commit>-dev` |
+| pacman | `0.1.136dev.<commit>` | the same |
+| apk | `0.1.136_pre<commit time>` | the same |
+
+A running server is kept until it is stopped: `--install` stops an idle one, and one with
+windows open says so. **Run `lindroids stop` before trying a new build** you installed another
+way, or the old server keeps serving.
+
+### In Termux
 
 ```sh
 pkg install git
@@ -64,58 +86,74 @@ scripts/build.sh --install             # offers Rust and clang, builds, installs
 lindroids run foot
 ```
 
-The first build compiles every dependency (under two minutes on an x86 lab VM, longer on a
-phone, and about 1 GB with Rust); later ones only what changed. Clone the whole history (no
-`--depth`): the version is counted from it.
+To try a build without installing it: `lindroids stop`, then `./target/release/lindroids run
+foot` (the server is started from the binary that asked for it).
 
-To try a build without installing it, `./target/release/lindroids run foot` after
-`lindroids stop`: the server is started from the binary that asked for it.
+### In a Linux distro: a container, a proot distro, a desktop
 
-### Or cross-build on a PC
+```sh
+git clone https://github.com/dixonSolutions/lindroids && cd lindroids   # Alpine: apk add bash git first
+scripts/build.sh --install             # this system's package; offers Rust and the rest
+```
 
-With the phone on USB debugging:
+rpm and apk packages are made in a Fedora or Alpine container when podman or docker is there,
+else natively on an rpm system or on Alpine (`packaging/container.sh`), so they build in proot
+distros too. Void (xbps) has no dev packages. To make another system's package,
+`--format` and `--target arm64|armhf|amd64|i386`.
+
+### From a PC, for a phone
+
+With the phone (or any Android device) in developer mode, USB debugging on, and plugged in:
 
 ```sh
 scripts/build.sh --device --push       # the attached device's CPU; prints the command for Termux
 ```
 
-The first run offers what a cross build needs: Rust (rustup) and the Android target,
+The first run offers what a cross build needs: Rust and the Android target,
 [cargo-ndk](https://github.com/bbqsrc/cargo-ndk), the Android NDK r27c (the 650 MB zip alone,
-checked, into `~/.local/share/lindroids-dev`: no SDK, no Java; an NDK you have is used if
-`ANDROID_NDK_HOME` names it), and `dpkg-deb` and adb from your package manager. On an immutable
-system (Fedora Silverblue and the like), run it in a toolbox or distrobox.
+checked, into `~/.local/share/lindroids-dev`: no SDK, no Java; an NDK of yours is used if
+`ANDROID_NDK_HOME` names it), adb and `dpkg-deb` from your package manager. On an immutable
+system (Fedora Silverblue and the like) run it in a toolbox or distrobox. With several devices
+attached, `--device <serial>` (from `adb devices`).
 
-In Termux (after `termux-setup-storage` once, so it can read Download), the command it prints:
+Then in Termux (after `termux-setup-storage` once, so it can read Download), the command it
+printed:
 
 ```sh
 apt-get install --reinstall --allow-downgrades -y /sdcard/Download/lindroids_<version>_aarch64.deb
 ```
 
-`--target aarch64|arm|x86_64|i686` builds a Termux package without a device, and
-`--target arm64|armhf|amd64|i386` a Debian/Ubuntu one (proot distros, desktops). Packages go to
-`target/dev-build/`. API 24 (Android 7) is the oldest supported.
+`--target aarch64|arm|x86_64|i686` builds a Termux package without a device. For a proot distro
+on the phone, `--target arm64 --format pacman --device --push` (for example): proot-distro
+shares the Download folder as `/sdcard/Download`. Packages go to `target/dev-build/`. Android 7
+(API 24) is the oldest supported.
 
 ### Back to a release
 
 ```sh
 scripts/use-release.sh                 # the latest release
-scripts/use-release.sh 0.1.130         # a given one (--list shows them)
+scripts/use-release.sh 0.1.130         # a given one
+scripts/use-release.sh --list          # the releases, and how lindroids is installed here
 ```
 
-A version still in the package repository (the newest three) comes from it; an older one from
-its GitHub release, checked against its `SHA256SUMS`. Your dev package also gives way by itself
-to the release with its number, on a later `pkg upgrade`.
+It goes through whatever installed `lindroids` (apt, pacman, dnf, yum, zypper, apk or a static
+install), downgrading from a dev build or a newer release as needed. The repositories keep the
+newest three releases; older ones come from their GitHub release (a `.deb` checked against its
+`SHA256SUMS`, an `.rpm`). pacman has only those three. Alpine's repository is not published yet:
+there the release's static binary is put in `/usr/local/bin` instead.
 
-### What to try
+### What to try, and what to report
 
 - `lindroids run foot` (`pkg install foot`): a window, typing, the soft keyboard, closing it.
 - `lindroids export foot`, then the app's icon with Termux closed.
 - A GTK program (`pkg install mousepad`), a Flatpak, or an X11 program (`lindroids setup x11`)
   if your change touches them.
-- `lindroids doctor` when something does not start.
+- `lindroids doctor` when something does not start; the server's log is `server.log` in the
+  directory `lindroids status` shows.
 
-Say in the pull request what you ran it on: device, Android version, which Termux (F-Droid,
-GitHub or Google Play), and the browser if a window opened in one.
+In the pull request or on Discord, say what you ran it on: `lindroids version`, the device and
+Android version, which Termux (F-Droid, GitHub or Google Play) or which distro, and the browser
+if a window opened in one.
 
 ## Files that need other tools
 
@@ -133,7 +171,8 @@ These are built rarely and committed, so nobody else needs the tools:
 - Branch from `main`; one change per pull request.
 - CI runs on every pull request: `cargo test --workspace`, `tests/host-integration.sh`,
   shellcheck on the scripts, the window app build, and every package installed by `install.sh` in
-  containers of a dozen distros. Run the first two yourself before pushing.
+  containers of a dozen distros. Run the first two yourself before pushing, and
+  `tests/install-repos.sh` (podman or docker) when you change `packaging/` or `install.sh`.
 - Change the docs with the code: a new command in the README's usage, a design decision in
   `docs/`, with what was tried and what was found.
 - Commit messages say what changed for the user, in a short sentence (see `git log`).

@@ -127,7 +127,14 @@ echo "==> rpm packages $VERSION (in $FEDORA_IMAGE)"
 # shellcheck disable=SC2016,SC2086
 in_container "$FEDORA_IMAGE" "$WORK" "$OUT" -- sh -ec '
   work=$1 out=$2; shift 2
-  dnf -q -y install rpm-build >/dev/null 2>&1 || dnf -y install rpm-build
+  # The fedora image, or (packaging/container.sh, natively) any rpm system: dnf, yum or zypper.
+  if ! command -v rpmbuild >/dev/null; then
+    if command -v dnf >/dev/null; then dnf -q -y install rpm-build >/dev/null 2>&1 || dnf -y install rpm-build
+    elif command -v yum >/dev/null; then yum -q -y install rpm-build
+    # --force-resolution: minimal openSUSE images have busybox-gawk, which the gawk of rpm-build replaces
+    else zypper --non-interactive install --force-resolution rpm-build
+    fi
+  fi
   for arch in "$@"; do
     rpmbuild -bb --quiet --target "$arch-linux" \
       --define "_topdir $work/$arch/build" --define "_rpmdir $work/$arch/rpms" \
