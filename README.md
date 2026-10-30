@@ -3,7 +3,8 @@
 <h1 align="center">Lindroids</h1>
 
 <p align="center"><b>Linux apps on Android, each one an app of its own.</b><br>
-Run Linux GUI programs from Termux, a proot distro or Flathub. <code>lindroids export</code> turns a
+A package for the Linux environments you already use on Android (Termux, proot distros,
+Flatpak) that opens their GUI programs as Android windows. <code>lindroids export</code> turns a
 program into a real Android app, with its name and icon in the app list and Recents, built on the
 phone in milliseconds. No root, no browser, nothing to download.</p>
 
@@ -28,6 +29,19 @@ curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh | sh   # in Ter
 lindroids run org.gnome.Calculator         # a window of its own, now
 lindroids export org.gnome.Calculator      # an app of its own: tap Install, then its icon
 ```
+
+## What Lindroids is, and is not
+
+- **A package, not an app.** You install Lindroids *inside* your container apps: with `pkg` in
+  Termux, or with the package manager of a proot distro. There is no Lindroids app to get
+  from a store, and nothing to install on Android first.
+- **Not a container app.** Lindroids does not run Linux itself. Termux, proot-distro and
+  Flatpak keep running your programs, with their files and packages. Lindroids gives those
+  programs windows on Android, and Android features through the portals.
+- **It builds apps for your programs.** The APK in the package is a template for the window
+  app. `lindroids export` fills it in with a program's name and icon and signs it on the phone.
+  The resulting app belongs to that program and opens its window. The optional windows app
+  (`lindroids app install`) is built the same way, for programs you run without exporting.
 
 ## What you get
 
