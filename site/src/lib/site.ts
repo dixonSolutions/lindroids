@@ -6,6 +6,10 @@ export const SITE = 'https://dixonsolutions.github.io/lindroids';
 // then changes only this line.
 export const DISCORD = 'https://discord.gg/aWQwxV4wm';
 export const KEY_FPR = 'CF71814EDB63C911B430479C6FFD91C90F43BF7B';
+// Termux: the Linux environment Lindroids runs in (proot distros and Flatpak run inside it).
+export const TERMUX_PLAY = 'https://play.google.com/store/apps/details?id=com.termux';
+export const TERMUX_FDROID = 'https://f-droid.org/packages/com.termux/';
+export const TERMUX_GITHUB = 'https://github.com/termux/termux-app/releases';
 export const INSTALL = `curl -fsSL ${SITE}/install.sh | sh`;
 
 import { resolve } from '$app/paths';

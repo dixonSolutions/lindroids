@@ -11,7 +11,7 @@
 </script>
 
 <svelte:head>
-	<title>Lindroids: Linux apps on Android, each one an app of its own</title>
+	<title>Lindroids: launch and export Linux GUI applications on Android</title>
 	<meta name="description" content={description} />
 	<link rel="icon" href="{base}/media/icon.svg" type="image/svg+xml" />
 	<link rel="apple-touch-icon" href="{base}/media/icon-512.png" />

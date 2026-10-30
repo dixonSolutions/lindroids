@@ -8,7 +8,7 @@
 	import { Separator } from '#lib/components/ui/separator/index.js';
 	import ThemeToggle from '#lib/components/theme-toggle.svelte';
 	import Command from '#lib/components/command.svelte';
-	import { REPO, SITE, DISCORD, KEY_FPR, INSTALL, base } from '#lib/site.js';
+	import { REPO, SITE, DISCORD, KEY_FPR, INSTALL, TERMUX_PLAY, TERMUX_FDROID, TERMUX_GITHUB, base } from '#lib/site.js';
 	import Package from '@lucide/svelte/icons/package';
 	import Boxes from '@lucide/svelte/icons/boxes';
 	import Hammer from '@lucide/svelte/icons/hammer';
@@ -120,20 +120,24 @@ xbps-install -S lindroids`
 </header>
 
 <main class="mx-auto max-w-5xl px-4">
-	<section class="grid items-center gap-10 py-12 md:grid-cols-[1fr_auto] md:py-20">
-		<div class="min-w-0 space-y-6">
-			<img src="{base}/media/icon.svg" alt="Lindroids" class="size-20 rounded-2xl shadow-lg" />
-			<h1 class="text-4xl font-bold tracking-tight text-balance sm:text-5xl">
-				Linux apps on Android, <span class="text-primary">each one an app of its own.</span>
+	<section class="grid items-center gap-8 py-8 md:grid-cols-[1fr_auto] md:py-14">
+		<div class="min-w-0 space-y-5">
+			<h1 class="text-3xl font-bold tracking-tight text-balance sm:text-4xl">
+				Launch and export Linux GUI applications on Android.
 			</h1>
-			<p class="max-w-xl text-lg text-pretty text-muted-foreground">
-				A package for the Linux environments you already use on Android (Termux, proot distros,
-				Flatpak). Their GUI programs open as Android windows, and <code class="font-mono text-foreground">lindroids export</code>
-				turns one into a real Android app, built on the phone. No root, no browser.
+			<p class="max-w-xl text-base text-pretty text-muted-foreground sm:text-lg">
+				Lindroids is a package for the Linux environments you already use on Android (Termux,
+				proot distros, Flatpak). Their GUI programs open as Android windows, and
+				<code class="font-mono text-foreground">lindroids export</code> turns one into a real Android
+				app, built on the phone. No root, no browser.
 			</p>
 			<div class="max-w-xl space-y-2">
-				<Command prompt="~" text={INSTALL} />
-				<p class="text-sm text-muted-foreground">In Termux (F-Droid, GitHub or Google Play), or in a proot distro.</p>
+				<Command text={INSTALL} />
+				<p class="text-sm text-muted-foreground">
+					In Termux (<a class="underline hover:text-foreground" href={TERMUX_FDROID}>F-Droid</a>,
+					<a class="underline hover:text-foreground" href={TERMUX_GITHUB}>GitHub</a> or
+					<a class="underline hover:text-foreground" href={TERMUX_PLAY}>Google Play</a>), or in a proot distro.
+				</p>
 			</div>
 			<div class="flex flex-wrap gap-2">
 				<Button href="#install">Get started</Button>
@@ -154,6 +158,7 @@ xbps-install -S lindroids`
 			></video>
 			<figcaption class="mt-3 text-center text-sm text-muted-foreground">
 				45 seconds on a Galaxy Tab (Android 16)
+				<a class="mt-1 block font-medium text-primary hover:underline" href="#demos">See more demos ↓</a>
 			</figcaption>
 		</figure>
 	</section>
@@ -192,7 +197,7 @@ xbps-install -S lindroids`
 		</div>
 	</section>
 
-	<section class="py-10">
+	<section id="demos" class="scroll-mt-20 py-10">
 		<h2 class="mb-6 text-2xl font-semibold tracking-tight">On a real Android device</h2>
 		<div class="grid grid-cols-3 gap-3 sm:gap-6">
 			{#each shots as s (s.src)}
@@ -216,7 +221,7 @@ xbps-install -S lindroids`
 			package manager, so the usual upgrade keeps it current, and offers to set up Flatpak. The first
 			<code class="font-mono text-foreground">lindroids export</code> asks Android once to allow installs.
 		</p>
-		<Command prompt="~" text={INSTALL} />
+		<Command text={INSTALL} />
 		<h3 class="mt-10 mb-3 font-medium">Or add a repository by hand</h3>
 		<Tabs.Root value="apt" class="min-w-0">
 			<Tabs.List>
@@ -228,7 +233,7 @@ xbps-install -S lindroids`
 			</Tabs.List>
 			{#each Object.entries(repos) as [id, text] (id)}
 				<Tabs.Content value={id} class="min-w-0">
-					<pre class="overflow-x-auto rounded-lg border bg-muted/60 p-4 font-mono text-sm">{text}</pre>
+					<Command {text} />
 				</Tabs.Content>
 			{/each}
 		</Tabs.Root>
