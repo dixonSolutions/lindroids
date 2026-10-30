@@ -1,4 +1,7 @@
-# Packaging and releases
+---
+title: "Packaging and releases"
+description: "How every package and repository is built, signed and published, and what a release contains."
+---
 
 How a Lindroids release is built, signed and published. For users' instructions see
 [INSTALL.md](INSTALL.md).
@@ -6,7 +9,7 @@ How a Lindroids release is built, signed and published. For users' instructions 
 ## What a release contains
 
 Every push to `main` (unless the head commit message contains `[skip ci]`) is a release, built by
-[`.github/workflows/release.yml`](../.github/workflows/release.yml):
+[`.github/workflows/release.yml`](https://github.com/dixonSolutions/lindroids/blob/main/.github/workflows/release.yml):
 
 | Artifact                                        | Where it goes                            |
 | ----------------------------------------------- | ---------------------------------------- |
@@ -61,7 +64,7 @@ test-signed one for the lab, which is never published.
 Xwayland rootless and makes each X11 window its own toplevel, so each one becomes its own window
 on the page. The CLI looks for it at `<dir of lindroids>/../libexec/lindroids/xwayland-satellite`,
 then on `PATH`. Nobody packages it for Termux, Debian or Ubuntu, so
-[`scripts/build-xwayland-satellite.sh`](../scripts/build-xwayland-satellite.sh) builds it from
+[`scripts/build-xwayland-satellite.sh`](https://github.com/dixonSolutions/lindroids/blob/main/scripts/build-xwayland-satellite.sh) builds it from
 the pinned release tarball (version, URL and sha256 at the top of the script), unmodified, with
 default features:
 
@@ -79,9 +82,9 @@ default features:
   `/data/data/com.termux/files/usr/lib` (as Termux's own binaries) and 16 KB-aligned segments.
   Two dependency crates (smithay-client-toolkit, wayland-cursor) do not compile for Android as
   published (they fall back to `shm_open`, which bionic lacks); the Termux build uses them with
-  the small patches in [`third_party/xwayland-satellite/`](../third_party/xwayland-satellite/)
+  the small patches in [`third_party/xwayland-satellite/`](https://github.com/dixonSolutions/lindroids/tree/main/third_party/xwayland-satellite)
   through `--config patch.crates-io...`, so xwayland-satellite's own source stays unchanged.
-  Why each patch exists: [third_party/README.md](../third_party/README.md#patches-for-android).
+  Why each patch exists: [third_party/README.md](https://github.com/dixonSolutions/lindroids/blob/main/third_party/README.md#patches-for-android).
 - **Debian** (`arm64 armhf amd64 i386`): built on bookworm, so it needs glibc 2.34 or newer
   (Debian 12, Ubuntu 22.04 and later) plus `libxcb1`, `libxcb-cursor0` and `xwayland`, which
   the `.deb` *recommends* (the static CLI must still install without them). The host's Rust
@@ -105,11 +108,11 @@ To move to a new xwayland-satellite release: set `SATELLITE_VERSION`, `SATELLITE
 `SATELLITE_SHA256` (`curl -fsSL <tag tarball> | sha256sum`; the script checks the commit in the
 tarball's header), check the crate versions in `ANDROID_CRATE_PATCHES` against the new
 `Cargo.lock` (a patch that no longer applies fails the build), and update the version table in
-[third_party/README.md](../third_party/README.md#xwayland-satellite).
+[third_party/README.md](https://github.com/dixonSolutions/lindroids/blob/main/third_party/README.md#xwayland-satellite).
 
 ## Versioning
 
-[`scripts/version.sh`](../scripts/version.sh) defines the version for every artifact:
+[`scripts/version.sh`](https://github.com/dixonSolutions/lindroids/blob/main/scripts/version.sh) defines the version for every artifact:
 
 - version `<major>.<minor>.<N>`: major.minor from `[workspace.package] version` in `Cargo.toml`,
   N = `git rev-list --count HEAD` (so CI checks out with `fetch-depth: 0`);
@@ -134,7 +137,7 @@ Toolchain: Rust stable with the 8 targets above plus `aarch64-unknown-linux-gnu`
 the host's podman through `distrobox-host-exec`; `LINDROIDS_CONTAINER_ENGINE` overrides). The
 rpm, apk and xbps packages and repositories are made with those distributions' own tools
 (`rpmbuild`, `createrepo_c`, `abuild-tar`, `apk index`, `abuild-sign`, `xbps-create`,
-`xbps-rindex`) in `fedora`, `alpine` and `void` containers ([`packaging/container.sh`](../packaging/container.sh)).
+`xbps-rindex`) in `fedora`, `alpine` and `void` containers ([`packaging/container.sh`](https://github.com/dixonSolutions/lindroids/blob/main/packaging/container.sh)).
 
 ```sh
 # Everything into dist/
@@ -156,7 +159,7 @@ Pieces can be run on their own: `scripts/build-xwayland-satellite.sh`,
 tests/install-repos.sh                 # all distros, or e.g.: tests/install-repos.sh alpine fedora
 ```
 
-[`tests/install-repos.sh`](../tests/install-repos.sh) makes the x86_64 package of every kind from
+[`tests/install-repos.sh`](https://github.com/dixonSolutions/lindroids/blob/main/tests/install-repos.sh) makes the x86_64 package of every kind from
 one static CLI, a repository signed with throwaway GPG and RSA keys, serves it on
 `127.0.0.1:8790`, and runs `curl …/install.sh | sh` twice in containers of Debian, Ubuntu, Kali,
 Arch, Fedora, Rocky 9, openSUSE Tumbleweed and Leap 15.6, Alpine (stable and edge), Chimera, Void
@@ -180,7 +183,7 @@ in Debian, that the satellite's libraries resolve and Xwayland comes with it).
 ## The repositories
 
 Static files on GitHub Pages, built by
-[`packaging/repo/build-repo.sh`](../packaging/repo/build-repo.sh):
+[`packaging/repo/build-repo.sh`](https://github.com/dixonSolutions/lindroids/blob/main/packaging/repo/build-repo.sh):
 
 ```
 dists/termux/{Release,InRelease,Release.gpg}
@@ -198,15 +201,15 @@ lindroids.gpg   lindroids.asc   lindroids.rsa.pub   install.sh   VERSION   .noje
 index.html   _app/   media/   robots.txt          the website (below)
 ```
 
-The website at the same address is [`site/`](../site): SvelteKit with adapter-static,
+The website at the same address is [`site/`](https://github.com/dixonSolutions/lindroids/tree/main/site): SvelteKit with adapter-static,
 Tailwind and shadcn-svelte, theme following the device (mode-watcher), showing `media/` (copied
-by `site/copy-media.js`) and the latest `VERSION`. [`site.yml`](../.github/workflows/site.yml)
+by `site/copy-media.js`) and the latest `VERSION`. [`site.yml`](https://github.com/dixonSolutions/lindroids/blob/main/.github/workflows/site.yml)
 builds it only when `site/`, `media/` or the workflow change, and pull requests only build it.
 It shares the release's concurrency group, starts from the published branch and replaces only
 the website's files; the release keeps them, and `build-repo.sh` writes a plain `index.html`
 only into a repository that has none. Locally: `cd site && npm ci && npm run dev`.
 
-- **RPM** ([`packaging/build-rpm.sh`](../packaging/build-rpm.sh), rpmbuild in `fedora`): one
+- **RPM** ([`packaging/build-rpm.sh`](https://github.com/dixonSolutions/lindroids/blob/main/packaging/build-rpm.sh), rpmbuild in `fedora`): one
   repository for dnf, yum and zypper, every architecture in one `repodata/` (createrepo_c, gzip
   so older zypper and yum read it). v4 packages with an xz payload, `AutoReqProv: no` (the CLI is
   static), and the satellite's needs as Recommends by file and soname (`/usr/bin/Xwayland`,
@@ -216,13 +219,13 @@ only into a repository that has none. Locally: `cd site && npm ci && npm run dev
   (`gpgcheck=0`: the packages themselves are unsigned; the signed metadata covers them). yum 3
   (RHEL/CentOS 7, Amazon Linux 2) has GnuPG 2.0, which cannot check ed25519 signatures, so
   install.sh uses the static tarball there.
-- **apk** ([`packaging/build-apk.sh`](../packaging/build-apk.sh), abuild-tar in `alpine`): v2
+- **apk** ([`packaging/build-apk.sh`](https://github.com/dixonSolutions/lindroids/blob/main/packaging/build-apk.sh), abuild-tar in `alpine`): v2
   packages (apk-tools 2 and 3, Alpine, postmarketOS, Adélie, Chimera), made as abuild makes
   them; static CLI only. `APKINDEX.tar.gz` per architecture is signed with the RSA key by
   `abuild-sign` (`.SIGN.RSA.lindroids.rsa.pub`, so clients need `/etc/apk/keys/lindroids.rsa.pub`)
   and checked with `apk verify` against `lindroids.rsa.pub` alone. Packages are unsigned: apk
   checks them against the checksum in the signed index.
-- **xbps** ([`packaging/build-xbps.sh`](../packaging/build-xbps.sh), xbps-create in `void`): the
+- **xbps** ([`packaging/build-xbps.sh`](https://github.com/dixonSolutions/lindroids/blob/main/packaging/build-xbps.sh), xbps-create in `void`): the
   glibc architectures carry the satellite, the `-musl` ones not. `xbps-rindex --sign` signs every
   `<arch>-repodata`, `--sign-pkg` every package (`.sig2`), with the same RSA key.
 - Without the RSA key (`LINDROIDS_APK_RSA_KEY`) the apk and xbps repositories are left as they
@@ -230,7 +233,7 @@ only into a repository that has none. Locally: `cd site && npm ci && npm run dev
   not published.
 
 - The pacman packages are made from the `.deb`s by
-  [`packaging/build-pacman.sh`](../packaging/build-pacman.sh) (same files; `.PKGINFO` and `.MTREE`
+  [`packaging/build-pacman.sh`](https://github.com/dixonSolutions/lindroids/blob/main/packaging/build-pacman.sh) (same files; `.PKGINFO` and `.MTREE`
   as makepkg writes them; the Termux ones keep the `data/data/com.termux/files/usr` paths, as
   Termux's own pacman packages do). `build-repo.sh` signs every package and the database with the
   same key (binary detached signatures; `%PGPSIG%` in the database) and keeps the newest 3 per
@@ -264,7 +267,7 @@ APT key: `Lindroids APT repository <lindroids@users.noreply.github.com>`, finger
 A revocation certificate is in `~/.local/share/lindroids/gnupg/openpgp-revocs.d/`. Back up
 `~/.local/share/lindroids/gnupg` offline: losing the key means every user has to fetch a new key.
 
-[`scripts/set-github-secrets.sh`](../scripts/set-github-secrets.sh) sets both secrets with
+[`scripts/set-github-secrets.sh`](https://github.com/dixonSolutions/lindroids/blob/main/scripts/set-github-secrets.sh) sets both secrets with
 `gh secret set` (nothing is printed). The first time, it generates the RSA key and writes
 `packaging/repo/lindroids.rsa.pub`, which must be committed: `build-repo.sh` refuses an RSA key
 that does not match it, and publishes it as `lindroids.rsa.pub`. Back up `lindroids.rsa` with the
@@ -286,7 +289,7 @@ asks to trust it).
 
 ### Publishing without the secret
 
-[`scripts/publish-local.sh`](../scripts/publish-local.sh) makes the same release from the machine
+[`scripts/publish-local.sh`](https://github.com/dixonSolutions/lindroids/blob/main/scripts/publish-local.sh) makes the same release from the machine
 that holds the key: it builds and signs everything locally, creates the GitHub release, pushes
 `gh-pages` and turns Pages on. The key stays on that machine. Without the secret the release
 workflow still builds and tests every push, and says it did not publish.

@@ -1,0 +1,73 @@
+---
+title: "Lindroids"
+sidebarTitle: "Introduction"
+description: "Linux apps on Android, each one an app of its own. No root, nothing to download."
+---
+
+Lindroids is a package for the Linux environments you already use on Android: Termux, proot
+distros and Flatpak. It opens their GUI programs as Android windows, and `lindroids export` turns
+a program into a real Android app, with its name and icon in the app list and Recents, built on
+the phone in milliseconds.
+
+<Frame caption="45 seconds on a Galaxy Tab (Android 16): lindroids run opens GNOME Calculator, lindroids export builds it an app of its own, which starts from its icon.">
+  <video
+    autoPlay
+    muted
+    loop
+    playsInline
+    controls
+    style={{ maxWidth: '300px', width: '100%', margin: '0 auto', display: 'block' }}
+    src="/media/demos/export-and-run.mp4"
+  />
+</Frame>
+
+```sh
+curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh | sh   # in Termux
+lindroids run org.gnome.Calculator         # a window of its own, now
+lindroids export org.gnome.Calculator      # an app of its own: tap Install, then its icon
+```
+
+## What it is, and is not
+
+- **A package, not an app.** You install Lindroids *inside* your container apps: with `pkg` in
+  Termux, or with the package manager of a proot distro. There is nothing to install on Android
+  first.
+- **Not a container app.** Termux, proot-distro and Flatpak keep running your programs, with their
+  files and packages. Lindroids gives those programs windows on Android, and Android's features
+  through the desktop portals.
+- **It builds apps for your programs.** `lindroids export` fills in a template with a program's
+  name and icon and signs it on the phone: no Android SDK, no Java.
+
+## What you get
+
+<CardGroup cols={2}>
+  <Card title="An app per program" icon="mobile" href="/docs/APPS">
+    About 180 KB, built on the phone. Its icon starts the program, even when Termux is not
+    running, and Recents shows its own icon.
+  </Card>
+  <Card title="Any Linux program with a window" icon="terminal" href="/docs/INSTALL">
+    Termux packages, programs in a proot distro, Flatpaks from Flathub, X11 programs.
+  </Card>
+  <Card title="Android underneath" icon="palette">
+    Dark mode and accent colour, Android's file picker, notifications, the clipboard, sound and
+    the microphone, touch, pen and keyboards.
+  </Card>
+  <Card title="How it works" icon="diagram-project" href="/docs/ARCHITECTURE">
+    A Wayland compositor and PulseAudio server in one Rust binary, drawing each window over an
+    authenticated loopback link.
+  </Card>
+</CardGroup>
+
+## Next
+
+<CardGroup cols={3}>
+  <Card title="Install" icon="download" href="/docs/INSTALL">
+    Termux, proot distros and desktops.
+  </Card>
+  <Card title="FAQ" icon="circle-question" href="/docs/faq">
+    Root, Android versions, Termux:X11, security, GPU.
+  </Card>
+  <Card title="Contribute" icon="code-branch" href="/docs/DEVELOPMENT">
+    Build it, test a dev build, send a pull request.
+  </Card>
+</CardGroup>

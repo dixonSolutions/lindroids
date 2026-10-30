@@ -1,4 +1,7 @@
-# Testing
+---
+title: "Testing"
+description: "Unit tests, the server against real clients, the Android lab and the package tests."
+---
 
 Three layers, from fastest to closest to a phone.
 
@@ -50,7 +53,7 @@ installs the CLI, has `lindroids run foot` open the page in the device's browser
 that the page relinks after a server restart, then exports foot, adds its home screen shortcut,
 stops Termux and taps it. `lab/test-window-app.sh` installs the default window app, runs foot in
 it (`config browser app`), checks one full-screen task, Back, the program's end removing it, the
-offline page, and the bridge over WebView DevTools. Results: [lab/README.md](../lab/README.md).
+offline page, and the bridge over WebView DevTools. Results: [lab/README.md](https://github.com/dixonSolutions/lindroids/blob/main/lab/README.md).
 
 ## 4. Packages
 
@@ -67,5 +70,5 @@ Screens are recorded without a hardware encoder (the VMs have none) by `lab/reco
 pulls raw `screencap` frames over adb and encodes an MP4 and an animated WebP for the README.
 A server started with `LINDROIDS_STATS=1` puts the frame rate and drawing time in a corner of
 each window and the page's layout in `server.log`; pages also log their errors there.
-[lab/CHECKLIST.md](../lab/CHECKLIST.md) lists what "fully working" means and where each item
+[lab/CHECKLIST.md](https://github.com/dixonSolutions/lindroids/blob/main/lab/CHECKLIST.md) lists what "fully working" means and where each item
 stands.

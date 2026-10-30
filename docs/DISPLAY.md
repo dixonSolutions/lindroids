@@ -1,4 +1,8 @@
-# Windows, the relay and runs
+---
+title: "Windows, the relay and runs"
+sidebarTitle: "Windows and security"
+description: "How windows reach Android, how the link is secured, and everything tried along the way."
+---
 
 How a Linux program started in Termux (or a proot distro, or a Flatpak) gets a window on Android,
 how that window and the program find and trust each other, and how they live and die together.
@@ -10,7 +14,7 @@ Claims marked *(tested)* were checked on the lab VM b16 on 2026-10-27:
 
 - BlissOS 16 (Android 13), with Termux 0.118.3 from F-Droid.
 - Browsers: Cromite, Firefox 158 and Jellyfish.
-- The probes and raw logs are in [`lab/browser-window/`](../lab/browser-window/).
+- The probes and raw logs are in [`lab/browser-window/`](https://github.com/dixonSolutions/lindroids/tree/main/lab/browser-window).
 - `lab/test-lindroids.sh b16` passes with SELinux permissive and enforcing (`lab/README.md`).
 
 ## What is wanted
@@ -408,7 +412,7 @@ shared page keeps "newest wins".
 its place or a window it hides, still runs, and its window says so):
 
 1. The supervisor exits with its status.
-2. The page shows the program's icon and "<name> closed. Press Back to close this window."
+2. The page shows the program's icon and "`<name>` closed. Press Back to close this window."
 3. It also calls `window.close()` after 1.5 s, in case a splash window gave way to the real one.
    Browsers that allow it close the window; Firefox's Custom Tabs ignore it.
 
@@ -448,7 +452,7 @@ notification and closed.
 
 **The page links again by itself** when its link is lost while its program runs, also unseen in
 the background *(tested: a dropped link, a reload, both relinked to the running Calculator)*. It
-says "<name> closed" only when the program has ended: the server said so (`RunEnded`), it refused
+says "`<name>` closed" only when the program has ended: the server said so (`RunEnded`), it refused
 the window's ticket on the way back (a run's ticket goes with its process), or the server cannot
 be reached (the program's display went with it). Before, a window took any lost link for the
 end, and said so while its program still ran in Termux *(reported: Chrome on a Samsung phone,
@@ -571,7 +575,7 @@ These have not been tried yet.
   services) or Samsung Internet (on Samsung phones) install the program as a WebAPK, whose task
   Android shows with the program's icon on every launcher, Samsung's too. Only those two browsers
   can, so it is never the default and errors where neither is installed:
-  [WEBAPK.md](WEBAPK.md). Not yet tried on a phone with Chrome.
+  [WEBAPK.md](https://github.com/dixonSolutions/lindroids/blob/main/docs/WEBAPK.md). Not yet tried on a phone with Chrome.
 - **Closing Firefox's window from outside.** Its source offers no way: Gecko does ask to close
   a one-entry window, but only normal tabs act on it; `ExternalAppBrowserActivity` ends itself
   only when its tab is gone, and only its ✕, "Open in Firefox" or its own end remove that tab

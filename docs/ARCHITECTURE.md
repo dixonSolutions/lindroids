@@ -1,4 +1,7 @@
-# Architecture
+---
+title: "Architecture"
+description: "The parts of Lindroids, why the server is a plain Linux program, and why the display is the browser."
+---
 
 Lindroids has three parts, and only the first is installed:
 
@@ -184,7 +187,7 @@ window, and so its own tab in the page, exactly like a Wayland program's.
 Linux programs keep asking what they ask on any desktop, and Android answers. The server starts
 the environment's own `dbus-daemon` as the session's bus (`<runtime>/bus`) and registers, with
 zbus, the XDG desktop portal (`org.freedesktop.portal.Desktop`) and `org.freedesktop.Notifications`
-on it ([portal.rs](../crates/lindroids-server/src/portal.rs)). The page answers over the link,
+on it ([portal.rs](https://github.com/dixonSolutions/lindroids/blob/main/crates/lindroids-server/src/portal.rs)). The page answers over the link,
 with what a browser knows:
 
 | Interface | The page |
@@ -221,7 +224,7 @@ xdg-desktop-portal's (Electron also takes `--xdg-portal-required-version=4`).
 GTK 3 asks the portal only for a GtkFileChooserNative; programs that build a
 GtkFileChooserDialog (Mousepad, Xournal++, GIMP, Inkscape, LibreOffice...) showed GTK's own
 "Open File" window on the Linux side. `liblindroids-gtk.so`
-([third_party/gtkpicker](../third_party/gtkpicker/lindroids-gtk.c)), which every run gets in
+([third_party/gtkpicker](https://github.com/dixonSolutions/lindroids/blob/main/third_party/gtkpicker/lindroids-gtk.c)), which every run gets in
 `LD_PRELOAD` (written to `<runtime>/lib`), turns such a dialog into a native one with the same
 action, title, filters, multiple selection and file name, and hands its answer back as the
 dialog's (`gtk_dialog_run`'s result or its `response`, and `gtk_file_chooser_get_filename(s)` and
@@ -317,7 +320,7 @@ and so can several instances of one app.
   recently used first (a window focused, its page come on screen), and opens that one's window
   again; it starts a program only if none runs. Another window: `lindroids launch --new <id>`,
   `lindroids run --new <command>`, a second icon from `lindroids export --new-window <id>`
-  ("<name> (new window)"), or the ＋ in a window's tools (`ToServer::NewInstance`: the server runs
+  ("`<name>` (new window)"), or the ＋ in a window's tools (`ToServer::NewInstance`: the server runs
   what the run registered as its way to start one more). `lindroids instances` lists what runs;
   `lindroids show <pid|app>` brings one back. Long-pressing the icon is Termux's (the shortcut is
   Termux's), so it offers nothing of Lindroids'.
@@ -372,5 +375,5 @@ fixes both for `--distro` and for the CLI running inside a distro (UserLAnd, And
 - **alarm() on x86 Android.** Android's seccomp filter for apps on x86/x86_64 refuses the legacy
   `alarm` syscall, which glibc calls directly there (ARM64 has no such syscall, so phones are not
   affected): xterm, for one, fails. `liblindroids-compat.so`, a libc-free shim built from
-  [third_party/compat](../third_party/compat/lindroids-compat.c) and embedded in the CLI, is
+  [third_party/compat](https://github.com/dixonSolutions/lindroids/blob/main/third_party/compat/lindroids-compat.c) and embedded in the CLI, is
   preloaded into glibc programs on x86 Android and implements `alarm()` with `setitimer`.

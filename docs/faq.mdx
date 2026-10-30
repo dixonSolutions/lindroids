@@ -1,0 +1,69 @@
+---
+title: "Frequently asked questions"
+sidebarTitle: "FAQ"
+description: "Root, Android versions, how Lindroids differs from Termux:X11, security, the GPU, and more."
+---
+
+<AccordionGroup>
+  <Accordion title="Do I need root?">
+    No. Lindroids runs as an ordinary package inside Termux or a proot distro, with Termux's own
+    permissions. Flatpak programs run without root too: `install.sh` sets Flatpak up in Termux.
+  </Accordion>
+
+  <Accordion title="Which Android versions work?">
+    Android 7 (API 24) and later. It is tested on Android 7 to 13 in QEMU lab images, and on a
+    Samsung Galaxy Tab with Android 16.
+  </Accordion>
+
+  <Accordion title="Which Termux?">
+    Termux from F-Droid, from GitHub, or from Google Play. The Play build cannot open Android's
+    installer itself, so `lindroids export` saves the app to Download and opens the file manager
+    there: tap it, then *Install*.
+  </Accordion>
+
+  <Accordion title="How is this different from Termux:X11?">
+    Termux:X11 is an Android app of its own: it starts a Java process inside Termux with
+    `app_process` and hands surfaces over Binder with hidden Android APIs. That does not work
+    everywhere: on x86 images with an ARM translation layer (BlissOS, Android-x86, many
+    Chromebooks), `app_process` loads the translation layer, which the app sandbox kills.
+
+    Lindroids' server is a plain Linux program that touches no Android API. It is a Wayland
+    compositor (X11 programs run through Xwayland), and each program gets a window of its own:
+    an exported app with its own name and icon in Recents, or a browser window of its own. More in
+    [Architecture](/docs/ARCHITECTURE).
+  </Accordion>
+
+  <Accordion title="Can other apps on the phone see my windows or hear the sound?">
+    No. Windows, sound and input travel over one loopback port, and every connection proves who it
+    is first: the page holds a key it cannot export (P-256, paired once), the server proves itself
+    with a key of its own, and each window needs a ticket for its run. Another app that connects
+    is refused; one that takes the port while the server is down is rejected by the page, which
+    pinned the server's key. The Wayland, X11 and PulseAudio sockets are Unix sockets in Termux's
+    private folder. The threat model, and the tests behind it, are in
+    [Windows and security](/docs/DISPLAY#the-bridge-and-its-security).
+  </Accordion>
+
+  <Accordion title="Is there GPU acceleration?">
+    Not yet. Windows are composited on the CPU and only the parts that changed are sent, in 64×64
+    tiles, compressed; the page draws them into a canvas at the screen's resolution.
+  </Accordion>
+
+  <Accordion title="Do I need Termux open for an exported app to work?">
+    No. An exported app's icon starts its program through Termux. When Termux is not running, the
+    app shows its own page, "`<name>` runs in Termux, which is not running now", whose *Start*
+    hands the program to Termux; after that the app opens it by itself. More in
+    [A program's own app](/docs/APPS).
+  </Accordion>
+
+  <Accordion title="Which programs work?">
+    Any Linux program with a window: Termux packages, programs in a proot distro (Debian, Ubuntu,
+    Arch, Fedora and others), Flatpaks from Flathub, and X11 programs (`lindroids setup x11`).
+  </Accordion>
+
+  <Accordion title="Where do I report a problem or ask for help?">
+    On [Discord](https://discord.gg/gBbW9mNr9P), or in a
+    [GitHub issue](https://github.com/dixonSolutions/lindroids/issues). Include `lindroids
+    version`, your device and Android version, and which Termux. `lindroids doctor` finds the
+    common problems.
+  </Accordion>
+</AccordionGroup>

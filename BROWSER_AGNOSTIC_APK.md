@@ -1,4 +1,7 @@
-# A window of its own, without a browser: the Lindroids window app
+---
+title: "The window app"
+description: "A window of its own without a browser: the Lindroids window app, its design and its tests."
+---
 
 *Design, 2026-10-29. **Now the default export is B, built in Rust on the phone**: every exported
 program gets an app of its own (`org.lindroids.app.<id>`), made from a template in milliseconds
@@ -10,7 +13,7 @@ as it was decided; where it says "A is the default", read B.*
 
 A Linux program's window used to be a browser's: a Custom Tab per run
 ([docs/DISPLAY.md](docs/DISPLAY.md)), or a WebAPK that Chrome or Samsung Internet makes
-([docs/WEBAPK.md](docs/WEBAPK.md)). Now a small Android app of ours (`org.lindroids`, one APK) is
+([docs/WEBAPK.md](https://github.com/dixonSolutions/lindroids/blob/main/docs/WEBAPK.md)). Now a small Android app of ours (`org.lindroids`, one APK) is
 the default: it shows the program's page in Android's own WebView, with no browser at all, and the
 browser paths stay for `config browser default` or `webapk`.
 
@@ -52,8 +55,8 @@ code of the program's. The APK installs the app as `org.lindroids`.
 - **Back** is handed to the page (the same message the page's `CloseWatcher` handles now); the
   window closes only when the program ends, or the user closes the task from Recents.
 - **The program ends: the task goes** (`finishAndRemoveTask`), Recents included.
-- **Termux not running:** the app shows its own page, "<name> runs in Termux, which is not running
-  now", and *Start <name>*, which hands the launch URL to Termux as the offline page does now
+- **Termux not running:** the app shows its own page, "`<name>` runs in Termux, which is not running
+  now", and *Start `<name>`*, which hands the launch URL to Termux as the offline page does now
   (`app-offline.js`, with an explicit `SEND` to `com.termux` instead of the share sheet).
 - **A small JavaScript bridge**, offered only to `*.localhost` pages, for what WebView lacks:
 
@@ -117,9 +120,9 @@ is no separate bundling step. `lindroids run` then opens `org.lindroids/WindowAc
 same one the server serves (`http://<label>.localhost:<port>/?window&run=<pid>`), so runs, tickets
 and launches are unchanged. With the app not installed, an explicit `config browser app` fails with the install command;
 with the default setting, a run falls back to the browser until an export installs it. The source is
-[`packaging/webview-app`](packaging/webview-app), built by
-[`packaging/build-webview-apk.sh`](packaging/build-webview-apk.sh); the CLI side is
-[`crates/lindroids-cli/src/app.rs`](crates/lindroids-cli/src/app.rs).
+[`packaging/webview-app`](https://github.com/dixonSolutions/lindroids/tree/main/packaging/webview-app), built by
+[`packaging/build-webview-apk.sh`](https://github.com/dixonSolutions/lindroids/blob/main/packaging/build-webview-apk.sh); the CLI side is
+[`crates/lindroids-cli/src/app.rs`](https://github.com/dixonSolutions/lindroids/blob/main/crates/lindroids-cli/src/app.rs).
 
 The bridge (`window.lindroids`, only on `*.localhost` pages) provides Android's file pickers
 (open, save, folder), documents written back in chunks, downloads (`CREATE_DOCUMENT`), the
@@ -133,7 +136,7 @@ dispatched to the page as `lindroids:back`; the program's end calls the bridge's
 On b16 (Android 13, no Chrome, microG), `lab/test-window-app.sh b16` passed on 2026-10-29:
 `config browser app` made foot open in `org.lindroids/.WindowActivity` as one full-screen task
 (status bar `isVisible=false`); Back kept the task resumed; killing foot finished and removed it;
-with the server stopped, the app showed its own "<name> runs in Termux, which is not running now"
+with the server stopped, the app showed its own "`<name>` runs in Termux, which is not running now"
 page rather than the WebView error; the DevTools check found the bridge and round-tripped the
 clipboard. By hand: the open picker returned a picked file, the save picker wrote a document
 (`/sdcard/lindroids-save.txt`), and the APK is about 160 KB. The VM has no Chrome or Play services, which

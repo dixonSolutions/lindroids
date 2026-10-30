@@ -1,0 +1,64 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Lindroids",
+  "description": "Linux GUI programs on Android, from Termux, proot distros and Flatpak: windows and apps of their own, with no root.",
+  "colors": {
+    "primary": "#009342",
+    "light": "#72eaa2",
+    "dark": "#009342"
+  },
+  "favicon": "/media/icon.svg",
+  "navbar": {
+    "links": [
+      {
+        "label": "Discord",
+        "href": "https://discord.gg/gBbW9mNr9P"
+      }
+    ],
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/dixonSolutions/lindroids"
+    }
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get started",
+        "pages": [
+          "docs/introduction",
+          "docs/faq"
+        ]
+      },
+      {
+        "group": "Guides",
+        "pages": [
+          "docs/INSTALL",
+          "docs/APPS"
+        ]
+      },
+      {
+        "group": "How it works",
+        "pages": [
+          "docs/ARCHITECTURE",
+          "docs/DISPLAY",
+          "docs/PACKAGING",
+          "BROWSER_AGNOSTIC_APK"
+        ]
+      },
+      {
+        "group": "Contribute",
+        "pages": [
+          "docs/DEVELOPMENT",
+          "docs/TESTING"
+        ]
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/dixonSolutions/lindroids",
+      "discord": "https://discord.gg/gBbW9mNr9P"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+# The docs site (Mintlify, docs.json) publishes only these; everything else in the repository is
+# source, not documentation.
+/*
+!/docs.json
+!/docs/
+!/media/
+!/BROWSER_AGNOSTIC_APK.md
+# Until its own work is finished (it is claimed by another change), out of the site
+/docs/WEBAPK.md

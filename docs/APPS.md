@@ -1,4 +1,8 @@
-# A program's own app
+---
+title: "A program's own app"
+sidebarTitle: "Exported apps"
+description: "`lindroids export` builds a program its own Android app on the phone, in Rust, in milliseconds."
+---
 
 `lindroids export <program>` gives the program **an Android app of its own**: its name and icon in
 the app list, on the home screen and in Recents, and a window that is Android's own WebView, full

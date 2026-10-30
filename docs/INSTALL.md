@@ -1,4 +1,7 @@
-# Installing Lindroids
+---
+title: "Install"
+description: "Install Lindroids in Termux, a proot distro or on a Linux desktop, and keep it up to date."
+---
 
 Lindroids is one Linux package, the **`lindroids` CLI**, which is also the server and runs
 wherever your Linux programs run: Termux, a Linux distribution under proot (proot-distro,
