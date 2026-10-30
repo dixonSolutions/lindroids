@@ -582,7 +582,7 @@ function newWindow(m) {
   tab.onclick = () => activate(m.win);
   tab.querySelector('button').onclick = (e) => { e.stopPropagation(); send({ t: 'close', win: m.win }); };
   tabsEl.appendChild(tab);
-  const w = { win: m.win, title: m.title, appId: m.app_id, icon: m.icon_png_b64, canvas, ctx: canvas.getContext('2d'), tab, pendingAck: false, size: [0, 0] };
+  const w = { win: m.win, title: m.title, appId: m.app_id, icon: m.icon_png_b64, canvas, ctx: canvas.getContext('2d', { alpha: false, desynchronized: true }), tab, pendingAck: false, size: [0, 0] };
   windows.set(m.win, w);
   everShown = true;
   updateChrome();
@@ -718,6 +718,8 @@ function enableStats() {
   }, 1000);
 }
 
+let tileBuf = new Uint8ClampedArray(0);
+
 function tiles(m, payload) {
   const w = windows.get(m.win);
   if (!w) return send({ t: 'frame_done', win: m.win });
@@ -727,7 +729,10 @@ function tiles(m, payload) {
     w.canvas.height = m.height;
   }
   const size = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
-  const raw = new Uint8ClampedArray(size);
+  // One buffer for every frame: a new one each time (megabytes for a large window) made the
+  // garbage collector stop the page mid-drag.
+  if (tileBuf.length < size) tileBuf = new Uint8ClampedArray(Math.max(size, tileBuf.length * 2));
+  const raw = tileBuf;
   lz4(payload.subarray(4), raw);
   let off = 0;
   for (const [x, y, rw, rh] of m.rects) {
@@ -740,17 +745,13 @@ function tiles(m, payload) {
   ackLater(w);
 }
 
-/// Acknowledge a frame once the screen can take the next one. A window that is not shown holds
-/// its acknowledgement, so its program stops drawing until it is.
+/// Acknowledge a frame as soon as it is drawn, so the program starts the next one while this one
+/// goes to the screen (waiting for the next animation frame first cost up to a frame each time).
+/// A window that is not shown holds its acknowledgement, so its program stops drawing until it is.
 function ackLater(w) {
-  if (!w.pendingAck || w.win !== active || document.hidden || w.ackQueued) return;
-  w.ackQueued = true;
-  requestAnimationFrame(() => {
-    w.ackQueued = false;
-    if (!w.pendingAck || !windows.has(w.win)) return;
-    w.pendingAck = false;
-    send({ t: 'frame_done', win: w.win });
-  });
+  if (!w.pendingAck || w.win !== active || document.hidden) return;
+  w.pendingAck = false;
+  send({ t: 'frame_done', win: w.win });
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -963,10 +964,14 @@ function showKeyboard() {
   if (document.activeElement === ime) return;
   imeReset();
   ime.focus({ preventScroll: true });
+  // The window app: Android shows its soft keyboard only for a tap; this came from the program.
+  if (NATIVE && NATIVE.keyboard) NATIVE.keyboard(true);
 }
 
 function hideKeyboard() {
-  if (document.activeElement === ime) ime.blur();
+  if (document.activeElement !== ime) return;
+  ime.blur();
+  if (NATIVE && NATIVE.keyboard) NATIVE.keyboard(false);
 }
 
 ime.addEventListener('compositionstart', () => { composing = true; });

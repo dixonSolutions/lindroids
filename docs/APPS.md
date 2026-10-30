@@ -183,6 +183,25 @@ The demo (`media/demos/export-and-run.mp4`, 45 s) was recorded on the tablet wit
 org.gnome.Calculator` (built in 28 ms), the installer, the icon with Lindroids not running, and
 Recents. File names in My Files and other apps' Recents cards are blurred.
 
+## Touch, keyboard and speed (fourth round, lab VM)
+
+Reported from the tablet: the app flashed blue on taps and froze; there was no way to type.
+Tested on lab VM b15 (Android 12L, x86_64, foot exported, `LINDROIDS_STATS=1`), since the tablet
+was away:
+
+| What | Before | After |
+| --- | --- | --- |
+| Tap highlight | WebView's default (a blue box on the tapped element) | `-webkit-tap-highlight-color: transparent`, no focus highlight on the WebView (`setDefaultFocusHighlightEnabled(false)`), no long-press selection or callout, no overscroll glow |
+| Soft keyboard | opened only by a tap in the hidden tools bar | opens when the program focuses a text field (the page asks the app: `lindroids.keyboard(true)`, `InputMethodManager.showSoftInput`), closes with it |
+| Window and keyboard | adjustResize; nothing on Android 15+ edge to edge, where the keyboard covers the bottom | the window shrinks by the keyboard's height (`WindowInsets.Type.ime()`, Android 11+); checked: foot's prompt stays above the keyboard and the window grows back when it closes |
+| Full-screen redraw (foot, `base64 /dev/urandom`, 1280x800) | ~30 fps | 40-45 fps: frames acknowledged once drawn instead of on the next animation frame; one decode buffer reused instead of a new one per frame (garbage collection pauses mid-drag); canvas without alpha, low latency (`desynchronized`) |
+| Drawing a frame in the page | 6-7 ms | unchanged (LZ4 in JS + `putImageData`) |
+
+Typing on the soft keyboard (LatinIME) and on a hardware keyboard reaches foot, fast taps
+included. Open: twice, the first character typed right after the app started was lost
+("base64" arrived as "ase64"); not reproduced after, with the page's events traced over
+DevTools (the page had the character; the loss is on the server or program side).
+
 ## What Android allows, and what we assume
 
 Checked on the tablet unless marked *assumed*:

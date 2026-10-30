@@ -8,7 +8,10 @@
 <link rel="icon" href="/icon.svg">
 <style>
   :root { color-scheme: dark; --bar: #0F1720; --fg: #E8EEF4; --dim: #9AA7B4; --accent: #3DDC84; }
-  * { box-sizing: border-box; }
+  /* No tap highlight (Android's WebView and Chrome flash a blue box on a tapped element), no
+     text selection or callout on a long press: touches are the program's. */
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  #stage, #stage canvas { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
   html, body { margin: 0; height: 100%; background: #000; color: var(--fg); font: 14px system-ui, sans-serif; overflow: hidden; overscroll-behavior: none; }
   body { display: flex; flex-direction: column; }
   #bar { flex: none; display: flex; align-items: stretch; height: 36px; background: var(--bar); user-select: none; -webkit-user-select: none; }

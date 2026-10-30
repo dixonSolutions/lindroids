@@ -20,6 +20,8 @@ import android.provider.OpenableColumns;
 import android.util.Base64;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
+import android.view.inputmethod.InputMethodManager;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.webkit.DownloadListener;
@@ -130,6 +132,19 @@ public class WindowActivity extends Activity {
         root.addView(webView);
         setContentView(root);
         makeImmersive();
+        keepClearOfKeyboard(root);
+        // Taps and drags are the program's: no focus highlight (the blue flash), no text selection
+        // or menu on a long press, no overscroll glow, and the renderer kept at full priority.
+        webView.setLongClickable(false);
+        webView.setOnLongClickListener(v -> true);
+        webView.setHapticFeedbackEnabled(false);
+        webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        webView.setVerticalScrollBarEnabled(false);
+        webView.setHorizontalScrollBarEnabled(false);
+        if (Build.VERSION.SDK_INT >= 26) {
+            webView.setDefaultFocusHighlightEnabled(false);
+            webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+        }
 
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
@@ -268,6 +283,34 @@ public class WindowActivity extends Activity {
                             | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                             | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                             | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        }
+    }
+
+    /**
+     * The soft keyboard takes the bottom of the window, and the program's window shrinks above it.
+     * The window is drawn under the system bars (immersive), where Android does not resize it for
+     * the keyboard (adjustResize: nothing on Android 15+ edge to edge, nothing with the decor not
+     * fitting system windows): the keyboard's height comes off the bottom here instead.
+     */
+    private void keepClearOfKeyboard(View root) {
+        if (Build.VERSION.SDK_INT < 30) return;
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            int bottom = insets.getInsets(WindowInsets.Type.ime()).bottom;
+            if (v.getPaddingBottom() != bottom) v.setPadding(0, 0, 0, bottom);
+            return insets;
+        });
+    }
+
+    private void softKeyboard(boolean show) {
+        if (webView == null) return;
+        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm == null) return;
+        if (show) {
+            webView.requestFocus();
+            imm.showSoftInput(webView, 0);
+        } else {
+            imm.hideSoftInputFromWindow(webView.getWindowToken(), 0);
         }
     }
 
@@ -834,6 +877,15 @@ public class WindowActivity extends Activity {
             } catch (Throwable t) {
                 return "error: " + t.getMessage();
             }
+        }
+
+        /**
+         * The page focused (or left) its text field for the program's text field: Android shows
+         * the soft keyboard only for a tap, and this came from the program.
+         */
+        @JavascriptInterface
+        public void keyboard(boolean show) {
+            runOnUiThread(() -> softKeyboard(show));
         }
 
         @JavascriptInterface
