@@ -17,7 +17,7 @@
 	import Layers from '@lucide/svelte/icons/layers';
 	import Sparkles from '@lucide/svelte/icons/sparkles';
 	import Github from '#lib/components/github-icon.svelte';
-	import MessageCircle from '@lucide/svelte/icons/message-circle';
+	import Discord from '#lib/components/discord-icon.svelte';
 
 	// The release workflow writes VERSION next to the repositories; absent in `npm run dev`.
 	let version = $state('');
@@ -112,7 +112,7 @@ xbps-install -S lindroids`
 		<nav class="ml-auto flex items-center gap-1">
 			<Button variant="ghost" size="sm" href="#install" class="hidden sm:inline-flex">Install</Button>
 			<Button variant="ghost" size="sm" href="{REPO}#readme" class="hidden sm:inline-flex">Docs</Button>
-			<Button variant="ghost" size="icon" href={DISCORD} aria-label="Discord"><MessageCircle /></Button>
+			<Button variant="ghost" size="icon" href={DISCORD} aria-label="Discord" title="Discord"><Discord /></Button>
 			<Button variant="ghost" size="icon" href={REPO} aria-label="GitHub"><Github /></Button>
 			<ThemeToggle />
 		</nav>
@@ -138,6 +138,7 @@ xbps-install -S lindroids`
 			<div class="flex flex-wrap gap-2">
 				<Button href="#install">Get started</Button>
 				<Button variant="outline" href={REPO}><Github /> GitHub</Button>
+				<Button variant="outline" href={DISCORD}><Discord /> Discord</Button>
 			</div>
 		</div>
 		<figure class="mx-auto w-64 md:w-72">
@@ -237,6 +238,22 @@ xbps-install -S lindroids`
 			<code class="font-mono break-all">{KEY_FPR}</code>; apk and xbps:
 			<a class="underline" href="{base}/lindroids.rsa.pub">lindroids.rsa.pub</a>.
 		</p>
+	</section>
+
+	<section class="py-10">
+		<Card.Root class="items-center gap-4 text-center sm:flex-row sm:text-left">
+			<Card.Header class="flex-1">
+				<Card.Title class="text-xl">Join the community</Card.Title>
+				<Card.Description>
+					Questions, programs that work (or do not), ideas and help: talk to the people who
+					build and use Lindroids on Discord.
+				</Card.Description>
+			</Card.Header>
+			<Card.Content class="flex flex-wrap justify-center gap-2 sm:justify-end">
+				<Button href={DISCORD}><Discord /> Join the Discord</Button>
+				<Button variant="outline" href="{REPO}/issues"><Github /> Issues</Button>
+			</Card.Content>
+		</Card.Root>
 	</section>
 </main>
 
