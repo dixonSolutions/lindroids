@@ -1,8 +1,9 @@
 # The website (site/, SvelteKit + shadcn-svelte), built and published to gh-pages only when it
 # changes: site/, the media it shows, or this workflow. Pull requests build it without publishing.
-# The release workflow publishes the package repositories to the same branch: both share one
-# concurrency group, each starts from what is published and replaces only its own files
-# (here index.html, _app/, media/ and robots.txt), so neither drops the other's.
+# The release workflow publishes the package repositories to the same branch. This one replaces
+# only the website's files (index.html, _app/, media/, robots.txt) in what is published, and
+# pushes only if gh-pages has not moved meanwhile (else it starts again); the release takes the
+# website's files from gh-pages again right before it publishes.
 name: site
 
 on:
@@ -14,7 +15,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('site-{0}', github.ref) || format('release-{0}', github.repository) }}
+  group: site-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -40,25 +41,30 @@ jobs:
           npm run check
           BASE_PATH="/${GITHUB_REPOSITORY#*/}" npm run build
 
-      - name: Merge into the published site
-        if: github.event_name != 'pull_request'
-        run: |
-          mkdir -p public
-          if git fetch --depth 1 origin gh-pages 2>/dev/null; then
-            git archive FETCH_HEAD | tar -x -C public
-          fi
-          rm -rf public/_app public/media public/index.html public/robots.txt
-          cp -a site/build/. public/
-          touch public/.nojekyll
-
       - name: Publish to gh-pages
         if: github.event_name != 'pull_request'
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: gh-pages
-          publish_dir: public
-          force_orphan: true
-          user_name: github-actions[bot]
-          user_email: 41898282+github-actions[bot]@users.noreply.github.com
-          full_commit_message: "Publish the site (${{ github.sha }}) [skip ci]"
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for try in 1 2 3 4 5; do
+            rm -rf public && mkdir public
+            if git fetch --depth 1 origin gh-pages; then
+              lease=$(git rev-parse FETCH_HEAD)
+              git archive FETCH_HEAD | tar -x -C public
+            else
+              lease=   # no gh-pages yet: only create it
+            fi
+            rm -rf public/_app public/media public/index.html public/robots.txt
+            cp -a site/build/. public/
+            touch public/.nojekyll
+            export GIT_INDEX_FILE=$RUNNER_TEMP/pages.index
+            rm -f "$GIT_INDEX_FILE"
+            (cd public && git --git-dir="$GITHUB_WORKSPACE/.git" --work-tree=. add -A)
+            commit=$(git commit-tree "$(git write-tree)" -m "Publish the site ($GITHUB_SHA) [skip ci]")
+            unset GIT_INDEX_FILE
+            if git push --force-with-lease="refs/heads/gh-pages:$lease" origin "$commit:refs/heads/gh-pages"; then
+              exit 0
+            fi
+            echo "gh-pages moved meanwhile; again"; sleep $((try * 10))
+          done
+          exit 1

@@ -227,6 +227,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "v$(cat dist/VERSION)" dist/lindroids-*.apk --clobber
 
+      # The website (site/, site.yml) may have been published while this release was building.
+      - name: Take the website's files from gh-pages again
+        if: steps.build.outputs.publish == 'true'
+        run: |
+          git fetch --depth 1 origin gh-pages
+          files=$(git ls-tree --name-only FETCH_HEAD | grep -xE '_app|media|index\.html|robots\.txt' || true)
+          if echo "$files" | grep -qx _app; then
+            rm -rf pages/_app pages/media pages/index.html pages/robots.txt
+            git archive FETCH_HEAD $files | tar -x -C pages
+          fi
+
       # After the release, so install.sh's VERSION never points at a release that does not exist.
       - name: Publish to gh-pages
         if: steps.build.outputs.publish == 'true'
