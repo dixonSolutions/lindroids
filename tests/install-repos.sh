@@ -94,6 +94,15 @@ packaging/build-rpm.sh --version "$VER" --dist "$T/dist" --arches x86_64 --xwls 
 packaging/build-apk.sh --version "$VER" --dist "$T/dist" --arches x86_64
 packaging/build-xbps.sh --version "$VER" --dist "$T/dist" --arches "x86_64 x86_64-musl" --xwls "$XWLS"
 
+# The published pacman directories keep older packages next to the newest (build-repo.sh --keep):
+# put one there, as an earlier release left it, so the database is made from more than one.
+OLD=${VER%.*}.$(( ${VER##*.} - 1 ))
+echo "==> an older pacman package, $OLD, already in the repository"
+packaging/build-debs.sh --version "$OLD" --dist "$T/dist" --out "$T/old/debs" --arches amd64 --xwls "$XWLS" >/dev/null
+packaging/build-pacman.sh --debs "$T/old/debs" --out "$T/old/pacman" >/dev/null
+mkdir -p "$T/site/pacman/arch/x86_64"
+cp "$T/old/pacman/arch/x86_64/"*.pkg.tar.xz "$T/site/pacman/arch/x86_64/"
+
 echo "==> throwaway keys"
 export GNUPGHOME=$T/keys/gnupg
 mkdir -p "$GNUPGHOME" && chmod 700 "$GNUPGHOME"

@@ -329,10 +329,17 @@ if [ -d "$PKGS" ] || [ -d "$OUTDIR/pacman" ]; then
       case "$pkg" in *.sig) continue ;; esac
       [ -e "$pkg" ] || continue
       [ -f "$pkg.sig" ] || pacman_sign "$pkg"
+    done
+    # The database holds one entry per package name, the newest: with several, pacman reports
+    # "database is inconsistent: version mismatch" and checks the file it downloads against
+    # another version's checksum ("invalid or corrupted package"). The older ones stay in the
+    # directory, for `pacman -U <url>` (scripts/use-release.sh).
+    if [ "$n" -gt 0 ]; then
+      pkg=$dir/${files[$((n - 1))]}
       entry=$(bsdtar -xOf "$pkg" .PKGINFO | awk -F' = ' '$1 == "pkgname" {n = $2} $1 == "pkgver" {v = $2} END {print n "-" v}')
       mkdir -p "$db/$entry"
       pacman_desc "$pkg" > "$db/$entry/desc"
-    done
+    fi
     rm -f "$dir"/lindroids.db* "$dir"/lindroids.files*
     # shellcheck disable=SC2035
     (cd "$db" && LANG=C bsdtar -czf "$dir/lindroids.db.tar.gz" --uid 0 --gid 0 --uname root --gname root *)
