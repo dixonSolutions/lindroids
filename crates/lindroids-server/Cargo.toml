@@ -3,7 +3,7 @@ name = "lindroids-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "The Lindroids server: a Wayland compositor and PulseAudio-protocol sound server whose output is the Lindroids Android app"
+description = "The Lindroids server: a Wayland compositor and PulseAudio-protocol sound server whose windows show in Android apps"
 
 [dependencies]
 lindroids-proto = { path = "../lindroids-proto" }

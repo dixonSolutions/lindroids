@@ -156,12 +156,14 @@ Suggests: $suggests
 Section: x11
 Priority: optional
 Homepage: $HOMEPAGE
-Description: Run Linux apps on Android, shown in the web browser
- Lindroids is a Wayland compositor and sound server whose display is a web
- page in the phone's own browser: Linux windows show there, with touch,
- keyboard, clipboard and audio, and no Android app to install. This package
- contains the lindroids CLI (which is also the server) and xwayland-satellite,
- which runs X11 programs under Xwayland (\`lindroids run --x11\`).
+Description: Linux GUI programs on Android, in windows and apps of their own
+ Lindroids is a package for the Linux environments on Android (Termux,
+ proot distros, Flatpak); it is not an Android app or a container itself.
+ It opens their GUI programs as Android windows, with touch, keyboard,
+ clipboard and sound, and "lindroids export" builds a program its own
+ Android app on the phone. This package contains the lindroids CLI (which
+ is also the Wayland compositor and sound server) and xwayland-satellite,
+ which runs X11 programs under Xwayland (lindroids run --x11).
 EOF
   find "$d" -type d -exec chmod 755 {} +
   local deb=$OUT/lindroids_${VERSION}_${arch}.deb

@@ -80,7 +80,7 @@ for arch in $ARCHES; do
 Name:           lindroids
 Version:        $VERSION
 Release:        1
-Summary:        Run Linux apps on Android, shown in the web browser
+Summary:        Linux GUI programs on Android, in windows and apps of their own
 License:        (MIT OR Apache-2.0) AND MPL-2.0
 URL:            $HOMEPAGE
 Packager:       $MAINTAINER
@@ -101,10 +101,12 @@ Recommends:     libxcb-cursor.so.0$lib64
 %global clamp_mtime_to_source_date_epoch 1
 
 %description
-Lindroids is a Wayland compositor and sound server whose display is a web
-page in the phone's own browser: Linux windows show there, with touch,
-keyboard, clipboard and audio, and no Android app to install. This package
-contains the lindroids CLI (which is also the server) and xwayland-satellite,
+Lindroids is a package for the Linux environments on Android (Termux,
+proot distros, Flatpak); it is not an Android app or a container itself.
+It opens their GUI programs as Android windows, with touch, keyboard,
+clipboard and sound, and "lindroids export" builds a program its own
+Android app on the phone. This package contains the lindroids CLI (which
+is also the Wayland compositor and sound server) and xwayland-satellite,
 which runs X11 programs under Xwayland (lindroids run --x11).
 
 %install

@@ -3,7 +3,7 @@ name = "lindroids"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Run Linux apps in Android windows, and export them to the home screen"
+description = "Linux GUI programs on Android, in windows and apps of their own: a package for Termux, proot distros and Flatpak"
 
 [[bin]]
 name = "lindroids"

@@ -98,7 +98,7 @@ in_container "$VOID_IMAGE" "$WORK" "$OUT" -- sh -ec '
     [ -e "$work/$arch/usr/libexec/lindroids/xwayland-satellite" ] && license="$license, MPL-2.0"
     rm -f "lindroids-${version}_1.$arch.xbps"
     xbps-create -q -A "$arch" -n "lindroids-${version}_1" \
-      -s "Run Linux apps on Android, shown in the web browser" \
+      -s "Linux GUI programs on Android, in windows and apps of their own" \
       -l "$license" -H "$homepage" -m "$maintainer" \
       -D "" "$work/$arch"
   done' sh "$WORK" "$OUT" "$VERSION" "$HOMEPAGE" "$MAINTAINER" $ARCHES
