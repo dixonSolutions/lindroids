@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Build this checkout into an installable .deb: a dev build to try on a phone or a desktop.
-# scripts/use-release.sh goes back to an official release.
+# For development only: build this checkout into a .deb, to test changes before they are
+# released. To install Lindroids, use install.sh (README); scripts/use-release.sh goes back from
+# a dev build to an official release.
 #
-#   scripts/build.sh [--target <arch>] [--device [serial]] [--install] [--push] [--out <dir>]
+#   scripts/build.sh [--target <arch>] [--device [serial]] [--install] [--push] [--out <dir>] [--yes]
 #
 # Where it runs and what it builds:
-#   in Termux             this device's Termux package (cargo, natively): `pkg install rust clang git`
+#   in Termux             this device's Termux package, built with Termux's Rust
 #   on a PC, --device     that adb device's Termux package (cargo-ndk and the Android NDK)
 #   on a PC, --target     Termux: aarch64 arm x86_64 i686 (cargo-ndk);
 #                         Debian, Ubuntu, proot distros: arm64 armhf amd64 i386 (static musl)
@@ -15,6 +16,12 @@
 #   --push      (--device) copy it to the device's Download folder and print the command that
 #               installs it in Termux (Termux needs `termux-setup-storage` once to read Download)
 #   --out       where the .deb goes (default target/dev-build)
+#   --yes       install missing build tools without asking
+#
+# It checks for everything the build needs and offers to install what is missing: in Termux
+# with pkg (rust, clang, git); on a PC Rust with rustup and its targets, cargo-ndk, the Android
+# NDK r27c (downloaded and checked, into ~/.local/share/lindroids-dev), and dpkg-deb, readelf
+# and adb with the system's package manager.
 #
 # The package is the `lindroids` package, version <release version>~dev.<commit>[.dirty]: it
 # installs over a release, `lindroids version` says `+<commit>-dev`, and the release with the
@@ -29,9 +36,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 
-TARGET='' DEVICE='' SERIAL='' INSTALL=0 PUSH=0 OUT=$ROOT/target/dev-build
+TARGET='' DEVICE='' SERIAL='' INSTALL=0 PUSH=0 YES=0 OUT=$ROOT/target/dev-build
 while [ $# -gt 0 ]; do
   case "$1" in
+    --yes|-y) YES=1; shift ;;
     --target) TARGET=$2; shift 2 ;;
     --device)
       DEVICE=1; shift
@@ -48,16 +56,90 @@ die() { echo "build: $*" >&2; exit 1; }
 IN_TERMUX=0
 if [ -n "${TERMUX_VERSION:-}" ] || [ "${PREFIX:-}" = /data/data/com.termux/files/usr ]; then IN_TERMUX=1; fi
 GITHUB_REPO=${LINDROIDS_GITHUB_REPO:-dixonSolutions/lindroids}
+echo "Lindroids dev build: for testing changes. To install Lindroids, use install.sh (see the README)."
+
+# --- Build tools: check, and offer to install what is missing ------------------------------
+
+# confirm <question>: yes with --yes; asks on a terminal; no otherwise.
+confirm() {
+  [ $YES = 1 ] && return 0
+  [ -t 0 ] || return 1
+  local a
+  read -r -p "$1 [Y/n] " a
+  case "$a" in ""|y|Y|yes|Yes) return 0 ;; *) return 1 ;; esac
+}
+# offer <what> <command>: run <command> (a shell line) if the user agrees, else stop.
+offer() {
+  echo "build: $1 is missing."
+  if confirm "Install it with: $2 ?"; then
+    bash -c "$2" || die "installing $1 failed"
+  else
+    die "$1 is needed: $2 (or run with --yes)"
+  fi
+}
+# sys_pkg <apt/dnf/pacman/zypper package names, space-separated>: the system's install command.
+sys_pkg() {
+  local sudo=''
+  [ "$(id -u)" = 0 ] || sudo='sudo '
+  if command -v apt-get >/dev/null; then echo "${sudo}apt-get install -y $1"
+  elif command -v dnf >/dev/null; then echo "${sudo}dnf install -y $1"
+  elif command -v pacman >/dev/null; then echo "${sudo}pacman -S --needed --noconfirm $1"
+  elif command -v zypper >/dev/null; then echo "${sudo}zypper --non-interactive install $1"
+  fi
+}
+# need_sys <tool> <packages>: a tool from the system's package manager.
+need_sys() {
+  command -v "$1" >/dev/null && return 0
+  local cmd
+  cmd=$(sys_pkg "$2")
+  [ -n "$cmd" ] || die "$1 is needed (package $2); no apt, dnf, pacman or zypper here to install it (an immutable system? use a toolbox or distrobox)"
+  offer "$1" "$cmd"
+  command -v "$1" >/dev/null || die "$1 is still not on the PATH"
+}
+
+[ -d .git ] || [ -f .git ] || die "not a git checkout: git clone https://github.com/$GITHUB_REPO"
+if [ $IN_TERMUX = 1 ]; then
+  missing=''
+  command -v cargo >/dev/null || missing+=' rust'
+  command -v clang >/dev/null || missing+=' clang'
+  command -v git >/dev/null || missing+=' git'
+  command -v dpkg-deb >/dev/null || missing+=' dpkg'
+  command -v curl >/dev/null || missing+=' curl'
+  [ -z "$missing" ] || offer "${missing# }" "pkg install -y$missing"
+else
+  [ -x "$HOME/.cargo/bin/cargo" ] && PATH=$HOME/.cargo/bin:$PATH
+  if ! command -v cargo >/dev/null; then
+    need_sys curl curl
+    offer "Rust" "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal"
+    PATH=$HOME/.cargo/bin:$PATH
+  fi
+  need_sys git git
+  need_sys curl curl
+  need_sys dpkg-deb dpkg
+  if ! command -v clang >/dev/null; then
+    echo "build: note: no clang, so two small preload libraries are left out (GTK 3's file dialogs as Android's picker; xterm in x86 distros): $(sys_pkg 'clang lld')"
+  fi
+fi
 
 adb_() {
   local adb=${ADB:-}
   if [ -z "$adb" ]; then
     adb=$(command -v adb || true)
     [ -n "$adb" ] || adb=${ANDROID_HOME:-$HOME/Android/Sdk}/platform-tools/adb
+    if [ ! -x "$adb" ]; then
+      local pkg=android-tools
+      command -v apt-get >/dev/null && pkg=adb
+      need_sys adb "$pkg"
+      adb=adb
+    fi
   fi
-  [ -x "$adb" ] || command -v "$adb" >/dev/null || die "no adb: set ADB or install platform-tools"
   "$adb" ${SERIAL:+-s "$SERIAL"} "$@"
 }
+
+# The whole history: the version is the number of commits.
+if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+  offer "the git history (this is a shallow clone, and the version counts commits)" "git fetch --unshallow"
+fi
 
 if [ -n "$DEVICE" ]; then
   [ $IN_TERMUX = 0 ] || die "--device is for a PC; in Termux, leave it out"
@@ -103,9 +185,37 @@ case "$TARGET" in
   i386) FLAVOUR=debian TRIPLE=i686-unknown-linux-musl ;;
   *) die "unknown target '$TARGET': aarch64 arm x86_64 i686 (Termux), arm64 armhf amd64 i386 (Debian)" ;;
 esac
-for tool in cargo dpkg-deb git; do
-  command -v $tool >/dev/null || die "$tool is required$([ $IN_TERMUX = 1 ] && echo ": pkg install rust git dpkg")"
-done
+
+# Per target: the Rust target, readelf (Debian packages), cargo-ndk and the NDK (Termux on a PC).
+NDK_RELEASE=r27c NDK_VERSION=27.2.12479018
+NDK_SHA256=59c2f6dc96743b5daf5d1626684640b20a6bd2b1d85b13156b90333741bad5cc
+if [ $IN_TERMUX = 0 ]; then
+  if command -v rustup >/dev/null; then
+    rustup target list --installed | grep -qx "$TRIPLE" || offer "the Rust target $TRIPLE" "rustup target add $TRIPLE"
+  else
+    echo "build: note: no rustup, so the Rust target $TRIPLE cannot be checked; if the build fails, add it to your Rust"
+  fi
+  [ $FLAVOUR = termux ] || need_sys readelf binutils
+  if [ $FLAVOUR = termux ]; then
+    command -v cargo-ndk >/dev/null || offer cargo-ndk "cargo install cargo-ndk"
+    DEV_NDK=${XDG_DATA_HOME:-$HOME/.local/share}/lindroids-dev/android-ndk-$NDK_RELEASE
+    if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+      for d in "$DEV_NDK" "${ANDROID_HOME:-$HOME/Android/Sdk}/ndk/$NDK_VERSION" $(ls -d "${ANDROID_HOME:-$HOME/Android/Sdk}"/ndk/* 2>/dev/null | sort -rV); do
+        if [ -f "$d/source.properties" ]; then ANDROID_NDK_HOME=$d; break; fi
+      done
+    fi
+    if [ ! -f "${ANDROID_NDK_HOME:-/nonexistent}/source.properties" ]; then
+      need_sys unzip unzip
+      offer "the Android NDK $NDK_RELEASE (a 650 MB download, 2 GB unpacked; no SDK, no Java)" \
+        "set -e; mkdir -p '$(dirname "$DEV_NDK")'; cd '$(dirname "$DEV_NDK")'
+         curl -fL --retry 3 -o ndk.zip https://dl.google.com/android/repository/android-ndk-$NDK_RELEASE-linux.zip
+         echo '$NDK_SHA256  ndk.zip' | sha256sum -c -
+         unzip -q ndk.zip; rm ndk.zip"
+      ANDROID_NDK_HOME=$DEV_NDK
+    fi
+    export ANDROID_NDK_HOME
+  fi
+fi
 
 # The version: the release this commit would be, marked as a dev build of it.
 eval "$(scripts/version.sh)"
@@ -121,10 +231,6 @@ if [ $IN_TERMUX = 1 ]; then
   cargo build -p lindroids --release
   BIN=$TARGET_DIR/release/lindroids
 elif [ $FLAVOUR = termux ]; then
-  command -v cargo-ndk >/dev/null || die "cargo-ndk is required: cargo install cargo-ndk; rustup target add $TRIPLE"
-  : "${ANDROID_NDK_HOME:=$(ls -d "${ANDROID_HOME:-$HOME/Android/Sdk}"/ndk/* 2>/dev/null | sort -V | tail -1)}"
-  [ -f "${ANDROID_NDK_HOME:-/nonexistent}/source.properties" ] || die "no Android NDK: set ANDROID_NDK_HOME (android-ndk-r27c-linux.zip, unpacked)"
-  export ANDROID_NDK_HOME
   cargo ndk -t "$ABI" -P 24 build -p lindroids --release
   BIN=$TARGET_DIR/$TRIPLE/release/lindroids
 else
@@ -183,7 +289,8 @@ if [ $PUSH = 1 ]; then
   adb_ push "$DEB" /sdcard/Download/ >/dev/null
   echo
   echo "Copied to the device's Download folder. In Termux:"
-  echo "  apt-get install --reinstall --allow-downgrades -y /sdcard/Download/$(basename "$DEB") && lindroids stop"
+  echo "  apt-get install --reinstall --allow-downgrades -y /sdcard/Download/$(basename "$DEB")"
+  echo "  lindroids stop    # if a server is running, so the next program starts the new build"
   echo "Back to a release: scripts/use-release.sh (or: apt-get install --reinstall --allow-downgrades lindroids=<version>)"
 elif [ $INSTALL = 1 ]; then
   if [ $IN_TERMUX = 1 ]; then

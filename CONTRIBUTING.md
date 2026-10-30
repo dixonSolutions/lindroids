@@ -47,43 +47,64 @@ opens the page in your browser (`xdg-open`). `LINDROIDS_LOG=debug` logs more; th
 A running server is kept when the protocol version has not changed, so **always
 `lindroids stop` before trying a new build**, or the old server keeps serving.
 
+`scripts/build.sh` is **for development only**: it builds your checkout into a `lindroids`
+package, version `<release>~dev.<commit>` (`lindroids version` says `+<commit>-dev`), that
+installs over the release. Everyone else installs Lindroids with `install.sh` (README).
+`scripts/use-release.sh` puts a release back. Both have `--help`.
+
+`build.sh` checks for everything the build needs and offers to install what is missing (Rust,
+clang, cargo-ndk, the NDK, dpkg-deb, adb); `--yes` installs it without asking.
+
 ### Build it in Termux
 
 ```sh
-pkg install rust clang git
+pkg install git
 git clone https://github.com/dixonSolutions/lindroids && cd lindroids
-cargo build -p lindroids --release
-lindroids stop; ./target/release/lindroids run foot
+scripts/build.sh --install             # offers Rust and clang, builds, installs, stops an idle server
+lindroids run foot
 ```
 
 The first build compiles every dependency (under two minutes on an x86 lab VM, longer on a
-phone, and about 1 GB with Rust); later ones only what changed. The server is started from the binary that asked for it, so this runs your build
-without touching the installed one.
+phone, and about 1 GB with Rust); later ones only what changed. Clone the whole history (no
+`--depth`): the version is counted from it.
+
+To try a build without installing it, `./target/release/lindroids run foot` after
+`lindroids stop`: the server is started from the binary that asked for it.
 
 ### Or cross-build on a PC
 
-With the Android NDK (the zip alone, unpacked: no SDK) and
-[cargo-ndk](https://github.com/bbqsrc/cargo-ndk):
+With the phone on USB debugging:
 
 ```sh
-rustup target add aarch64-linux-android        # x86_64-linux-android for x86 devices and VMs
-cargo install cargo-ndk
-export ANDROID_NDK_HOME=~/android-ndk-r27c
-cargo ndk -t arm64-v8a -P 24 build -p lindroids --release
-adb push target/aarch64-linux-android/release/lindroids /sdcard/Download/
+scripts/build.sh --device --push       # the attached device's CPU; prints the command for Termux
 ```
 
-API 24 is Android 7, the oldest supported. In Termux (after `termux-setup-storage` once, so it
-can read Download), copy it in and run it:
+The first run offers what a cross build needs: Rust (rustup) and the Android target,
+[cargo-ndk](https://github.com/bbqsrc/cargo-ndk), the Android NDK r27c (the 650 MB zip alone,
+checked, into `~/.local/share/lindroids-dev`: no SDK, no Java; an NDK you have is used if
+`ANDROID_NDK_HOME` names it), and `dpkg-deb` and adb from your package manager. On an immutable
+system (Fedora Silverblue and the like), run it in a toolbox or distrobox.
+
+In Termux (after `termux-setup-storage` once, so it can read Download), the command it prints:
 
 ```sh
-cp /sdcard/Download/lindroids ~/lindroids && chmod 755 ~/lindroids
-lindroids stop; ~/lindroids run foot
+apt-get install --reinstall --allow-downgrades -y /sdcard/Download/lindroids_<version>_aarch64.deb
 ```
 
-To use your build for everything (exports, home screen icons), put it in place of the
-installed one: `cp $PREFIX/bin/lindroids $PREFIX/bin/lindroids.orig` first. The next
-`pkg upgrade` puts a release back.
+`--target aarch64|arm|x86_64|i686` builds a Termux package without a device, and
+`--target arm64|armhf|amd64|i386` a Debian/Ubuntu one (proot distros, desktops). Packages go to
+`target/dev-build/`. API 24 (Android 7) is the oldest supported.
+
+### Back to a release
+
+```sh
+scripts/use-release.sh                 # the latest release
+scripts/use-release.sh 0.1.130         # a given one (--list shows them)
+```
+
+A version still in the package repository (the newest three) comes from it; an older one from
+its GitHub release, checked against its `SHA256SUMS`. Your dev package also gives way by itself
+to the release with its number, on a later `pkg upgrade`.
 
 ### What to try
 

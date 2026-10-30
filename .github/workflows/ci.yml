@@ -138,6 +138,7 @@ jobs:
         run: |
           shellcheck -S warning scripts/build-release.sh scripts/version.sh \
             scripts/set-github-secrets.sh scripts/publish-local.sh scripts/build-xwayland-satellite.sh \
+            scripts/build.sh scripts/use-release.sh \
             packaging/*.sh packaging/repo/*.sh tests/*.sh lab/*.sh
           shellcheck -S warning -s sh install.sh
 
