@@ -160,6 +160,39 @@ rm /etc/apt/sources.list.d/lindroids.list /etc/apt/keyrings/lindroids.gpg
 rm -rf ~/.local/share/lindroids
 ```
 
+## Cortex Terminal
+
+[Cortex Terminal](https://github.com/ssfuisu/cortex) runs Ubuntu 24.04 on Android without proot:
+a preloaded library (`libcortex-hook.so`) maps `/usr`, `/etc`, `/tmp` and the rest into the app's
+own files. Its base system has no `curl`, so install that first:
+
+```sh
+apt install -y curl
+curl -fsSL https://dixonsolutions.github.io/lindroids/install.sh | sh
+lindroids run foot
+```
+
+The installer takes the Debian/Ubuntu path above. Cortex's mapping only reaches dynamically linked
+glibc programs, which the usual static CLI is not, so the arm64 and armhf packages also carry a
+glibc build of the CLI (`/usr/libexec/lindroids/lindroids-glibc`). The static `lindroids` hands
+over to it whenever it finds itself in a Cortex session. The browser opens through Cortex's own
+`cortex-api open`, which works while Cortex is on screen, as it is when you type `lindroids run`
+there. Root mode (a real chroot) needs none of this.
+
+What Lindroids does differently there, because Cortex reports uid 0 to programs while their sockets
+carry the app's real uid:
+
+- Xwayland runs with access control off (`-ac`) and listens only on its socket file inside Cortex's
+  private storage, never on an abstract socket, so no other app can reach it;
+- the desktop portal signs in to its D-Bus with ANONYMOUS instead of EXTERNAL;
+- programs get `LOCPATH` pointing at Ubuntu's locales, without which glibc cannot load even
+  `C.UTF-8` there.
+
+Known limits, tested in Cortex 1.26.45 on an x86_64 Android 12 image (Cortex's arm64 build under
+ARM translation): Wayland programs such as foot work; X11 windows open but stay black; GTK
+programs that load SVG icons (Mousepad) abort, which happens in Cortex without Lindroids too
+(`gdk-pixbuf-csource` cannot read an SVG there either).
+
 ## Arch Linux and derivatives, including proot-distro
 
 The same as Termux with pacman, in `/etc`: the key goes into pacman's keyring, `[lindroids]` into

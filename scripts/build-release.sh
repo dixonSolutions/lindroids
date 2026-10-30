@@ -4,7 +4,8 @@
 #   scripts/build-release.sh [--clean]
 #
 # Produces (VERSION from scripts/version.sh, e.g. 0.1.42):
-#   dist/bin/<triple>/lindroids                         the CLI for all 8 targets
+#   dist/bin/<triple>/lindroids                         the CLI for all 8 targets, and the
+#                                                       glibc arm64/armhf builds for Cortex
 #   dist/xwayland-satellite/{termux,debian}-<arch>/     xwayland-satellite, 4 bionic + 4 glibc
 #   dist/debs/lindroids_VERSION_<arch>.deb              Termux and Debian packages
 #   dist/pacman/{termux,arch}/<arch>/*.pkg.tar.xz       the same as pacman packages
@@ -26,6 +27,9 @@
 #     musl binaries that use legacy syscalls on x86_64, x86 and arm32;
 #   * as a static musl binary (linked with rust-lld, .cargo/config.toml) for glibc distros under
 #     proot and for plain Linux.
+# and once more against glibc for arm64 and armhf (scripts/build-glibc-cli.sh, in a container):
+# Cortex Terminal's Ubuntu maps its paths with an LD_PRELOAD library that a static binary never
+# loads, so the static CLI hands over to this one there.
 #
 # Environment: ANDROID_NDK_HOME, the Android NDK for cargo-ndk (r27c = 27.2.12479018; the NDK
 # alone, unpacked from android-ndk-r27c-linux.zip: no Android SDK and no Java). Default: the
@@ -58,6 +62,7 @@ export ANDROID_NDK_HOME
 
 ANDROID_TRIPLES="aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android"
 MUSL_TRIPLES="aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf x86_64-unknown-linux-musl i686-unknown-linux-musl"
+GLIBC_TRIPLES="aarch64-unknown-linux-gnu armv7-unknown-linux-gnueabihf"
 
 DIST=$ROOT/dist
 if [ $CLEAN = 1 ]; then rm -rf "$DIST"; fi
@@ -98,6 +103,15 @@ for t in $MUSL_TRIPLES; do
   fi
 done
 
+# Cortex Terminal: the glibc builds, which the arm64 and armhf .debs and tarballs carry.
+scripts/build-glibc-cli.sh "$DIST/bin"
+for t in $GLIBC_TRIPLES; do
+  if ! grep -aq "+$LINDROIDS_BUILD_ID" "$DIST/bin/$t/lindroids"; then
+    echo "build-release: $t binary is not build $LINDROIDS_BUILD_ID" >&2
+    exit 1
+  fi
+done
+
 # Both flavours before the .debs: a Termux .deb carries the glibc build too (for proot distros).
 echo "==> window app (APK, no browser)"
 if [ -n "${LINDROIDS_APP_KEYSTORE:-}${LINDROIDS_APP_KEYSTORE_FILE:-}" ]; then
@@ -128,8 +142,8 @@ packaging/build-xbps.sh --version "$VER" --dist "$DIST" --out "$DIST/xbps" --xwl
 
 echo "==> tarballs"
 : "${SOURCE_DATE_EPOCH:=$(git log -1 --format=%ct 2>/dev/null || date +%s)}"
-# Laid out as a prefix (bin/, libexec/), so <bindir>/../libexec/lindroids/ finds the satellite;
-# install.sh installs it that way. The satellite is the glibc build: it needs glibc
+# Laid out as a prefix (bin/, libexec/), so <bindir>/../libexec/lindroids/ finds the satellite
+# (and, for arm, lindroids-glibc for Cortex); install.sh installs it that way. The satellite is the glibc build: it needs glibc
 # 2.34+, libxcb, libxcb-cursor and Xwayland from the distro (only for `run --x11`).
 for t in $MUSL_TRIPLES; do
   arch=${t%%-*}
@@ -144,6 +158,10 @@ for t in $MUSL_TRIPLES; do
   rm -rf "$stage" && mkdir -p "$stage/bin" "$stage/libexec/lindroids"
   install -m 755 "$DIST/bin/$t/lindroids" "$stage/bin/lindroids"
   install -m 755 "$XWLS/debian-$deb_arch/xwayland-satellite" "$stage/libexec/lindroids/xwayland-satellite"
+  glibc_cli=$DIST/bin/${t/-musl/-gnu}/lindroids
+  if [ -f "$glibc_cli" ]; then
+    install -m 755 "$glibc_cli" "$stage/libexec/lindroids/lindroids-glibc"
+  fi
   for f in README.md LICENSE LICENSE-MIT LICENSE-APACHE docs/INSTALL.md; do
     [ -f "$f" ] && install -m 644 "$f" "$stage/$(basename "$f")"
   done

@@ -11,7 +11,8 @@ use lindroids_proto::{self as proto, TERMUX_PREFIX};
 pub enum Kind {
     /// Termux (or a fork using the same prefix).
     Termux,
-    /// A glibc/musl distro under proot on Android (UserLAnd, Andronix, AnLinux, proot-distro login).
+    /// A glibc/musl distro under proot on Android (UserLAnd, Andronix, AnLinux, proot-distro login),
+    /// or Cortex Terminal's Ubuntu, which maps its paths without proot (cortex.rs).
     Proot,
     /// Not on Android: a desktop, for testing the server against real clients.
     Desktop,
@@ -36,7 +37,8 @@ pub fn detect() -> Sandbox {
         .and_then(|t| t.lines().find(|l| l.starts_with("PRETTY_NAME=")).map(|l| l[12..].trim_matches('"').to_string()))
         .unwrap_or_else(|| "Linux".into());
     if on_android {
-        Sandbox { kind: Kind::Proot, name: pretty, uid }
+        let name = if crate::cortex::root().is_some() { format!("{pretty} in Cortex") } else { pretty };
+        Sandbox { kind: Kind::Proot, name, uid }
     } else {
         Sandbox { kind: Kind::Desktop, name: pretty, uid }
     }
@@ -59,6 +61,11 @@ pub fn client_env(runtime: &Path) -> Vec<(String, String)> {
     // Minimal distros start with LANG unset or "C"; terminals and toolkits want UTF-8.
     if std::env::var("LANG").map_or(true, |l| l.is_empty() || l == "C" || l == "POSIX") {
         v.push(("LANG".into(), "C.UTF-8".into()));
+    }
+    if let Some(dir) = crate::cortex::locale_dir() {
+        if std::env::var_os("LOCPATH").is_none() {
+            v.push(("LOCPATH".into(), dir.display().to_string()));
+        }
     }
     for (k, val) in proto::toolkit_env() {
         if std::env::var_os(k).is_none() {
@@ -236,6 +243,13 @@ pub fn open_browser(url: &str) -> Option<&'static str> {
         ("/system/bin/am", "/system/bin/am".into(), intent.clone()),
     ];
     if !on_android() {
+        tries.clear();
+    }
+    // Cortex has neither Termux's am nor an am an app may use, but a bridge of its own.
+    if crate::cortex::root().is_some() {
+        if crate::cortex::open(url) {
+            return Some("cortex-api");
+        }
         tries.clear();
     }
     tries.push(("xdg-open", "xdg-open".into(), vec![url]));

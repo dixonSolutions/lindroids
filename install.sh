@@ -15,7 +15,8 @@
 #   Void (glibc and musl)           -> xbps repository xbps/
 #   anything else, or a repository that is not there -> static binary from the latest GitHub
 #                                      release into ~/.local/bin
-# The same works under proot (proot-distro, UserLAnd, Andronix), where the shell is root. Outside
+# The same works under proot (proot-distro, UserLAnd, Andronix), where the shell is root, and in
+# Cortex Terminal's Ubuntu (its arm packages carry a glibc CLI for it; docs/INSTALL.md). Outside
 # Termux, system changes need root: it runs them directly as root, else with sudo or doas.
 # It also checks for Flatpak and, when it is missing, asks to install it (with Flathub): with the
 # system's package manager, or in Termux (which has no Flatpak package) natively — Lindroids' own
@@ -720,6 +721,15 @@ install_static() {
   else
     # A glibc build left by an earlier install would only be skipped over.
     rm -f "$libexec/xwayland-satellite"
+  fi
+  # Cortex Terminal: the glibc CLI that the static one hands over to there (arm tarballs).
+  glibc_cli=$tmp/$name/libexec/lindroids/lindroids-glibc
+  if [ -f "$glibc_cli" ] && [ -n "${CORTEX_ROOT:-}" ]; then
+    mkdir -p "$libexec"
+    cp "$glibc_cli" "$libexec/lindroids-glibc.new"
+    chmod 755 "$libexec/lindroids-glibc.new"
+    mv "$libexec/lindroids-glibc.new" "$libexec/lindroids-glibc"
+    say "installed $libexec/lindroids-glibc (for Cortex)"
   fi
   if ! have Xwayland || { ! have xwayland-satellite && [ ! -f "$libexec/xwayland-satellite" ]; }; then
     warn "for X11 programs, run: lindroids setup x11"

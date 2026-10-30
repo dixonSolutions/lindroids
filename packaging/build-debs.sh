@@ -128,6 +128,12 @@ build() {
   [ -f "$xwls" ] || { echo "build-debs: missing $xwls" >&2; exit 1; }
   mkdir -p "$d/$prefix/libexec/lindroids"
   install -m 755 "$xwls" "$d/$prefix/libexec/lindroids/xwayland-satellite"
+  # Cortex Terminal (Ubuntu without proot, arm only): the glibc CLI, which the static one hands
+  # over to there (scripts/build-glibc-cli.sh).
+  local glibc_cli=$DIST/bin/${triple/-musl/-gnu}/lindroids
+  if [ "$flavour" = debian ] && [ -f "$glibc_cli" ]; then
+    install -m 755 "$glibc_cli" "$d/$prefix/libexec/lindroids/lindroids-glibc"
+  fi
   # Flatpak's bubblewrap in Termux (packaging/termux-flatpak): `lindroids bwrap`, which leaves out
   # the namespaces Android kernels lack.
   if [ "$flavour" = termux ]; then
