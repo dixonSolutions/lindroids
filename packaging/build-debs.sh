@@ -48,9 +48,13 @@ XWLS=${XWLS:-$DIST/xwayland-satellite}
 for f in LICENSE.xwayland-satellite xwayland-satellite-crates.txt; do
   [ -f "$XWLS/$f" ] || { echo "build-debs: no $XWLS/$f (scripts/build-xwayland-satellite.sh)" >&2; exit 1; }
 done
-for tool in dpkg-deb readelf; do
-  command -v $tool >/dev/null || { echo "build-debs: $tool is required" >&2; exit 1; }
-done
+command -v dpkg-deb >/dev/null || { echo "build-debs: dpkg-deb is required" >&2; exit 1; }
+# readelf finds the Debian satellite's glibc version; Termux packages (scripts/build.sh in Termux,
+# which may not have binutils) need none.
+case " $ARCHES " in
+  *" arm64 "*|*" armhf "*|*" amd64 "*|*" i386 "*)
+    command -v readelf >/dev/null || { echo "build-debs: readelf is required" >&2; exit 1; } ;;
+esac
 # The pin comes from the build script, so the copyright file names exactly what is shipped.
 xwls_pin() { sed -n "s/^$1=//p" scripts/build-xwayland-satellite.sh; }
 XWLS_VERSION=$(xwls_pin SATELLITE_VERSION)
