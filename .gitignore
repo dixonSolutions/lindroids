@@ -2,7 +2,7 @@
 target/
 dist/
 third_party/proot/
-/site/
+/pages/
 
 # Android test lab (lab/README.md): per-run artifacts; only the summary is tracked
 lab/results/*

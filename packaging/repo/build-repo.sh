@@ -27,7 +27,7 @@
 #   xbps/<arch>-repodata, xbps/lindroids-<version>_1.<arch>.xbps{,.sig2}            Void Linux
 #     (<arch>: aarch64 aarch64-musl armv7l armv7l-musl x86_64 x86_64-musl i686)
 #   lindroids.gpg (binary public key), lindroids.asc, lindroids.rsa.pub, install.sh, VERSION,
-#   index.html, .nojekyll
+#   .nojekyll, and index.html when there is none yet (the website is site/, published by site.yml)
 #
 # Signing key, in this order:
 #   LINDROIDS_GPG_PRIVATE_KEY  armored secret key (CI secret), imported into a throwaway GNUPGHOME
@@ -527,7 +527,8 @@ repo_gpgcheck=1
 gpgkey=$site_url/lindroids.asc
 EOF
 fi
-cat > "$OUTDIR/index.html" <<EOF
+# A plain page for a fresh repository; the published site has its own (site/, site.yml).
+[ -e "$OUTDIR/index.html" ] || cat > "$OUTDIR/index.html" <<EOF
 <!doctype html>
 <meta charset="utf-8">
 <title>Lindroids package repository</title>

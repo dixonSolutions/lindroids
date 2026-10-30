@@ -194,8 +194,17 @@ pacman/{termux,arch}/<arch>/lindroids-<v>-1-<arch>.pkg.tar.xz{,.sig}
 rpm/lindroids-<v>-1.<arch>.rpm   rpm/repodata/repomd.xml{,.asc,.key} (+ its files)   rpm/lindroids.repo
 apk/{aarch64,armv7,x86_64,x86}/APKINDEX.tar.gz   apk/<arch>/lindroids-<v>-r0.apk
 xbps/<arch>-repodata   xbps/lindroids-<v>_1.<arch>.xbps{,.sig2}
-lindroids.gpg   lindroids.asc   lindroids.rsa.pub   install.sh   VERSION   index.html   .nojekyll
+lindroids.gpg   lindroids.asc   lindroids.rsa.pub   install.sh   VERSION   .nojekyll
+index.html   _app/   media/   robots.txt          the website (below)
 ```
+
+The website at the same address is [`site/`](../site): SvelteKit with adapter-static,
+Tailwind and shadcn-svelte, theme following the device (mode-watcher), showing `media/` (copied
+by `site/copy-media.js`) and the latest `VERSION`. [`site.yml`](../.github/workflows/site.yml)
+builds it only when `site/`, `media/` or the workflow change, and pull requests only build it.
+It shares the release's concurrency group, starts from the published branch and replaces only
+the website's files; the release keeps them, and `build-repo.sh` writes a plain `index.html`
+only into a repository that has none. Locally: `cd site && npm ci && npm run dev`.
 
 - **RPM** ([`packaging/build-rpm.sh`](../packaging/build-rpm.sh), rpmbuild in `fedora`): one
   repository for dnf, yum and zypper, every architecture in one `repodata/` (createrepo_c, gzip

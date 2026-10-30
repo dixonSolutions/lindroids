@@ -1,0 +1,64 @@
+# The website (site/, SvelteKit + shadcn-svelte), built and published to gh-pages only when it
+# changes: site/, the media it shows, or this workflow. Pull requests build it without publishing.
+# The release workflow publishes the package repositories to the same branch: both share one
+# concurrency group, each starts from what is published and replaces only its own files
+# (here index.html, _app/, media/ and robots.txt), so neither drops the other's.
+name: site
+
+on:
+  push:
+    branches: [main]
+    paths: [site/**, media/**, .github/workflows/site.yml]
+  pull_request:
+    paths: [site/**, media/**, .github/workflows/site.yml]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('site-{0}', github.ref) || format('release-{0}', github.repository) }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  site:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Build
+        working-directory: site
+        run: |
+          npm ci
+          npm run check
+          BASE_PATH="/${GITHUB_REPOSITORY#*/}" npm run build
+
+      - name: Merge into the published site
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p public
+          if git fetch --depth 1 origin gh-pages 2>/dev/null; then
+            git archive FETCH_HEAD | tar -x -C public
+          fi
+          rm -rf public/_app public/media public/index.html public/robots.txt
+          cp -a site/build/. public/
+          touch public/.nojekyll
+
+      - name: Publish to gh-pages
+        if: github.event_name != 'pull_request'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: public
+          force_orphan: true
+          user_name: github-actions[bot]
+          user_email: 41898282+github-actions[bot]@users.noreply.github.com
+          full_commit_message: "Publish the site (${{ github.sha }}) [skip ci]"
