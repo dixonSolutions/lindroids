@@ -1,0 +1,46 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Origin: Lindroids
+Label: Lindroids
+Suite: termux
+Codename: termux
+Date: Fri, 30 Oct 2026 21:11:35 +0000
+Architectures: aarch64 arm x86_64 i686
+Components: main
+Acquire-By-Hash: no
+Description: Lindroids: Linux apps in Android windows
+MD5Sum:
+ 3f6336f43ce68838dbef316626da0c8d             3375 main/binary-aarch64/Packages
+ fd03a74ba79447f8f3a8c0cbab55ad01              943 main/binary-aarch64/Packages.gz
+ 6acdd2dff5d56d84fcdc5295afce003e             3348 main/binary-arm/Packages
+ 55bd4d261b9ae92a7fd6dc06dd7757fe              941 main/binary-arm/Packages.gz
+ 24c3619c6582bbd4649be71b2cb481f9             3357 main/binary-i686/Packages
+ 074b08c54b392b9ae4c9bc86310e631e              939 main/binary-i686/Packages.gz
+ beab739334fbd009f71ca69c2ee957fa             3369 main/binary-x86_64/Packages
+ 694d3eb99aad42a8bdf0eaa6c566cb18              944 main/binary-x86_64/Packages.gz
+SHA1:
+ 523c19ab32cd0c5177db34af4f08f92acf0e99ec             3375 main/binary-aarch64/Packages
+ bb9f18bbca0a529237c1b9c4755c2fb2dff44555              943 main/binary-aarch64/Packages.gz
+ 29c20bb69f8eaf1c652542910aef0334992b5358             3348 main/binary-arm/Packages
+ ca9442ea6f425860b18267ccac7bd8b410da0f89              941 main/binary-arm/Packages.gz
+ 40018848466bff34ce47361bafeb84253a1d9664             3357 main/binary-i686/Packages
+ 65a0a723e7904ee1c8e9f882f50e0b244ea90d0b              939 main/binary-i686/Packages.gz
+ 99dd6611f22088e39e0f7003a5c52f55be9e7879             3369 main/binary-x86_64/Packages
+ 8565c124fa767b3e72ef22cb17b157d2e187d632              944 main/binary-x86_64/Packages.gz
+SHA256:
+ fbd6e499c71b9b57789ff1fc0e3ce98cf56147e0e04736cf5b157de004ef40ba             3375 main/binary-aarch64/Packages
+ 9f78e1e9c0bd0ae7036bf972e7eca5919c285341ed300e4c2e45c683aff6d6dc              943 main/binary-aarch64/Packages.gz
+ 35a6150ff86c59e7e2b05a24d25808f4324a12f4d4a55284adadf5d8b5c900b3             3348 main/binary-arm/Packages
+ 72b1f6aea522dcef5da61b025e0bee1a9ad1493284eee212dc42c6d9ab30aab0              941 main/binary-arm/Packages.gz
+ a123ec52a2c4039493eae76c872f1560e8bd8a4d012565c5adc9a3eb68366f44             3357 main/binary-i686/Packages
+ b5cf59601cca93b6316d7c1709ff23bf2f0ceac2b14f13287db0646d183d8eaa              939 main/binary-i686/Packages.gz
+ 936f8a79ac774f03c0974b1cc3ab4cc758423a2632be4b778ee1a7bb46dfeb92             3369 main/binary-x86_64/Packages
+ ec2ed872278a415809bde40e1462baa9c2d956e95f65f7920de8d697f4d866ad              944 main/binary-x86_64/Packages.gz
+-----BEGIN PGP SIGNATURE-----
+
+iHUEARYKAB0WIQTPcYFO22PJEbQwR5xv/ZHJD0O/ewUCauUICAAKCRBv/ZHJD0O/
+e3aEAP9Aq1CGLHWIH468qsmLFbhr/SJUKAlz59HdKhVHsE77gwEAiRAxZ/0l2GGA
+s/ZSxM2QZSHBKVoFqlm55ADdz0x0yAI=
+=dQ23
+-----END PGP SIGNATURE-----
