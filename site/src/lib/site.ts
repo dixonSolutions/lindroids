@@ -5,6 +5,9 @@ export const SITE = 'https://dixonsolutions.github.io/lindroids';
 // The current invite (never expires, lands in #general). Share <site>/discord (src/routes/discord),
 // which forwards here: a new invite then changes only this line.
 export const DISCORD = 'https://discord.gg/gBbW9mNr9P';
+// The docs (Mintlify, built from docs.json and docs/ in the repository). Share <site>/docs
+// (src/routes/docs), which forwards here, so a custom domain later changes only this line.
+export const DOCS = 'https://dixon-solutions.mintlify.site';
 export const KEY_FPR = 'CF71814EDB63C911B430479C6FFD91C90F43BF7B';
 // Termux: the Linux environment Lindroids runs in (proot distros and Flatpak run inside it).
 export const TERMUX_PLAY = 'https://play.google.com/store/apps/details?id=com.termux';

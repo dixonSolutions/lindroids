@@ -8,7 +8,7 @@
 	import { Separator } from '#lib/components/ui/separator/index.js';
 	import ThemeToggle from '#lib/components/theme-toggle.svelte';
 	import Command from '#lib/components/command.svelte';
-	import { REPO, SITE, DISCORD, KEY_FPR, INSTALL, TERMUX_PLAY, TERMUX_FDROID, TERMUX_GITHUB, base } from '#lib/site.js';
+	import { REPO, SITE, DISCORD, DOCS, KEY_FPR, INSTALL, TERMUX_PLAY, TERMUX_FDROID, TERMUX_GITHUB, base } from '#lib/site.js';
 	import Package from '@lucide/svelte/icons/package';
 	import Boxes from '@lucide/svelte/icons/boxes';
 	import Hammer from '@lucide/svelte/icons/hammer';
@@ -111,7 +111,7 @@ xbps-install -S lindroids`
 		{#if version}<Badge variant="secondary" class="hidden sm:inline-flex">v{version}</Badge>{/if}
 		<nav class="ml-auto flex items-center gap-1">
 			<Button variant="ghost" size="sm" href="#install" class="hidden sm:inline-flex">Install</Button>
-			<Button variant="ghost" size="sm" href="{REPO}#readme" class="hidden sm:inline-flex">Docs</Button>
+			<Button variant="ghost" size="sm" href={DOCS}>Docs</Button>
 			<Button variant="ghost" size="icon" href={DISCORD} aria-label="Discord" title="Discord"><Discord /></Button>
 			<Button variant="ghost" size="icon" href={REPO} aria-label="GitHub"><Github /></Button>
 			<ThemeToggle />
@@ -141,6 +141,7 @@ xbps-install -S lindroids`
 			</div>
 			<div class="flex flex-wrap gap-2">
 				<Button href="#install">Get started</Button>
+				<Button variant="outline" href={DOCS}>Docs</Button>
 				<Button variant="outline" href={REPO}><Github /> GitHub</Button>
 				<Button variant="outline" href={DISCORD}><Discord /> Discord</Button>
 			</div>
@@ -266,6 +267,7 @@ xbps-install -S lindroids`
 <footer class="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-8 text-sm text-muted-foreground">
 	<span>MIT or Apache-2.0</span>
 	<a class="hover:text-foreground" href="{REPO}/releases">Releases</a>
-	<a class="hover:text-foreground" href="{REPO}/blob/main/docs/APPS.md">How the apps work</a>
+	<a class="hover:text-foreground" href={DOCS}>Docs</a>
+	<a class="hover:text-foreground" href="{DOCS}/docs/APPS">How the apps work</a>
 	<a class="hover:text-foreground" href={DISCORD}>Discord</a>
 </footer>
