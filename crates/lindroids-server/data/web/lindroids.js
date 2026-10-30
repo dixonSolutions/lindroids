@@ -183,11 +183,22 @@ function connect() {
   };
 }
 
+// The terminal app the server last ran in, from its sandbox name ("Termux", "Ubuntu 24.04 in
+// Cortex"): the page names it, and opens it, while it waits for the server.
+const HOST_APPS = { Termux: 'com.termux', Cortex: 'org.cortex.terminal', UserLAnd: 'tech.ula' };
+function hostApp(sandbox) {
+  const m = /(?:^|\bin )(Termux|Cortex|UserLAnd|Andronix)$/.exec(sandbox || '');
+  return m ? m[1] : 'Termux';
+}
+let lastSandbox = '';
+kvGet('sandbox').then((v) => { if (typeof v === 'string') lastSandbox = v; }).catch(() => {});
+
 function waitForServer() {
-  const termux = /Android/.test(navigator.userAgent)
-    ? `<p><a href="intent:#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;package=com.termux;end"><button>Open Termux</button></a></p>` : '';
+  const app = hostApp(lastSandbox), pkg = HOST_APPS[app];
+  const open = /Android/.test(navigator.userAgent) && pkg
+    ? `<p><a href="intent:#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;package=${pkg};end"><button>Open ${app}</button></a></p>` : '';
   showPanel(`<p>Waiting for the Lindroids server…</p>
-    <p>In Termux, run <code>lindroids run &lt;program&gt;</code>; this page connects by itself.</p>${termux}`);
+    <p>In ${app}, run <code>lindroids run &lt;program&gt;</code>; this page connects by itself.</p>${open}`);
   retry = setTimeout(connect, 2000);
 }
 
@@ -279,6 +290,10 @@ async function handle(m, payload) {
     case 'hello':
       // A page from before an update (a window raised rather than reloaded): load the new one.
       if (m.build && m.build !== BUILD && !BUILD.startsWith('@')) return location.reload();
+      if (typeof m.sandbox === 'string' && m.sandbox !== lastSandbox) {
+        lastSandbox = m.sandbox;
+        kvSet('sandbox', m.sandbox).catch(() => {});
+      }
       if (m.stats) enableStats();
       ready = true;
       everLinked = true;

@@ -611,6 +611,7 @@ fn cmd_doctor() -> i32 {
     let sb = sandbox::detect();
     println!("lindroids   {}", lindroids_server::BUILD);
     println!("sandbox     {} ({:?}, uid {})", sb.name, sb.kind, sb.uid);
+    println!("host        {}", sb.host.describe());
     println!("runtime     {}", sandbox::runtime_dir().display());
     for (what, ok) in [
         ("proot", sandbox::have("proot")),

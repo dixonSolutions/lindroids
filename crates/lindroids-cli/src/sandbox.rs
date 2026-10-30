@@ -1,18 +1,21 @@
-//! Where the CLI is running (Termux, a glibc distro under proot, plain Linux), and the environment
-//! Linux programs need to find the server.
+//! Where the CLI is running (Termux, a Linux distro on Android, a desktop), and the environment
+//! Linux programs need to find the server. The finer picture (proot, a preloaded mapping such as
+//! Cortex, chroot, container; fake root; the ways to reach Android) is
+//! lindroids_server::host, which `Sandbox::host` carries.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use lindroids_proto::{self as proto, TERMUX_PREFIX};
+use lindroids_proto::{self as proto};
+use lindroids_server::host::{self, Bridge, Host, Layer};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
     /// Termux (or a fork using the same prefix).
     Termux,
-    /// A glibc/musl distro under proot on Android (UserLAnd, Andronix, AnLinux, proot-distro login),
-    /// or Cortex Terminal's Ubuntu, which maps its paths without proot (cortex.rs).
+    /// Another Linux on Android: a distro under proot (proot-distro login, UserLAnd, Andronix,
+    /// AnLinux), a root mapped by a preloaded library (Cortex), a chroot or a container.
     Proot,
     /// Not on Android: a desktop, for testing the server against real clients.
     Desktop,
@@ -23,24 +26,28 @@ pub struct Sandbox {
     pub kind: Kind,
     pub name: String,
     pub uid: u32,
+    pub host: Host,
 }
 
 pub fn detect() -> Sandbox {
     let uid = lindroids_proto::real_uid();
-    let prefix = std::env::var("PREFIX").unwrap_or_default();
-    let on_android = Path::new("/system/build.prop").exists() || Path::new("/system/bin/app_process").exists();
-    if prefix.contains("/com.termux") || (on_android && Path::new(TERMUX_PREFIX).exists() && std::env::var_os("TERMUX_VERSION").is_some()) {
-        return Sandbox { kind: Kind::Termux, name: "Termux".into(), uid };
+    let host = host::detect();
+    if host.layer == Layer::Termux {
+        return Sandbox { kind: Kind::Termux, name: "Termux".into(), uid, host };
     }
     let pretty = std::fs::read_to_string("/etc/os-release")
         .ok()
         .and_then(|t| t.lines().find(|l| l.starts_with("PRETTY_NAME=")).map(|l| l[12..].trim_matches('"').to_string()))
         .unwrap_or_else(|| "Linux".into());
-    if on_android {
-        let name = if crate::cortex::root().is_some() { format!("{pretty} in Cortex") } else { pretty };
-        Sandbox { kind: Kind::Proot, name, uid }
+    if host.android {
+        // The app it runs in, which the browser page names when it waits for the server.
+        let name = match host.app_label() {
+            Some(app) => format!("{pretty} in {app}"),
+            None => pretty,
+        };
+        Sandbox { kind: Kind::Proot, name, uid, host }
     } else {
-        Sandbox { kind: Kind::Desktop, name: pretty, uid }
+        Sandbox { kind: Kind::Desktop, name: pretty, uid, host }
     }
 }
 
@@ -234,34 +241,29 @@ pub fn open_browser(url: &str) -> Option<&'static str> {
     let intent: Vec<&str> = vec![
         "start", "-a", "android.intent.action.VIEW", "-d", url, "--es", "com.android.browser.application_id", "lindroids",
     ];
-    // Termux's am socket server (fast, and the one that works from a proot distro too), Termux's
-    // app_process am, Android's own am; then the desktop ways.
-    let mut tries: Vec<(&'static str, String, Vec<&str>)> = vec![
-        ("termux-am", "termux-am".into(), intent.clone()),
-        ("termux-am", termux_am, intent.clone()),
-        ("am", "am".into(), intent.clone()),
-        ("/system/bin/am", "/system/bin/am".into(), intent.clone()),
-    ];
-    if !on_android() {
-        tries.clear();
-    }
-    // Cortex has neither Termux's am nor an am an app may use, but a bridge of its own.
-    if crate::cortex::root().is_some() {
-        if crate::cortex::open(url) {
-            return Some("cortex-api");
-        }
-        tries.clear();
-    }
-    tries.push(("xdg-open", "xdg-open".into(), vec![url]));
     // Termux's `am` runs app_process, which on x86 images with an ARM translation layer loads the
     // native bridge and is killed by seccomp (a tombstone each time): skip it there.
     let bridged = native_bridge();
-    for (label, cmd, args) in tries {
-        if bridged && cmd == "am" {
-            continue;
-        }
-        if run_quiet(&cmd, &args, Duration::from_secs(8)) {
-            return Some(label);
+    // The ways this host has, best first (lindroids_server::host).
+    for bridge in host::detect().bridges {
+        let tries: Vec<(&'static str, String, Vec<&str>)> = match bridge {
+            // Termux's am socket server (fast, and the one that works from a proot distro too),
+            // then Termux's app_process am.
+            Bridge::TermuxAm => vec![("termux-am", "termux-am".into(), intent.clone()), ("termux-am", termux_am.clone(), intent.clone())],
+            Bridge::CortexApi => {
+                if crate::cortex::open(url) {
+                    return Some("cortex-api");
+                }
+                vec![]
+            }
+            Bridge::Am if bridged => vec![("/system/bin/am", "/system/bin/am".into(), intent.clone())],
+            Bridge::Am => vec![("am", "am".into(), intent.clone()), ("/system/bin/am", "/system/bin/am".into(), intent.clone())],
+            Bridge::XdgOpen => vec![("xdg-open", "xdg-open".into(), vec![url])],
+        };
+        for (label, cmd, args) in tries {
+            if run_quiet(&cmd, &args, Duration::from_secs(8)) {
+                return Some(label);
+            }
         }
     }
     None

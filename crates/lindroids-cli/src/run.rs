@@ -282,6 +282,9 @@ pub fn build_command(o: &Opts, target: &Target, rt: &Path) -> Result<Command, St
     match target {
         Target::Flatpak(app, args) => flatpak::command(app, args, o, rt),
         Target::Program(argv) => {
+            if o.distro.is_none() {
+                crate::cortex::prepare();
+            }
             // Inside a proot-distro login, Termux's $PREFIX/tmp is the distro's /tmp.
             let rt_inside = match &o.distro {
                 Some(_) => PathBuf::from("/tmp").join(rt.file_name().unwrap_or_default()),

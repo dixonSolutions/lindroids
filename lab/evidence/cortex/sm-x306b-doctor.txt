@@ -1,0 +1,15 @@
+lindroids   0.1.0+dev
+sandbox     Ubuntu 24.04.5 LTS in Cortex (Proot, uid 10325)
+host        Android, Cortex: preloaded path mapping onto /data/user/0/org.cortex.terminal/files/cortex, fake root, app org.cortex.terminal; Android via cortex-api, xdg-open
+runtime     /data/user/0/org.cortex.terminal/files/cortex/tmp/lindroids-0
+proot       not found
+proot-distro not found
+Xwayland    found
+satellite   found
+dbus-daemon found
+flatpak     not found
+termux-am   not found
+            /usr/bin/../libexec/lindroids/xwayland-satellite
+server      not running (`lindroids start`)
+desktop     ready; starts with the server
+X11         ready; starts with the server
