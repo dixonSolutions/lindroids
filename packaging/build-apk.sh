@@ -112,7 +112,8 @@ for arch in $ARCHES; do
     echo "url = $HOMEPAGE"
     echo "builddate = $SOURCE_DATE_EPOCH"
     echo "packager = $MAINTAINER"
-    echo "size = $(find "$d/data" -type f -printf '%s\n' | awk '{s += $1} END {print s + 0}')"
+    # stat, not find -printf: busybox find (Alpine, natively: packaging/container.sh) has no -printf
+    echo "size = $(find "$d/data" -type f -exec stat -c %s {} + | awk '{s += $1} END {print s + 0}')"
     echo "arch = $arch"
     echo "origin = lindroids"
     [ -n "$COMMIT" ] && echo "commit = $COMMIT"
