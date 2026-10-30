@@ -14,6 +14,7 @@ pub mod audio;
 mod data;
 mod extras;
 pub mod frames;
+pub mod host;
 pub mod link;
 pub mod icons;
 pub mod keys;

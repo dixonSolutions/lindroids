@@ -1,0 +1,12 @@
+[20:58:23] sm-x306b: PASS hand-over: doctor sees Ubuntu in Cortex
+[20:58:23] sm-x306b: PASS host: Cortex mapping, fake root, cortex-api first
+[20:58:23] sm-x306b: PASS Xwayland and satellite found
+[20:58:55] sm-x306b: PASS foot (Wayland) has a window
+[20:58:55] sm-x306b: PASS a browser page is linked
+[20:58:55] sm-x306b: PASS foot found a UTF-8 locale (LOCPATH)
+[20:58:56] sm-x306b: PASS portal on D-Bus
+[20:59:34] sm-x306b: PASS MIME cache built (Cortex stubs update-mime-database)
+[20:59:34] sm-x306b: PASS gtk3-demo (GTK 3, Wayland) has a window
+[21:00:07] sm-x306b: PASS xclock (X11) has a window
+[21:00:07] sm-x306b: PASS Xwayland lets clients in (-ac under fake root)
+[21:00:12] sm-x306b: OK

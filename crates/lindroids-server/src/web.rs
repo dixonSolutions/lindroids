@@ -224,14 +224,10 @@ fn percent_decode(s: &str) -> String {
 
 /// What the picker means by "Linux environment": Termux's prefix, else the container's root.
 fn env_root() -> PathBuf {
-    let prefix = std::env::var("PREFIX").unwrap_or_default();
-    let on_android = Path::new("/system/build.prop").exists() || Path::new("/system/bin/app_process").exists();
-    if prefix.contains("/com.termux")
-        || (on_android && std::env::var_os("TERMUX_VERSION").is_some() && Path::new(lindroids_proto::TERMUX_PREFIX).exists())
-    {
-        PathBuf::from(prefix)
-    } else {
-        PathBuf::from("/")
+    let host = crate::host::detect();
+    match host.layer {
+        crate::host::Layer::Termux => PathBuf::from(std::env::var("PREFIX").unwrap_or_else(|_| lindroids_proto::TERMUX_PREFIX.into())),
+        _ => PathBuf::from("/"),
     }
 }
 

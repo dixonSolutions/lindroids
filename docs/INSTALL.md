@@ -175,23 +175,32 @@ lindroids run foot
 The installer takes the Debian/Ubuntu path above. Cortex's mapping only reaches dynamically linked
 glibc programs, which the usual static CLI is not, so the arm64 and armhf packages also carry a
 glibc build of the CLI (`/usr/libexec/lindroids/lindroids-glibc`). The static `lindroids` hands
-over to it whenever it finds itself in a Cortex session. The browser opens through Cortex's own
+over to it whenever it finds itself in such a root. The browser opens through Cortex's own
 `cortex-api open`, which works while Cortex is on screen, as it is when you type `lindroids run`
-there. Root mode (a real chroot) needs none of this.
+there. Root mode (a real chroot) needs none of this. `lindroids doctor` shows what it found:
 
-What Lindroids does differently there, because Cortex reports uid 0 to programs while their sockets
-carry the app's real uid:
+```
+sandbox     Ubuntu 24.04.5 LTS in Cortex (Proot, uid 10325)
+host        Android, Cortex: preloaded path mapping onto /data/user/0/org.cortex.terminal/files/cortex, fake root, app org.cortex.terminal; Android via cortex-api, xdg-open
+```
 
-- Xwayland runs with access control off (`-ac`) and listens only on its socket file inside Cortex's
-  private storage, never on an abstract socket, so no other app can reach it;
-- the desktop portal signs in to its D-Bus with ANONYMOUS instead of EXTERNAL;
-- programs get `LOCPATH` pointing at Ubuntu's locales, without which glibc cannot load even
+What Lindroids does differently there:
+
+- Cortex reports uid 0 to programs while their sockets carry the app's real uid. So Xwayland runs
+  with access control off (`-ac`) and listens only on its socket file inside Cortex's private
+  storage, never on an abstract socket, so no other app can reach it; and the desktop portal signs
+  in to its D-Bus with ANONYMOUS instead of EXTERNAL.
+- Programs get `LOCPATH` pointing at Ubuntu's locales, without which glibc cannot load even
   `C.UTF-8` there.
+- Cortex replaces `update-mime-database` with a no-op, so the MIME cache GTK needs to load SVG
+  icons never exists; `lindroids run` builds it with the real one when it is missing or stale.
 
-Known limits, tested in Cortex 1.26.45 on an x86_64 Android 12 image (Cortex's arm64 build under
-ARM translation): Wayland programs such as foot work; X11 windows open but stay black; GTK
-programs that load SVG icons (Mousepad) abort, which happens in Cortex without Lindroids too
-(`gdk-pixbuf-csource` cannot read an SVG there either).
+Tested with Cortex 1.26.45 on a Galaxy Tab Active5 (SM-X306B, Android 16): foot, gtk3-demo (GTK 3
+on Wayland) and xclock (X11) all show in Chrome (`lab/test-cortex.sh`). Known limits: GTK programs
+cannot reach the portal themselves (GLib sends the faked uid 0 as its socket credentials, which
+the kernel refuses), so they do not follow Android's dark theme or use its file picker; and on x86
+Android images, where Cortex's arm64 build runs under ARM translation, X11 windows stay black.
+Google Play Protect may block Cortex's APK as harmful: that is Cortex's, not Lindroids'.
 
 ## Arch Linux and derivatives, including proot-distro
 

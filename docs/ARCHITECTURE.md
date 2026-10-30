@@ -377,3 +377,34 @@ fixes both for `--distro` and for the CLI running inside a distro (UserLAnd, And
   affected): xterm, for one, fails. `liblindroids-compat.so`, a libc-free shim built from
   [third_party/compat](https://github.com/dixonSolutions/lindroids/blob/main/third_party/compat/lindroids-compat.c) and embedded in the CLI, is
   preloaded into glibc programs on x86 Android and implements `alarm()` with `setitimer`.
+
+## Where it runs: host detection
+
+One detection, `lindroids_server::host`, used by the CLI and the server, works out the host from
+what the system shows rather than from a list of app names, so hosts nobody listed still get the
+right behaviour. `lindroids doctor` prints it (`host ...`).
+
+- **Layer**, how this Linux reaches the kernel: Termux's prefix (`$PREFIX`, `TERMUX_VERSION`);
+  proot, found by its tracer process (`TracerPid` in `/proc/self/status`) or its loader
+  variables, whichever app started it (proot-distro, UserLAnd, Andronix, AnLinux); a root mapped
+  by a preloaded library: Cortex Terminal's `libcortex-hook.so` by name, or any other `LD_PRELOAD`
+  library when a static binary on Android finds no `/usr` (the root is the library's nearest
+  ancestor with an `etc/os-release`); a chroot (`/` is not init's root); a container (docker,
+  podman, LXC, distrobox, toolbox, systemd-nspawn, from the marks they leave); or the system.
+  Android itself is told by `/system`, binder devices or the kernel's version string, which a
+  chroot still shows.
+- **Fake root**: `getuid()` is 0 while the kernel's uid is not (proot -0, Cortex). Peers that
+  compare the two fail: Xwayland then runs with `-ac` and listens only on its socket file in the
+  app's private storage, and the portal signs in to D-Bus with ANONYMOUS.
+- **Bridges** to Android, tried in order when a page has to open: Termux's am (socket server,
+  then app_process), Cortex's `cortex-api open`, Android's own `am` (only for root and shell, or
+  through Termux), then `xdg-open`.
+- **App**: the Android package whose files this runs in (`/data/data/<package>` in `$PREFIX`,
+  `$HOME`, proot's binary...). The server's sandbox name carries it ("Debian GNU/Linux 13 in
+  Termux", "Ubuntu 24.04.5 LTS in Cortex"), and the browser page remembers it to say which app to
+  open while it waits for the server.
+
+In a mapped root the static CLI cannot work at all (it never loads the mapping library), so it
+execs the glibc build the arm packages carry through the root's own loader
+(`crates/lindroids-cli/src/cortex.rs`), which also sets `LOCPATH` for programs and rebuilds the
+MIME cache Cortex skips.

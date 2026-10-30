@@ -294,14 +294,15 @@ impl Drop for X11 {
     }
 }
 
-/// Cortex Terminal's Ubuntu (no proot; an LD_PRELOAD library maps its paths and fakes uid 0).
-/// Xwayland lets in only clients of its own uid, which it takes from getuid() (0 there) while a
-/// client's socket says the real one: no X client would get in. There Xwayland runs with `-ac`,
-/// and listens only on the socket file inside Cortex's private storage, which no other app can
-/// reach (no abstract sockets). The same uid mix-up keeps the portal off D-Bus's EXTERNAL auth
-/// there (portal.rs).
-pub(crate) fn in_cortex() -> bool {
-    std::env::var_os("CORTEX_ROOT").is_some() && std::env::var("LD_PRELOAD").map_or(false, |p| p.contains("libcortex-hook"))
+/// Xwayland lets in only clients of its own uid, which it takes from getuid(): under a fake root
+/// (Cortex's preloaded library, a server started inside proot -0) that is 0 while every client's
+/// socket carries the real uid, so no X client would get in. There Xwayland runs with `-ac` and
+/// listens only on its socket file, in the app's private storage where no other app can reach it
+/// (no abstract sockets). The same mix-up keeps the portal off D-Bus's EXTERNAL auth (portal.rs).
+pub(crate) fn fake_root() -> bool {
+    use std::sync::OnceLock;
+    static FAKE: OnceLock<bool> = OnceLock::new();
+    *FAKE.get_or_init(|| crate::host::detect().fake_root)
 }
 
 /// `<dir>/Xwayland`, which runs `real` with `-shm`. Satellite cannot pass Xwayland that flag, and
@@ -312,7 +313,7 @@ pub fn write_xwayland_wrapper(dir: &Path, real: &str) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir)?;
     let p = dir.join("Xwayland");
-    let ac = if in_cortex() { " -ac" } else { "" };
+    let ac = if fake_root() { " -ac" } else { "" };
     std::fs::write(&p, format!("#!/bin/sh\n# Lindroids: CPU buffers only (see x11.rs).\nexec {real} -shm{ac} \"$@\"\n"))?;
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755))
 }
@@ -366,7 +367,7 @@ pub fn reserve(dir: &Path, lock: bool) -> Result<Reservation, String> {
         if !names.contains(&own) {
             names.push(own);
         }
-        if in_cortex() {
+        if fake_root() {
             names.clear();
         }
         let mut taken = false;
