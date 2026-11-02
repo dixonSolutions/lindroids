@@ -238,7 +238,7 @@ pub fn ensure_server(sb: &sandbox::Sandbox) -> Result<std::path::PathBuf, String
     }
     std::fs::create_dir_all(&rt).map_err(|e| format!("{}: {e}", rt.display()))?;
     let log = std::fs::File::create(rt.join("server.log")).map_err(|e| e.to_string())?;
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = lindroids_proto::self_exe().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(exe);
     cmd.arg("server").arg("--sandbox").arg(&sb.name).arg("--runtime-dir").arg(&rt);
     cmd.stdin(Stdio::null()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);

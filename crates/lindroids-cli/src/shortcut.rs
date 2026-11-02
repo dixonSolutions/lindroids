@@ -481,7 +481,7 @@ fn install_termux_script(sb: &Sandbox, name: &str, mark: &str, script: fn(&str, 
         std::fs::rename(&path, &before).map_err(|e| format!("{}: {e}", path.display()))?;
         eprintln!("lindroids: your {name} is kept as {} and {theirs_does}", before.display());
     }
-    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| format!("{}/bin/lindroids", proto::TERMUX_PREFIX));
+    let exe = lindroids_proto::self_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| format!("{}/bin/lindroids", proto::TERMUX_PREFIX));
     let text = script(&exe, &before);
     if std::fs::read_to_string(&path).ok().as_deref() == Some(text.as_str()) {
         return Ok(false);
@@ -567,7 +567,7 @@ fn desktop_path(id: &str) -> PathBuf {
 fn desktop_entry(rec: &Exported, icon_png: &[u8]) -> Result<String, String> {
     let icon = lindroids_server::state_dir().join("apps").join(format!("{}.png", rec.id));
     std::fs::write(&icon, icon_png).map_err(|e| format!("{}: {e}", icon.display()))?;
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = lindroids_proto::self_exe().map_err(|e| e.to_string())?;
     let path = desktop_path(&rec.id);
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
     let text = format!(

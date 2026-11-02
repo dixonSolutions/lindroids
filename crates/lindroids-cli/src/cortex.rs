@@ -57,7 +57,7 @@ fn place(host: &Host) -> String {
 fn glibc_cli(root: &Path) -> Option<PathBuf> {
     let rel = "libexec/lindroids/lindroids-glibc";
     let mut candidates = Vec::new();
-    if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
+    if let Some(dir) = lindroids_proto::self_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
         candidates.push(dir.join("..").join(rel));
     }
     candidates.push(root.join("usr").join(rel));

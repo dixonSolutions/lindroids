@@ -151,7 +151,7 @@ pub fn write_open_helpers(runtime: &Path, inside: &Path) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let bin = runtime.join("bin");
     std::fs::create_dir_all(&bin).ok()?;
-    let me = std::env::current_exe().ok()?;
+    let me = lindroids_proto::self_exe().ok()?;
     let copy = bin.join("lindroids");
     let fresh = std::fs::metadata(&copy).ok().and_then(|m| m.modified().ok()) >= std::fs::metadata(&me).ok().and_then(|m| m.modified().ok());
     if !copy.exists() || !fresh {
@@ -189,6 +189,13 @@ pub fn x11_env(runtime: &Path) -> (Vec<(String, String)>, bool) {
                 ("DISPLAY".into(), d),
                 // Java's AWT draws nothing under a non-reparenting window manager unless told.
                 ("_JAVA_AWT_WM_NONREPARENTING".into(), "1".into()),
+                // No video mode switches: the X display has only the modes of the window it
+                // draws in, and SDL's switch to one it lacks for full screen ("640x480") is an X
+                // error that ends the program (BadValue on XF86VidModeSwitchToMode, Tux Typing
+                // on a portrait tablet). Full screen is then the window's own size, which
+                // Lindroids scales anyway. SDL 1.2 and SDL 2's names.
+                ("SDL_VIDEO_X11_VIDMODE".into(), "0".into()),
+                ("SDL_VIDEO_X11_XVIDMODE".into(), "0".into()),
             ],
             true,
         ),
@@ -336,6 +343,22 @@ pub fn native_bridge() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn x11_programs_never_switch_video_modes() {
+        let rt = std::env::temp_dir().join(format!("lindroids-x11-env-{}", std::process::id()));
+        std::fs::create_dir_all(&rt).unwrap();
+        assert_eq!(x11_env(&rt), (Vec::new(), false));
+        std::fs::write(rt.join("x11-display"), ":1\n").unwrap();
+        let (env, integrated) = x11_env(&rt);
+        assert!(integrated);
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("DISPLAY"), Some(":1"));
+        // SDL 1.2's XF86VidMode switch to a mode the display lacks ends the program (Tux Typing).
+        assert_eq!(get("SDL_VIDEO_X11_VIDMODE"), Some("0"));
+        assert_eq!(get("SDL_VIDEO_X11_XVIDMODE"), Some("0"));
+        let _ = std::fs::remove_dir_all(&rt);
+    }
 
     #[test]
     fn gtk_dialogs_preloaded_with_the_portal() {

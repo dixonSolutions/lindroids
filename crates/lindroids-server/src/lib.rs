@@ -758,7 +758,7 @@ impl State {
             return;
         }
         self.page_launches.insert(id.clone(), (from, Instant::now()));
-        let Ok(exe) = std::env::current_exe() else { return };
+        let Ok(exe) = lindroids_proto::self_exe() else { return };
         info!("launch of {id}: asked by its page");
         let log = std::fs::File::create(self.cfg.runtime_dir.join(format!("page-launch-{id}.log"))).ok();
         let mut c = std::process::Command::new(exe);
@@ -793,7 +793,7 @@ impl State {
             warn!("run {r}: no way to start another instance (started by an older lindroids)");
             return;
         }
-        let Ok(exe) = std::env::current_exe() else { return };
+        let Ok(exe) = lindroids_proto::self_exe() else { return };
         info!("run {r}: its page asks for a new window: lindroids {}", again.join(" "));
         let log = std::fs::File::create(self.cfg.runtime_dir.join("new-instance.log")).ok();
         let mut c = std::process::Command::new(exe);
