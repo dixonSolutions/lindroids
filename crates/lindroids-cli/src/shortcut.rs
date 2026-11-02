@@ -330,14 +330,16 @@ pub fn launch_url(uid: u32, id: &str) -> String {
 /// (its page asked the server). True if Termux took it.
 pub fn launch_in_termux(sb: &Sandbox, id: &str) -> bool {
     let url = launch_url(sb.uid, id);
-    let termux_am = format!("{}/bin/termux-am", proto::TERMUX_PREFIX);
-    RECEIVER.split(',').any(|component| {
-        let args = ["start", "-a", "android.intent.action.SEND", "-t", "text/plain", "--es", "android.intent.extra.TEXT", &url, "-n", component];
-        ["termux-am", termux_am.as_str()].into_iter().filter_map(sandbox::which).any(|am| {
-            // `am start` of a component Termux does not have says so and still exits 0.
+    // Termux's am socket server (off unless enabled), then its app_process am, then Android's.
+    let ams: Vec<PathBuf> = ["termux-am", "am", "/system/bin/am"].into_iter().filter_map(sandbox::which).collect();
+    ams.iter().any(|am| {
+        RECEIVER.split(',').any(|component| {
+            let args = ["start", "-a", "android.intent.action.SEND", "-t", "text/plain", "--es", "android.intent.extra.TEXT", &url, "-n", component];
+            // Every am exits 0: one that started it says "Starting:", and a component Termux
+            // does not have (or no socket server) is an error in its output.
             Command::new(am).args(args).stdin(Stdio::null()).output().is_ok_and(|o| {
                 let out = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
-                o.status.success() && !out.lines().any(|l| l.starts_with("Error"))
+                out.contains("Starting:") && !out.lines().any(|l| l.starts_with("Error"))
             })
         })
     })
