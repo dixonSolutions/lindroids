@@ -260,6 +260,11 @@ The relay ties windows to runs (`icons.rs`, `x11.rs`):
   its own window)*. This runs on a thread with a 500 ms limit, because Xwayland reaches the
   compositor through satellite. It is only asked about satellite's windows, so asking never
   starts X11.
+- **A Flatpak that asks for X11 and not Wayland** (`sockets=x11` in its metadata) runs the way
+  flatpak runs it: on the X display only, with SDL, GTK and Qt set to X11 and no
+  `WAYLAND_DISPLAY`. Some can only draw with X11: SDL 1.2 has no Wayland driver, so under
+  `SDL_VIDEODRIVER=wayland` it stopped with "No available video device". Without the integrated
+  X display the run says so *(tested: Tux Typing on b15, Android 12L)*.
 - **A window that appears before its launch is registered** moves to its run's window once it is.
 
 ## The origin
