@@ -132,19 +132,52 @@ pub fn cmd_setup_x11(args: &[String]) -> i32 {
             println!("Nothing installed. (`lindroids setup x11 --yes` installs without asking.)");
             return 1;
         }
-        for s in &m.steps {
-            let ok = Command::new(&s[0]).args(&s[1..]).status().map_or(false, |st| st.success());
-            if !ok {
-                return fail(&format!("`{}` failed", s.join(" ")));
-            }
-        }
-        let still = missing();
-        if !still.is_empty() {
-            return fail(&format!("still missing: {}", still.join(", ")));
+        if let Err(e) = install(&m) {
+            return fail(&e);
         }
         println!("Installed.");
     }
     restart_for_x11()
+}
+
+fn install(m: &Manager) -> Result<(), String> {
+    for s in &m.steps {
+        let ok = Command::new(&s[0]).args(&s[1..]).status().map_or(false, |st| st.success());
+        if !ok {
+            return Err(format!("`{}` failed", s.join(" ")));
+        }
+    }
+    let still = missing();
+    if !still.is_empty() {
+        return Err(format!("still missing: {}", still.join(", ")));
+    }
+    Ok(())
+}
+
+/// A run needs X11 (`why`) and the server has no X display: offer to set it up now. Only in a
+/// terminal, which an exported program's icon starts its run in. True when there is one now.
+pub fn offer(why: &str) -> bool {
+    if !std::io::stdin().is_terminal() {
+        return false;
+    }
+    let need = missing();
+    if !need.is_empty() {
+        let Some(m) = manager(&sandbox::detect()) else {
+            return false;
+        };
+        println!("{why}, and X11 is not set up here: {} missing. With {}:", need.join(", "), m.name);
+        for s in &m.steps {
+            println!("  {}", s.join(" "));
+        }
+        if !confirm("Install it now?") {
+            return false;
+        }
+        if let Err(e) = install(&m) {
+            eprintln!("lindroids: {e}");
+            return false;
+        }
+    }
+    restart_for_x11() == 0 && sandbox::x11_display(&sandbox::runtime_dir()).is_some()
 }
 
 /// The server picks up X11 when it starts: restart it if it runs without, unless windows are open.

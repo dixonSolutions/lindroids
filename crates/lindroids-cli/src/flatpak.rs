@@ -365,7 +365,7 @@ fn running_instance(records: &Path, id: &str) -> Option<u32> {
 /// The app asks for X11 and not Wayland, so flatpak gives it no Wayland socket. Some of these can
 /// only draw with X11 and know no driver called "wayland" (SDL 1.2, in Tux Typing: "No available
 /// video device").
-fn x11_only(app: &App) -> bool {
+pub fn x11_only(app: &App) -> bool {
     let sockets = app.app.metadata.list("Context", "sockets");
     sockets.iter().any(|s| s == "x11") && !sockets.iter().any(|s| s == "wayland")
 }
@@ -373,11 +373,11 @@ fn x11_only(app: &App) -> bool {
 fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> Result<Command, String> {
     let (x11_env, integrated_x11) = crate::sandbox::x11_env(rt);
     if o.x11 && !integrated_x11 {
-        return Err("--x11 for a Flatpak needs the integrated X display (xwayland-satellite and Xwayland; `lindroids doctor`)".into());
+        return Err("--x11 for a Flatpak needs the integrated X display: `lindroids setup x11` installs it".into());
     }
     let x11_only = x11_only(app);
     if x11_only && !integrated_x11 {
-        return Err(format!("{} draws only with X11, which needs the integrated X display (xwayland-satellite and Xwayland; `lindroids doctor`)", app.id));
+        return Err(format!("{} draws only with X11, which needs the integrated X display: `lindroids setup x11` installs it", app.id));
     }
     let rtd = app.runtime()?;
     let program = app.program()?;

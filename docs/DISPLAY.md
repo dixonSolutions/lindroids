@@ -264,7 +264,9 @@ The relay ties windows to runs (`icons.rs`, `x11.rs`):
   flatpak runs it: on the X display only, with SDL, GTK and Qt set to X11 and no
   `WAYLAND_DISPLAY`. Some can only draw with X11: SDL 1.2 has no Wayland driver, so under
   `SDL_VIDEODRIVER=wayland` it stopped with "No available video device". Without the integrated
-  X display the run says so *(tested: Tux Typing on b15, Android 12L)*.
+  X display (Xwayland not installed: Termux's package only recommends it, from the x11 repository)
+  the run offers to install it in its terminal (`lindroids setup x11`), restarts the server and
+  goes on; without a terminal it says so *(tested: Tux Typing on b15, Android 12L)*.
 - **A window that appears before its launch is registered** moves to its run's window once it is.
 
 ## The origin

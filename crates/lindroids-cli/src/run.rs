@@ -443,6 +443,17 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
     if !own_window {
         crate::ensure_display(&sb, &rt, false);
     }
+    // A program that draws only with X11, where X11 is not set up yet: offer to set it up now.
+    if sandbox::x11_display(&rt).is_none() {
+        let why = match &target {
+            Target::Flatpak(app, _) if o.x11 || flatpak::x11_only(app) => Some(format!("{} draws only with X11", app.id)),
+            Target::Program(argv) if !o.x11 && x11_only_program(&o, argv) => Some(format!("{} is an X11 program", program_of(argv))),
+            _ => None,
+        };
+        if let Some(why) = why {
+            crate::setup_x11::offer(&why);
+        }
+    }
     if let Target::Program(argv) = &target {
         if !o.x11 && sandbox::x11_display(&rt).is_none() && x11_only_program(&o, argv) {
             eprintln!(
