@@ -172,6 +172,7 @@ fn install(arg: Option<&str>) -> Result<(), String> {
         return Err(format!("{}: no such APK", path.display()));
     }
     match offer(&path, "Lindroids", "")? {
+        Offered::Adb => println!("Installed ({WINDOWS_PACKAGE})."),
         Offered::Installer => println!("Android's installer is open: tap Install."),
         Offered::Downloads(file) => println!("It is in Download as {file}, and the file manager is open there: tap it, then Install."),
         Offered::Browser(_) => println!("The browser downloads it: open it, then Install."),
@@ -292,6 +293,8 @@ fn build_app(package: &str, file: &str, name: &str, icon: &[u8], start: &str, la
 
 /// How a program's app reached Android's installer.
 pub enum Offered {
+    /// Installed through Termux's adb (`lindroids adb pair`), with no taps.
+    Adb,
     /// The installer is open: the user taps Install.
     Installer,
     /// The APK is in Download and the file manager is open there: the user taps it, then Install.
@@ -317,6 +320,8 @@ fn writable_downloads() -> Option<PathBuf> {
 }
 
 /// Puts a built app in front of Android's installer, the best way this terminal app allows:
+/// 0. no installer at all: Termux's adb installs it, once paired with Wireless debugging
+///    (`lindroids adb pair`) and while that is on;
 /// 1. the installer itself, when the terminal app may ask for installs;
 /// 2. else the Download folder in the file manager, when the terminal app can write there;
 /// 3. else the program's page serving the APK (`<page>/<name>.apk`) in the browser, which
@@ -324,6 +329,12 @@ fn writable_downloads() -> Option<PathBuf> {
 /// Android's installer only acts for an app that declares REQUEST_INSTALL_PACKAGES: Termux from
 /// Google Play does not, and the installer then closes at once.
 pub fn offer(apk: &Path, name: &str, page: &str) -> Result<Offered, String> {
+    if crate::adb::paired() {
+        match crate::adb::install(apk) {
+            Ok(()) => return Ok(Offered::Adb),
+            Err(e) => println!("Not installed through adb: {e}. Android's installer, then ({}).", if e.contains("is off") { "turn Wireless debugging on, with its Quick Settings tile, for no taps next time" } else { "lindroids adb shows what it finds" }),
+        }
+    }
     if terminal_can_install() {
         let external = ExternalApps::enable();
         let started = shortcut::install_apk(apk);

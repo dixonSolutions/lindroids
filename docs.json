@@ -34,7 +34,8 @@
         "group": "Guides",
         "pages": [
           "docs/INSTALL",
-          "docs/APPS"
+          "docs/APPS",
+          "docs/ADB"
         ]
       },
       {

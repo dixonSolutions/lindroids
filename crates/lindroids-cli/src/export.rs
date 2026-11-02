@@ -477,6 +477,11 @@ fn install_own_app(sb: &sandbox::Sandbox, id: &str, name: &str, icon: &[u8]) -> 
     let size = std::fs::metadata(&apk).map(|m| m.len()).unwrap_or(0);
     println!("Built {name}'s app ({package}, {} KB, {} ms).", size / 1024, t0.elapsed().as_millis());
     match crate::app::offer(&apk, name, &start)? {
+        crate::app::Offered::Adb => {
+            println!("Installed through Termux's adb, with no taps: {name}'s icon is in the app list. Tap it: {name} starts");
+            println!("in a window of its own, with its name and icon in Recents.");
+            return Ok(());
+        }
         crate::app::Offered::Installer => println!("Android's installer is open: tap Install (Update, if it is installed already)."),
         crate::app::Offered::Downloads(file) => {
             println!("Termux may not open Android's installer (Termux from Google Play cannot), so the app is in Download as {file}");
