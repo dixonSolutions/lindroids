@@ -362,10 +362,22 @@ fn running_instance(records: &Path, id: &str) -> Option<u32> {
     })
 }
 
+/// The app asks for X11 and not Wayland, so flatpak gives it no Wayland socket. Some of these can
+/// only draw with X11 and know no driver called "wayland" (SDL 1.2, in Tux Typing: "No available
+/// video device").
+fn x11_only(app: &App) -> bool {
+    let sockets = app.app.metadata.list("Context", "sockets");
+    sockets.iter().any(|s| s == "x11") && !sockets.iter().any(|s| s == "wayland")
+}
+
 fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> Result<Command, String> {
     let (x11_env, integrated_x11) = crate::sandbox::x11_env(rt);
     if o.x11 && !integrated_x11 {
         return Err("--x11 for a Flatpak needs the integrated X display (xwayland-satellite and Xwayland; `lindroids doctor`)".into());
+    }
+    let x11_only = x11_only(app);
+    if x11_only && !integrated_x11 {
+        return Err(format!("{} draws only with X11, which needs the integrated X display (xwayland-satellite and Xwayland; `lindroids doctor`)", app.id));
     }
     let rtd = app.runtime()?;
     let program = app.program()?;
@@ -583,7 +595,11 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
         }
     }
     env.extend(x11_env);
-    if o.x11 {
+    if x11_only {
+        env.retain(|(k, _)| k != "WAYLAND_DISPLAY");
+        env.push(("XDG_SESSION_TYPE".into(), "x11".into()));
+    }
+    if o.x11 || x11_only {
         env.extend([("GDK_BACKEND", "x11"), ("QT_QPA_PLATFORM", "xcb"), ("SDL_VIDEODRIVER", "x11")].map(|(k, v)| (k.to_string(), v.to_string())));
     }
     env.push(("PULSE_SERVER".into(), format!("unix:/run/user/{uid}/pulse/native")));
@@ -827,6 +843,28 @@ mod tests {
         assert!(passwd.starts_with("root:x:0:0:"));
         // Building it twice (every launch) works.
         command_in(&app, &[], &o, &rt, &state).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn x11_only_apps_get_x11() {
+        let root = fake_root("x11");
+        let meta = root.join(format!("var/lib/flatpak/app/org.example.App/{}/stable/0123abcd/metadata", install::arch()));
+        let m = std::fs::read_to_string(&meta).unwrap().replace("filesystems=home;", "filesystems=home;\nsockets=x11;pulseaudio;");
+        std::fs::write(&meta, m).unwrap();
+        let app = find(&root, "org.example.App").unwrap();
+        let (state, rt) = (root.join("state"), root.join("rt"));
+        std::fs::create_dir_all(&rt).unwrap();
+        let o = Opts { distro: Some("test".into()), ..Default::default() };
+        // Without the integrated X display it cannot draw at all: say so, not SDL.
+        let err = command_in(&app, &[], &o, &rt, &state).unwrap_err();
+        assert!(err.contains("X11"), "{err}");
+        std::fs::write(rt.join("x11-display"), ":7\n").unwrap();
+        let c = command_in(&app, &[], &o, &rt, &state).unwrap();
+        let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let has = |s: &str| args.iter().any(|a| a == s);
+        assert!(has("DISPLAY=:7") && has("SDL_VIDEODRIVER=x11") && has("GDK_BACKEND=x11") && has("QT_QPA_PLATFORM=xcb"));
+        assert!(!has("SDL_VIDEODRIVER=wayland") && !args.iter().any(|a| a.starts_with("WAYLAND_DISPLAY=")));
         let _ = std::fs::remove_dir_all(&root);
     }
 
