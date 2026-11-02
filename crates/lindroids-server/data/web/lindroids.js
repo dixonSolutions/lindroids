@@ -230,6 +230,23 @@ function sendLines() {
 
 const now = () => Math.round(performance.now() - t0) >>> 0;
 
+// An unpaired app's start (above), once per page: the server starts the program and hands its
+// window to this app by a broadcast (`/app/<id>/start`). Through Termux, as before, when the
+// server cannot (an older one), or no window came: Termux's terminal then shows for a moment.
+let appStarting = false;
+async function appStart() {
+  if (appStarting) return;
+  appStarting = true;
+  try {
+    const r = await fetch('start', { cache: 'no-store' });
+    if (r.status === 202) {
+      setTimeout(() => NATIVE.startTermux(), 15000);
+      return;
+    }
+  } catch (e) { /* the server went */ }
+  NATIVE.startTermux();
+}
+
 async function handle(m, payload) {
   switch (m.t) {
     case 'challenge': {
@@ -255,11 +272,11 @@ async function handle(m, payload) {
       }
       if (!ticket && !code) {
         // A program's own app, opened from its icon before it was ever paired (its WebView has
-        // storage of its own): Termux starts the program, and the run's window, opened in this
-        // app with its ticket, pairs it. No code to type.
+        // storage of its own): the server starts the program, and the run's window, handed to
+        // this app with its ticket, pairs it. No code to type.
         if (APP && NATIVE && NATIVE.startTermux && !OWN_WINDOW) {
-          showPanel(`<p>Starting ${esc(document.title)} through Termux…</p>`, null, appIcon());
-          return NATIVE.startTermux();
+          showPanel(`<p>Starting ${esc(document.title)}…</p>`, null, appIcon());
+          return appStart();
         }
         return askCode(null, '');
       }
@@ -281,6 +298,13 @@ async function handle(m, payload) {
         // Its ticket worked before (on this page, or the one before a reload): its run is over
         // (the server forgets a run's ticket with it).
         if (OWN_WINDOW && RUN && (relinking || everLinked || ticketRestored)) {
+          // A program's own app (or its WebAPK) is the program: brought back to a run that is
+          // over (it ended, or the server stopped it, while the app was out of sight), it starts
+          // the program again from its start page instead of showing the end and closing.
+          if (APP) {
+            trace('its run is over: back to the start page');
+            return location.replace(location.pathname);
+          }
           relinking = 0;
           if (ended === null) ended = program ? program.name : (history.state && history.state.name) || 'The program';
           return showEnded();

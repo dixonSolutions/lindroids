@@ -134,6 +134,8 @@ pub enum Answer {
     Close(Vec<u8>),
     /// Write this; the connection is a WebSocket from now on.
     Upgrade(Vec<u8>),
+    /// Write this and close; start the exported program `id` for its own app (`/app/<id>/start`).
+    Start(String, Vec<u8>),
 }
 
 pub fn answer(req: &Request, port: u16) -> Answer {
@@ -169,6 +171,15 @@ pub fn answer(req: &Request, port: u16) -> Answer {
             accept_key(key)
         );
         return Answer::Upgrade(head.into_bytes());
+    }
+    // A program's own app whose WebView never paired asks here for the program: its window then
+    // reaches that app alone, by a broadcast to its package, and Termux stays out of sight.
+    // Anyone on the phone could have the program started through Termux's share receiver anyway.
+    if let Some(id) = req.path.strip_prefix("/app/").and_then(|p| p.strip_suffix("/start")) {
+        if !lindroids_proto::valid_export_id(id) || crate::load_exported(id).is_none() {
+            return Answer::Close(response(404, "text/plain", b"not found\n"));
+        }
+        return Answer::Start(id.to_string(), response(202, "text/plain", b"starting\n"));
     }
     let (ctype, body): (&str, std::borrow::Cow<[u8]>) = match req.path.as_str() {
         "/" | "/index.html" => ("text/html; charset=utf-8", index_html(&req.query).into_bytes().into()),
@@ -624,6 +635,21 @@ mod tests {
             }
             _ => panic!("not http"),
         }
+    }
+
+    #[test]
+    fn a_start_is_only_for_an_exported_program_on_our_origin() {
+        set_origin_label("k7f3q9abcdefghijklmnopqrst".into());
+        let req = |host: &str, path: &str| Request { method: "GET".into(), path: path.into(), query: String::new(), headers: vec![("Host".into(), host.into())] };
+        let ours = "k7f3q9abcdefghijklmnopqrst.localhost:47000";
+        let status = |a: Answer| match a {
+            Answer::Close(b) => String::from_utf8_lossy(&b[..12]).to_string(),
+            Answer::Start(id, _) => format!("start {id}"),
+            Answer::Upgrade(_) => "upgrade".into(),
+        };
+        assert_eq!(status(answer(&req("127.0.0.1:47000", "/app/termux.foot/start"), 47000)), "HTTP/1.1 421");
+        assert_eq!(status(answer(&req(ours, "/app/no.such.export.here/start"), 47000)), "HTTP/1.1 404");
+        assert_eq!(status(answer(&req(ours, "/app/../start"), 47000)), "HTTP/1.1 404");
     }
 
     #[test]
