@@ -80,6 +80,29 @@ echo \"bwrap: No permissions to create a new namespace (proot)\" >&2\n\
 exit 1\n";
 
 /// Write [`BWRAP_UNDER_PROOT`] into `dir` (created if needed).
+/// This program's own file. Under Termux's system linker exec (Termux from Google Play, or
+/// termux-exec's `TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE=force`) a program in app storage runs as
+/// `/system/bin/linker64 <file>`, so /proc/self/exe is the linker, which takes the first argument
+/// of a re-run (`server`) for the program to load: "expected absolute path". termux-exec puts the
+/// file in `TERMUX_EXEC__PROC_SELF_EXE` for each program it starts that way.
+pub fn self_exe() -> std::io::Result<std::path::PathBuf> {
+    Ok(real_exe(std::env::current_exe()?, std::env::var_os("TERMUX_EXEC__PROC_SELF_EXE")))
+}
+
+fn real_exe(exe: std::path::PathBuf, termux_exec: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    let linker = exe.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("linker"));
+    match termux_exec.filter(|p| linker && !p.is_empty()) {
+        Some(p) => p.into(),
+        None => exe,
+    }
+}
+
+/// Whether this process was started by the system linker (see `self_exe`): every program it
+/// starts from app storage is too.
+pub fn linker_exec() -> bool {
+    std::env::current_exe().ok().and_then(|e| e.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with("linker"))).unwrap_or(false)
+}
+
 pub fn write_proot_bin(dir: &std::path::Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir)?;
@@ -747,6 +770,19 @@ impl Framer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_real_file_under_the_system_linker() {
+        use super::real_exe;
+        use std::path::PathBuf;
+        let me = "/data/data/com.termux/files/usr/bin/lindroids";
+        // Run as `linker64 <file>`: the file termux-exec names.
+        assert_eq!(real_exe(PathBuf::from("/apex/com.android.runtime/bin/linker64"), Some(me.into())), PathBuf::from(me));
+        assert_eq!(real_exe(PathBuf::from("/system/bin/linker"), Some(me.into())), PathBuf::from(me));
+        // Run directly: its own path, even with a variable left over from a parent.
+        assert_eq!(real_exe(PathBuf::from(me), Some("/data/data/com.termux/files/usr/bin/bash".into())), PathBuf::from(me));
+        assert_eq!(real_exe(PathBuf::from("/apex/com.android.runtime/bin/linker64"), None), PathBuf::from("/apex/com.android.runtime/bin/linker64"));
+    }
+
     use super::*;
 
     #[test]

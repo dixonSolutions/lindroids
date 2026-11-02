@@ -89,7 +89,7 @@ pub fn find_satellite() -> Option<PathBuf> {
         return p.is_file().then_some(p);
     }
     let mut candidates = Vec::new();
-    if let Some(bin_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+    if let Some(bin_dir) = lindroids_proto::self_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
         candidates.push(bin_dir.join("../libexec/lindroids/xwayland-satellite"));
         // The glibc CLI for Cortex lives in that directory itself.
         candidates.push(bin_dir.join("xwayland-satellite"));
@@ -314,7 +314,12 @@ pub fn write_xwayland_wrapper(dir: &Path, real: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let p = dir.join("Xwayland");
     let ac = if fake_root() { " -ac" } else { "" };
-    std::fs::write(&p, format!("#!/bin/sh\n# Lindroids: CPU buffers only (see x11.rs).\nexec {real} -shm{ac} \"$@\"\n"))?;
+    // Under Termux's system linker exec (Termux from Google Play), proot cannot start the helper
+    // its SysV shared memory goes through (it re-runs /proc/self/exe, the linker: "error: expected
+    // absolute path: "--shm-helper""), so an X program's MIT-SHM only prints that and fails. Without
+    // the extension, X programs send their images over the socket from the start.
+    let shm = if lindroids_proto::linker_exec() { " -extension MIT-SHM" } else { "" };
+    std::fs::write(&p, format!("#!/bin/sh\n# Lindroids: CPU buffers only (see x11.rs).\nexec {real} -shm{ac}{shm} \"$@\"\n"))?;
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755))
 }
 

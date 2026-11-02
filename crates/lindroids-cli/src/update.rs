@@ -71,7 +71,7 @@ enum Method {
 }
 
 fn method() -> Result<Method, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = lindroids_proto::self_exe().map_err(|e| e.to_string())?;
     let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
     let sb = sandbox::detect();
     if sandbox::have("dpkg-query") {
@@ -150,7 +150,7 @@ fn update_cli(m: &Method) -> Result<(), String> {
 /// Where this binary is installed. After the update replaced it, the kernel names the running
 /// (old) file `<path> (deleted)`; the new one is at `<path>`.
 fn installed_exe() -> PathBuf {
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("lindroids"));
+    let exe = lindroids_proto::self_exe().unwrap_or_else(|_| PathBuf::from("lindroids"));
     match exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
         Some(p) => PathBuf::from(p),
         None => exe,

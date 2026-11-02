@@ -270,6 +270,22 @@ The relay ties windows to runs (`icons.rs`, `x11.rs`):
   export` asks the same when it exports such a program, so its icon does not fail later. A launch
   with no terminal (its page asked the server) hands itself to Termux the way the icon does (the
   launch URL shared with Termux runs `lindroids launch` in a session), where it asks.
+- **No video mode switches.** The X display has only the modes of the window it draws in. SDL
+  1.2 switched to its own full-screen mode with XF86VidMode, and a mode the display lacks is an X
+  error that ends the program: Tux Typing stopped with `BadValue` on `XF86VidModeSwitchToMode` on
+  a 1200x1920 portrait tablet *(reproduced on b15 at that size)*. Programs on the integrated
+  display get `SDL_VIDEO_X11_VIDMODE=0` (SDL 1.2) and `SDL_VIDEO_X11_XVIDMODE=0` (SDL 2): full
+  screen is the window's own size, which Lindroids scales anyway *(tested: Tux Typing's menu and a
+  game at 1200x1920 and 1280x800)*.
+- **Termux from Google Play** runs every program in its storage through the system linker
+  (`/system/bin/linker64 <file>`; termux-exec's `TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE=force` does
+  the same on another Termux). `/proc/self/exe` is then the linker, so a program that runs
+  itself again through it hands the linker its first argument: Lindroids' own server did not
+  start ("error: expected absolute path: "server""), and proot's helper for SysV shared memory
+  printed `error: expected absolute path: "--shm-helper"`, after which every `shmget` in proot
+  fails. Lindroids finds its own file in `TERMUX_EXEC__PROC_SELF_EXE` there, and Xwayland runs
+  without MIT-SHM, so X programs do not try shared memory *(tested on b15 with the mode forced:
+  Tux Typing, xclock, foot and GNOME Calculator, and `export`'s launcher)*.
 - **A window that appears before its launch is registered** moves to its run's window once it is.
 
 ## The origin

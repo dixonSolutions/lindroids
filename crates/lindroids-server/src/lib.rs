@@ -782,7 +782,7 @@ impl State {
     }
 
     fn spawn_launch(&self, id: &str, key: &str, value: &str) {
-        let Ok(exe) = std::env::current_exe() else { return };
+        let Ok(exe) = lindroids_proto::self_exe() else { return };
         let log = std::fs::File::create(self.cfg.runtime_dir.join(format!("page-launch-{id}.log"))).ok();
         let mut c = std::process::Command::new(exe);
         c.arg("launch").arg(id).env(key, value).stdin(std::process::Stdio::null());
@@ -816,7 +816,7 @@ impl State {
             warn!("run {r}: no way to start another instance (started by an older lindroids)");
             return;
         }
-        let Ok(exe) = std::env::current_exe() else { return };
+        let Ok(exe) = lindroids_proto::self_exe() else { return };
         info!("run {r}: its page asks for a new window: lindroids {}", again.join(" "));
         let log = std::fs::File::create(self.cfg.runtime_dir.join("new-instance.log")).ok();
         let mut c = std::process::Command::new(exe);

@@ -79,6 +79,9 @@ terminal app:
 | **Termux from Google Play** (does not declare it) | Lindroids writes `<Name>.apk` to **Download** and opens the file manager there (My Files on Samsung) | tap `<Name>.apk`, *Install* (the first time: allow the file manager, go back, tap it again) |
 | neither works (Download not writable) | the browser downloads it from the program's page (`/app/<id>/<Name>.apk`) | *Download*, *Open*, *Install* |
 
+With Termux paired once with Android's Wireless debugging (`lindroids adb pair`), none of this is
+needed: Termux's own `adb` installs the app with no taps ([No-tap installs](ADB.md)).
+
 Then **Google Play Protect** may stop an app it has not seen: "App scan recommended". *Scan app*
 uploads the APK to Google; *More details → Install without scanning* installs it after the phone's
 PIN or fingerprint. Either is the user's choice; Lindroids cannot answer it.

@@ -177,7 +177,7 @@ fn probe() -> Probe {
         };
     let mut paths: Vec<String> = ["PREFIX", "HOME", "CORTEX_ROOT"].iter().filter_map(|v| std::env::var(v).ok()).collect();
     paths.extend(tracer_exe.map(|e| e.display().to_string()));
-    paths.extend(std::env::current_exe().ok().map(|e| e.display().to_string()));
+    paths.extend(lindroids_proto::self_exe().ok().map(|e| e.display().to_string()));
     let on_path = |cmd: &str| std::env::var_os("PATH").map_or(false, |p| std::env::split_paths(&p).any(|d| d.join(cmd).is_file()));
     Probe {
         android,
