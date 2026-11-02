@@ -202,14 +202,30 @@ function waitForServer() {
   retry = setTimeout(connect, 2000);
 }
 
+// What the page sends is a byte stream of lines (the server needs no message boundaries): the
+// lines one event makes (a move's coalesced points, a key with its Shift) leave together in one
+// WebSocket message when the event's handler is done, not one message each.
+let outLines = [], outQueued = false;
 function send(msg, payload) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!payload || !payload.length) {
+    outLines.push(JSON.stringify(msg));
+    if (!outQueued) { outQueued = true; queueMicrotask(sendLines); }
+    return;
+  }
+  sendLines();
   const line = enc.encode(JSON.stringify(msg) + '\n');
-  if (!payload || !payload.length) return ws.send(line);
   const all = new Uint8Array(line.length + payload.length);
   all.set(line, 0);
   all.set(payload, line.length);
   ws.send(all);
+}
+function sendLines() {
+  outQueued = false;
+  if (!outLines.length) return;
+  const text = outLines.join('\n') + '\n';
+  outLines = [];
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(text);
 }
 
 const now = () => Math.round(performance.now() - t0) >>> 0;
@@ -596,9 +612,11 @@ function newWindow(m) {
   tab.querySelector('span').textContent = m.title;
   tab.onclick = () => activate(m.win);
   tab.querySelector('button').onclick = (e) => { e.stopPropagation(); send({ t: 'close', win: m.win }); };
+  tab.querySelector('button').tabIndex = -1;
   tabsEl.appendChild(tab);
-  const w = { win: m.win, title: m.title, appId: m.app_id, icon: m.icon_png_b64, canvas, ctx: canvas.getContext('2d', { alpha: false, desynchronized: true }), tab, pendingAck: false, size: [0, 0] };
+  const w = { win: m.win, title: m.title, appId: m.app_id, icon: m.icon_png_b64, canvas, tab, pendingAck: false, size: [0, 0], phys: stageSize().slice(0, 2) };
   windows.set(m.win, w);
+  drawer.canvas(m.win, canvas);
   everShown = true;
   updateChrome();
   attachInput(w);
@@ -610,6 +628,7 @@ function removeWindow(win) {
   const w = windows.get(win);
   if (!w) return;
   windows.delete(win);
+  drawer.post({ t: 'close', win });
   updateChrome();
   // Its last window going is not its end: programs hide a window for a moment (a dialog in its
   // place, a resize, losing focus). Only the program ending is (run_ended).
@@ -644,6 +663,10 @@ function activate(win) {
   order.push(win);
   w.canvas.classList.add('active');
   w.tab.classList.add('active');
+  // Keys go to the window's canvas, not to whatever the browser would focus first (the tab bar's
+  // ✕), unless the soft keyboard has them.
+  const f = document.activeElement;
+  if (!f || f === document.body || f.closest('#bar, #handle')) w.canvas.focus({ preventScroll: true });
   w.tab.scrollIntoView({ inline: 'nearest', block: 'nearest' });
   document.title = w.title || 'Lindroids';
   panel.hidden = true;
@@ -668,7 +691,13 @@ function resizeWindow(w) {
   send({ t: 'resize', win: w.win, width, height, density });
 }
 
-new ResizeObserver(() => { for (const w of windows.values()) resizeWindow(w); }).observe(stage);
+// Where the canvases are (they fill the stage), kept between events: reading it can make the
+// browser lay out the page, mid-gesture.
+let stageRect = null;
+const forgetStageRect = () => { stageRect = null; };
+new ResizeObserver(() => { stageRect = null; for (const w of windows.values()) resizeWindow(w); }).observe(stage);
+for (const ev of ['resize', 'scroll', 'fullscreenchange']) addEventListener(ev, forgetStageRect, { passive: true });
+if (window.visualViewport) visualViewport.addEventListener('resize', forgetStageRect);
 
 // The page never scrolls, but Firefox leaves it scrolled by its toolbar's height when full screen
 // ends while the window is in the background: the program's window then shows shifted up. Back to
@@ -676,7 +705,7 @@ new ResizeObserver(() => { for (const w of windows.values()) resizeWindow(w); })
 function unscroll() {
   if (STATS) {
     const r = stage.getBoundingClientRect(), w = windows.get(active), vv = window.visualViewport;
-    plog(`layout: inner ${innerWidth}x${innerHeight} scroll ${scrollX},${scrollY} stage ${r.top},${r.height} vv ${vv ? `${vv.offsetTop},${vv.height}` : '-'} canvas ${w ? `${w.canvas.width}x${w.canvas.height} at ${w.canvas.getBoundingClientRect().top},${w.canvas.getBoundingClientRect().height}` : '-'} fs ${!!document.fullscreenElement}`);
+    plog(`layout: inner ${innerWidth}x${innerHeight} scroll ${scrollX},${scrollY} stage ${r.top},${r.height} vv ${vv ? `${vv.offsetTop},${vv.height}` : '-'} canvas ${w ? `${w.phys[0]}x${w.phys[1]} (${drawMode}) at ${w.canvas.getBoundingClientRect().top},${w.canvas.getBoundingClientRect().height}` : '-'} fs ${!!document.fullscreenElement}`);
   }
   if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
 }
@@ -695,69 +724,84 @@ document.addEventListener('fullscreenchange', resizeAgain);
 
 // ------------------------------------------------------------------ frames
 
-function lz4(src, dst) {
-  let s = 0, d = 0;
-  const end = src.length;
-  while (s < end) {
-    const token = src[s++];
-    let lit = token >> 4;
-    if (lit === 15) { let b; do { b = src[s++]; lit += b; } while (b === 255); }
-    dst.set(src.subarray(s, s + lit), d);
-    s += lit; d += lit;
-    if (s >= end) break;
-    const offset = src[s] | (src[s + 1] << 8);
-    s += 2;
-    let len = token & 15;
-    if (len === 15) { let b; do { b = src[s++]; len += b; } while (b === 255); }
-    len += 4;
-    let m = d - offset;
-    if (offset >= len) { dst.copyWithin(d, m, m + len); d += len; }
-    else { for (let k = 0; k < len; k++) dst[d++] = dst[m++]; }
-  }
-  return d;
-}
-
 // The server runs with LINDROIDS_STATS=1 (its hello says so): frames, data and drawing time each
 // second, in a corner, and the page's layout in the server's log. Not in the URL: a window's URL
 // must stay the one Android raises it by.
 let STATS = null;
 function enableStats() {
   if (STATS) return;
-  STATS = { frames: 0, bytes: 0, pixels: 0, ms: 0, el: null };
+  STATS = { frames: 0, bytes: 0, pixels: 0, ms: 0, decode: 0, el: null };
   STATS.el = document.createElement('div');
   STATS.el.style.cssText = 'position:fixed;left:4px;bottom:4px;z-index:9;font:12px monospace;color:#0f0;background:#000a;padding:2px 6px;pointer-events:none';
   document.body.appendChild(STATS.el);
   setInterval(() => {
-    STATS.el.textContent = `${STATS.frames} fps  ${(STATS.bytes / 1024).toFixed(0)} KiB/s  ${(STATS.pixels / 1e6).toFixed(2)} Mpx/s  draw ${STATS.frames ? (STATS.ms / STATS.frames).toFixed(1) : 0} ms`;
-    STATS.frames = STATS.bytes = STATS.pixels = STATS.ms = 0;
+    STATS.el.textContent = `${STATS.frames} fps  ${(STATS.bytes / 1024).toFixed(0)} KiB/s  ${(STATS.pixels / 1e6).toFixed(2)} Mpx/s  draw ${STATS.frames ? (STATS.ms / STATS.frames).toFixed(1) : 0} ms (LZ4 ${STATS.frames ? (STATS.decode / STATS.frames).toFixed(1) : 0})  ${drawMode}`;
+    STATS.frames = STATS.bytes = STATS.pixels = STATS.ms = STATS.decode = 0;
   }, 1000);
 }
 
-let tileBuf = new Uint8ClampedArray(0);
+// Frames are drawn by draw.js: in a worker that owns the canvas where the browser allows that
+// (OffscreenCanvas), so a frame being decoded and drawn never delays input here; on the GPU
+// (WebGL) where there is one. `localStorage['lindroids.draw']` overrides, for tests: any of 'main'
+// (in the page), '2d' (no WebGL), 'gl' (WebGL even in software), comma-separated.
+const drawer = (() => {
+  let how = [];
+  try { how = (localStorage.getItem('lindroids.draw') || '').split(','); } catch (e) { /* storage off */ }
+  const answer = (a) => {
+    const w = windows.get(a.win);
+    switch (a.t) {
+      case 'drawn':
+        if (STATS) { STATS.frames++; STATS.bytes += a.bytes || 0; STATS.pixels += a.pixels || 0; STATS.ms += a.ms; STATS.decode += a.decode || 0; }
+        if (!w) return send({ t: 'frame_done', win: a.win });
+        w.pendingAck = true;
+        return ackLater(w);
+      case 'mode':
+        drawMode = a.mode;
+        if (!drawModeSaid) { drawModeSaid = true; trace(`draws with ${a.mode}${worker ? ' in a worker' : ''}${a.renderer ? ` (${a.renderer})` : ''}`); }
+        return;
+      case 'lost':
+        // The GPU context came back empty: the whole frame again.
+        trace('the GPU context was lost and restored');
+        if (w) { w.size = [0, 0]; resizeWindow(w); }
+        return;
+      default: return;
+    }
+  };
+  let worker = null;
+  if (!how.includes('main') && typeof Worker === 'function' && typeof OffscreenCanvas === 'function' &&
+      HTMLCanvasElement.prototype.transferControlToOffscreen) {
+    try {
+      worker = new Worker('/draw.js');
+      worker.onmessage = (e) => answer(e.data);
+      worker.onerror = (e) => plog(`draw worker: ${e.message}`);
+    } catch (e) {
+      worker = null;
+    }
+  }
+  const local = worker ? null : lindroidsDrawer((a) => answer(a));
+  const post = (m, transfer) => (worker ? worker.postMessage(m, transfer || []) : local(m));
+  post({ t: 'config', draw: how.includes('2d') ? '2d' : how.includes('gl') ? 'gl' : 'auto' });
+  return {
+    post,
+    canvas(win, canvas) {
+      if (worker) {
+        const off = canvas.transferControlToOffscreen();
+        post({ t: 'canvas', win, canvas: off }, [off]);
+      } else {
+        post({ t: 'canvas', win, canvas });
+      }
+    },
+  };
+})();
+let drawMode = '', drawModeSaid = false;
 
 function tiles(m, payload) {
   const w = windows.get(m.win);
   if (!w) return send({ t: 'frame_done', win: m.win });
-  const t = STATS && performance.now();
-  if (w.canvas.width !== m.width || w.canvas.height !== m.height) {
-    w.canvas.width = m.width;
-    w.canvas.height = m.height;
-  }
-  const size = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
-  // One buffer for every frame: a new one each time (megabytes for a large window) made the
-  // garbage collector stop the page mid-drag.
-  if (tileBuf.length < size) tileBuf = new Uint8ClampedArray(Math.max(size, tileBuf.length * 2));
-  const raw = tileBuf;
-  lz4(payload.subarray(4), raw);
-  let off = 0;
-  for (const [x, y, rw, rh] of m.rects) {
-    const n = rw * rh * 4;
-    w.ctx.putImageData(new ImageData(raw.subarray(off, off + n), rw, rh), x, y);
-    off += n;
-  }
-  if (STATS) { STATS.frames++; STATS.bytes += payload.length; STATS.pixels += size / 4; STATS.ms += performance.now() - t; }
-  w.pendingAck = true;
-  ackLater(w);
+  w.phys = [m.width, m.height];
+  // The message's own buffer goes to the drawer (moved, not copied); the page is done with it.
+  drawer.post({ t: 'tiles', win: m.win, width: m.width, height: m.height, rects: m.rects, data: payload.buffer, off: payload.byteOffset },
+    [payload.buffer]);
 }
 
 /// Acknowledge a frame as soon as it is drawn, so the program starts the next one while this one
@@ -779,8 +823,8 @@ document.addEventListener('visibilitychange', () => {
 // ------------------------------------------------------------------ pointer, touch, pen
 
 function toPhys(w, e) {
-  const r = w.canvas.getBoundingClientRect();
-  return [(e.clientX - r.left) * (w.canvas.width / r.width), (e.clientY - r.top) * (w.canvas.height / r.height)];
+  const r = stageRect || (stageRect = stage.getBoundingClientRect());
+  return [(e.clientX - r.left) * (w.phys[0] / r.width), (e.clientY - r.top) * (w.phys[1] / r.height)];
 }
 
 const touchIds = new Map(); // pointerId -> small touch id
@@ -809,7 +853,18 @@ function attachInput(w) {
       send({ t: 'pointer', win: w.win, action: 'press', x, y, button, time_ms: now() });
     }
   });
-  c.addEventListener('pointermove', (e) => {
+  // Moves: Chromium's pointerrawupdate comes as soon as the move does; pointermove can wait for
+  // the next animation frame (up to a frame later). Taken for the pointer types that have it (a
+  // mouse and a pen; touch too in Android's WebView); pointermove for the rest and in other browsers.
+  const raw = new Set();
+  if ('onpointerrawupdate' in window) {
+    c.addEventListener('pointerrawupdate', (e) => {
+      raw.add(e.pointerType);
+      move(e);
+    });
+  }
+  c.addEventListener('pointermove', (e) => { if (!raw.has(e.pointerType)) move(e); });
+  const move = (e) => {
     const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
     for (const ev of events.length ? events : [e]) {
       const [x, y] = toPhys(w, ev);
@@ -820,7 +875,7 @@ function attachInput(w) {
         send({ t: 'pointer', win: w.win, action: 'motion', x, y, button: 0, time_ms: now() });
       }
     }
-  });
+  };
   const up = (e, cancel) => {
     const [x, y] = toPhys(w, e);
     if (e.pointerType === 'touch') {
@@ -890,8 +945,16 @@ const held = new Set();
 let pasteWait = null;
 let lastHardwareKey = -1e9;
 
+// Keys that move the browser's focus (Android's WebView moves it among the page's buttons on a
+// D-pad or arrow key nobody took): with no window to take them (between a program's splash and
+// its window, while linking), they do nothing, rather than focus the tab bar's ✕ for Enter to press.
+const NAV_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter', ' ']);
 function onKey(e, down) {
-  if (active === null || !ready || e.target.tagName === 'INPUT') return;
+  if (e.target.tagName === 'INPUT') return;
+  if (active === null || !ready) {
+    if (panel.hidden && NAV_KEYS.has(e.key)) e.preventDefault();
+    return;
+  }
   const code = keyCode(e);
   if (!code) return;
   if (e.code) lastHardwareKey = performance.now();
@@ -1981,6 +2044,8 @@ document.addEventListener('fullscreenchange', () => trace(document.fullscreenEle
 addEventListener('pagehide', e => {
   trace(`pagehide${e.persisted ? ' (kept in the back/forward cache)' : ''}`);
   if (!e.persisted && ready) send({ t: 'closing' });
+  // Out now, not after this handler: the page is going.
+  sendLines();
 });
 
 // ------------------------------------------------------------------ start

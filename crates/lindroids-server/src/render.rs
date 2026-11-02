@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 /// Pixels of one committed surface, RGBA in memory (little-endian u32 0xAABBGGRR), premultiplied.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Image {
     pub width: u32,
     pub height: u32,
@@ -28,30 +28,35 @@ pub struct Placed {
     pub root: bool,
 }
 
-/// Compose `layers` (bottom to top) into `dst`.
-pub fn compose(dst: &mut [u32], dw: u32, dh: u32, stride: usize, layers: &[Placed]) {
+/// Compose `layers` (bottom to top) into `dst`, within `clip` ([x0, y0, x1, y1]); the rest of
+/// `dst` is left as it is.
+pub fn compose(dst: &mut [u32], dw: u32, dh: u32, stride: usize, layers: &[Placed], clip: [u32; 4]) {
+    let clip = [clip[0].min(dw), clip[1].min(dh), clip[2].min(dw), clip[3].min(dh)];
+    if clip[0] >= clip[2] || clip[1] >= clip[3] {
+        return;
+    }
     // Clear what the root surface will not cover. Most frames the root covers everything.
-    let covered = layers.first().map_or(false, |l| l.root && l.x <= 0 && l.y <= 0
-        && l.x + l.w as i32 >= dw as i32 && l.y + l.h as i32 >= dh as i32);
+    let covered = layers.first().map_or(false, |l| l.root && l.x <= clip[0] as i32 && l.y <= clip[1] as i32
+        && l.x + l.w as i32 >= clip[2] as i32 && l.y + l.h as i32 >= clip[3] as i32);
     if !covered {
-        for row in 0..dh as usize {
-            dst[row * stride..row * stride + dw as usize].fill(0xff00_0000);
+        for row in clip[1] as usize..clip[3] as usize {
+            dst[row * stride + clip[0] as usize..row * stride + clip[2] as usize].fill(0xff00_0000);
         }
     }
     for l in layers {
-        blit(dst, dw, dh, stride, l);
+        blit(dst, clip, stride, l);
     }
 }
 
-fn blit(dst: &mut [u32], dw: u32, dh: u32, stride: usize, l: &Placed) {
+fn blit(dst: &mut [u32], clip: [u32; 4], stride: usize, l: &Placed) {
     let img = &l.image;
     if img.width == 0 || img.height == 0 || l.w == 0 || l.h == 0 {
         return;
     }
-    let x0 = l.x.max(0);
-    let y0 = l.y.max(0);
-    let x1 = (l.x + l.w as i32).min(dw as i32);
-    let y1 = (l.y + l.h as i32).min(dh as i32);
+    let x0 = l.x.max(clip[0] as i32);
+    let y0 = l.y.max(clip[1] as i32);
+    let x1 = (l.x + l.w as i32).min(clip[2] as i32);
+    let y1 = (l.y + l.h as i32).min(clip[3] as i32);
     if x0 >= x1 || y0 >= y1 {
         return;
     }
@@ -67,15 +72,17 @@ fn blit(dst: &mut [u32], dw: u32, dh: u32, stride: usize, l: &Placed) {
             (y - l.y) as usize
         };
         let src_row = &img.data[sy * img.width as usize..(sy + 1) * img.width as usize];
-        let drow = &mut dst[y as usize * stride..y as usize * stride + dw as usize];
+        let drow = &mut dst[y as usize * stride..y as usize * stride + clip[2] as usize];
         if !scaled && !blend {
             let sx = (x0 - l.x) as usize;
             let n = (x1 - x0) as usize;
-            drow[x0 as usize..x1 as usize].copy_from_slice(&src_row[sx..sx + n]);
-            if l.root {
-                for p in &mut drow[x0 as usize..x1 as usize] {
-                    *p |= 0xff00_0000;
+            let (d, sr) = (&mut drow[x0 as usize..x1 as usize], &src_row[sx..sx + n]);
+            if l.root && !img.opaque {
+                for (p, &q) in d.iter_mut().zip(sr) {
+                    *p = q | 0xff00_0000;
                 }
+            } else {
+                d.copy_from_slice(sr);
             }
             continue;
         }
@@ -137,29 +144,106 @@ pub fn over(s: u32, d: u32) -> u32 {
 }
 
 /// Convert one row of wl_shm pixels into RGBA. Returns whether every pixel was opaque.
+/// Branch-free loops over whole pixels, so the compiler vectorizes them (NEON, SSE).
 pub fn convert_row(format: u32, src: &[u8], dst: &mut [u32]) -> bool {
     use wayland_server::protocol::wl_shm::Format;
-    let mut opaque = true;
     let n = dst.len();
-    let read = |i: usize| u32::from_le_bytes([src[i * 4], src[i * 4 + 1], src[i * 4 + 2], src[i * 4 + 3]]);
-    if format == Format::Argb8888 as u32 || format == Format::Xrgb8888 as u32 {
-        let x = format == Format::Xrgb8888 as u32;
-        for (i, d) in dst.iter_mut().enumerate().take(n) {
-            let v = read(i);
-            let v = (v & 0xff00_ff00) | ((v >> 16) & 0xff) | ((v & 0xff) << 16);
-            *d = if x { v | 0xff00_0000 } else { v };
-            opaque &= (*d >> 24) == 255;
+    let src = &src[..n * 4];
+    let swap = format == Format::Argb8888 as u32 || format == Format::Xrgb8888 as u32;
+    let x = format == Format::Xrgb8888 as u32 || format == Format::Xbgr8888 as u32;
+    let fill = if x { 0xff00_0000 } else { 0 };
+    let mut alpha = 0xff00_0000u32;
+    if swap {
+        for (d, s) in dst.iter_mut().zip(src.chunks_exact(4)) {
+            let v = u32::from_le_bytes([s[0], s[1], s[2], s[3]]);
+            let v = ((v & 0xff00_ff00) | ((v >> 16) & 0xff) | ((v & 0xff) << 16)) | fill;
+            alpha &= v;
+            *d = v;
         }
     } else {
         // Abgr8888 / Xbgr8888 are already RGBA in memory.
-        let x = format == Format::Xbgr8888 as u32;
-        for (i, d) in dst.iter_mut().enumerate().take(n) {
-            let v = read(i);
-            *d = if x { v | 0xff00_0000 } else { v };
-            opaque &= (*d >> 24) == 255;
+        for (d, s) in dst.iter_mut().zip(src.chunks_exact(4)) {
+            let v = u32::from_le_bytes([s[0], s[1], s[2], s[3]]) | fill;
+            alpha &= v;
+            *d = v;
         }
     }
-    opaque
+    alpha == 0xff00_0000
+}
+
+/// Where a frame's time goes on this side, with `LINDROIDS_STATS=1`: averages in the server's log
+/// every five seconds (the page shows its own side in a corner).
+pub mod timing {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    #[derive(Clone, Copy)]
+    pub enum Step {
+        /// Client buffers to RGBA, at commit.
+        Convert,
+        Compose,
+        Diff,
+        /// Changed tiles gathered and LZ4-compressed.
+        Pack,
+    }
+
+    struct Totals {
+        since: Instant,
+        frames: u32,
+        bytes: u64,
+        steps: [Duration; 4],
+    }
+
+    static TOTALS: Mutex<Option<Totals>> = Mutex::new(None);
+
+    pub fn on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("LINDROIDS_STATS").is_ok_and(|v| v == "1"))
+    }
+
+    fn with(f: impl FnOnce(&mut Totals)) {
+        let mut t = TOTALS.lock().unwrap();
+        let t = t.get_or_insert_with(|| Totals { since: Instant::now(), frames: 0, bytes: 0, steps: [Duration::ZERO; 4] });
+        f(t);
+    }
+
+    /// Time `f` as `step` when stats are on.
+    pub fn time<R>(step: Step, f: impl FnOnce() -> R) -> R {
+        if !on() {
+            return f();
+        }
+        let t0 = Instant::now();
+        let r = f();
+        let d = t0.elapsed();
+        with(|t| t.steps[step as usize] += d);
+        r
+    }
+
+    /// A frame went out with `bytes` of payload.
+    pub fn frame(bytes: usize) {
+        if !on() {
+            return;
+        }
+        with(|t| {
+            t.frames += 1;
+            t.bytes += bytes as u64;
+            let secs = t.since.elapsed().as_secs_f64();
+            if secs < 5.0 {
+                return;
+            }
+            let per = |d: Duration| d.as_secs_f64() * 1000.0 / t.frames as f64;
+            log::info!(
+                "frames: {:.1} fps, {:.0} KiB/s; per frame: convert {:.2} ms, compose {:.2}, diff {:.2}, pack {:.2}",
+                t.frames as f64 / secs,
+                t.bytes as f64 / 1024.0 / secs,
+                per(t.steps[0]),
+                per(t.steps[1]),
+                per(t.steps[2]),
+                per(t.steps[3])
+            );
+            *t = Totals { since: Instant::now(), frames: 0, bytes: 0, steps: [Duration::ZERO; 4] };
+        });
+    }
 }
 
 #[cfg(test)]
@@ -188,7 +272,7 @@ mod tests {
     fn composes_scaled_root() {
         let img = Arc::new(Image { width: 2, height: 2, data: vec![0xff11_1111; 4], opaque: true });
         let mut buf = vec![0u32; 16];
-        compose(&mut buf, 4, 4, 4, &[Placed { image: img, x: 0, y: 0, w: 4, h: 4, root: true }]);
+        compose(&mut buf, 4, 4, 4, &[Placed { image: img, x: 0, y: 0, w: 4, h: 4, root: true }], [0, 0, 4, 4]);
         assert!(buf.iter().all(|&p| p == 0xff11_1111));
     }
 }

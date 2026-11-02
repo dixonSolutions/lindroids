@@ -108,13 +108,19 @@ The compositor implements wl_compositor, wl_subcompositor, wl_shm, wp_viewporter
 (pointer/keyboard/touch), text-input-v3, wl_data_device (clipboard), wl_output and xdg-output.
 
 Client buffers are copied (and converted to RGBA) at commit, so clients get their buffers back at
-once. Each window is composited on the CPU into a canvas the size of the page's drawing area, in
+once: only the rectangles the client damaged, into the memory the surface already has. Each window is composited on the CPU into a canvas the size of the page's drawing area, in
 physical pixels — the root surface copied, subsurfaces and popups blended — then compared with the
-last frame sent in 64×64 tiles; the changed tiles go to the page LZ4-compressed, and the page puts
-them into its canvas. One frame per window is in flight; the page acknowledges it on the next
-animation frame, and only then do the clients' frame callbacks fire, so clients render at the
-speed the screen takes frames. A window whose tab is not shown (or a page in the background)
-holds its acknowledgement and its clients idle.
+last frame sent in 64×64 tiles (when no surface moved, only the union of what they damaged is
+composed and compared); the changed tiles go to the page LZ4-compressed, written straight
+into the link's output buffer (one copy of the payload). The page draws them on the GPU: a worker
+that owns the window's canvas (`OffscreenCanvas`, `data/web/draw.js`) decodes the LZ4 and uploads
+each tile into a WebGL texture (`texSubImage2D`) that one triangle draws, so decoding and drawing
+never delay input on the page's main thread. Without a GPU (a software GL such as SwiftShader or
+llvmpipe) it uses `putImageData`; without `OffscreenCanvas` the same code runs in the page. A lost
+GPU context asks the server for a whole frame (a resize always gets one). One frame per window is
+in flight; the page acknowledges it once drawn, and only then do the clients' frame callbacks
+fire, so clients render at the speed the page takes frames. A window whose tab is not shown (or a
+page in the background) holds its acknowledgement and its clients idle.
 
 **Scale.** The output scale is an integer a little below the screen density (`density × 0.75`,
 rounded): desktop apps get ~540 logical pixels across a phone instead of 360. A client that is
@@ -123,6 +129,13 @@ one that is smaller (a dialog with a size of its own) is centred. Input is mappe
 same transform.
 
 ## Input
+
+Input is sent the moment it happens: the lines one event makes (a move's coalesced points, a key
+with its Shift) leave in one WebSocket message when its handler ends; a mouse or pen moving uses
+Chromium's `pointerrawupdate`, which does not wait for the next animation frame; the canvas
+position is kept between events rather than read (a layout) on each. The window app asks Android
+for unbuffered pointer events (`requestUnbufferedDispatch`, Android 11+) and the screen's fastest
+refresh rate.
 
 The page's pointer events become `wl_touch` for touches on clients that bound it, and a
 left-button pointer for those that did not (or for everyone with `LINDROIDS_TOUCH=pointer`). A pen

@@ -311,7 +311,11 @@ pub struct Window {
     /// The last frame sent (what the app shows), and its size: new frames send only changes.
     pub shown: Vec<u32>,
     pub shown_size: (u32, u32),
+    /// The latest composed frame (`shown` once sent), kept to compose only what changed.
     pub canvas: Vec<u32>,
+    /// Where each surface was drawn in it (surface, x, y, w, h in physical pixels): when this is
+    /// the same, only the surfaces' damage is composed again.
+    pub layout: Vec<(ObjectId, i32, i32, u32, u32)>,
     /// A frame is on its way to the screen; the next waits for FrameDone.
     pub in_flight: bool,
     /// Surfaces drawn in frames the app has not shown yet: their frame callbacks wait for it.
@@ -1180,6 +1184,9 @@ impl State {
                 if let Some(w) = self.windows.get_mut(&win) {
                     w.phys = Some((width, height));
                     w.dirty = true;
+                    // The page sizes a window when it shows it or its canvas came back empty (a
+                    // lost GPU context): the next frame is a whole one, not only what changed.
+                    w.shown_size = (0, 0);
                 }
                 output::screen_size_hint(self, width, height);
                 self.configure_window(win, false);
@@ -2079,21 +2086,74 @@ fn render_dirty(state: &mut State) {
             }
         }
         let n = (pw * ph) as usize;
+        let layout: Vec<(ObjectId, i32, i32, u32, u32)> =
+            layers.rects.iter().zip(&layers.placed).map(|(r, p)| (r.0.clone(), p.x, p.y, p.w, p.h)).collect();
+        let whole = w.shown_size != (pw, ph) || w.shown.len() != n || w.canvas.len() != n || layout != w.layout;
+        w.layout = layout;
+        // Only what the surfaces damaged, when nothing moved: the union of their rectangles,
+        // mapped to the window (and a margin for the 2x2 averaging of a scaled-down client).
+        let mut clip = if whole { Some([0, 0, pw, ph]) } else { None };
+        if !whole {
+            for (i, p) in layers.placed.iter().enumerate() {
+                let Some(s) = state.surfaces.get(&layers.rects[i].0) else { continue };
+                let Some(damaged) = &s.damaged else {
+                    clip = Some([0, 0, pw, ph]);
+                    break;
+                };
+                let (iw, ih) = (p.image.width.max(1) as i64, p.image.height.max(1) as i64);
+                for &(x, y, dw, dh) in damaged {
+                    let (x, y, dw, dh) = (x as i64, y as i64, dw.max(0) as i64, dh.max(0) as i64);
+                    let x0 = p.x as i64 + x * p.w as i64 / iw - 2;
+                    let y0 = p.y as i64 + y * p.h as i64 / ih - 2;
+                    let x1 = p.x as i64 + ((x + dw) * p.w as i64 + iw - 1) / iw + 2;
+                    let y1 = p.y as i64 + ((y + dh) * p.h as i64 + ih - 1) / ih + 2;
+                    let r = [x0.clamp(0, pw as i64) as u32, y0.clamp(0, ph as i64) as u32, x1.clamp(0, pw as i64) as u32, y1.clamp(0, ph as i64) as u32];
+                    if r[0] >= r[2] || r[1] >= r[3] {
+                        continue;
+                    }
+                    clip = Some(match clip {
+                        None => r,
+                        Some(c) => [c[0].min(r[0]), c[1].min(r[1]), c[2].max(r[2]), c[3].max(r[3])],
+                    });
+                }
+            }
+        }
         w.canvas.resize(n, 0);
-        render::compose(&mut w.canvas, pw, ph, pw as usize, &layers.placed);
+        w.shown.resize(n, 0);
         w.dirty = false;
-        let rects = if w.shown_size != (pw, ph) || w.shown.len() != n {
-            vec![[0, 0, pw, ph]]
-        } else {
-            frames::diff(&w.shown, &w.canvas, pw, ph)
+        let rects = match clip {
+            Some(clip) => {
+                render::timing::time(render::timing::Step::Compose, || render::compose(&mut w.canvas, pw, ph, pw as usize, &layers.placed, clip));
+                if whole {
+                    vec![[0, 0, pw, ph]]
+                } else {
+                    render::timing::time(render::timing::Step::Diff, || frames::diff(&w.shown, &w.canvas, pw, ph, clip))
+                }
+            }
+            None => Vec::new(),
         };
+        let ids: Vec<ObjectId> = layers.rects.iter().map(|r| r.0.clone()).collect();
+        for id in &ids {
+            if let Some(s) = state.surfaces.get_mut(id) {
+                s.damaged = Some(Vec::new());
+            }
+        }
+        let Some(w) = state.windows.get_mut(&win) else { continue };
         if rects.is_empty() {
             // Nothing visible changed: the client may draw again right away.
             state.frame_due.extend(layers.surfaces);
             continue;
         }
-        let payload = frames::pack(&w.canvas, pw, &rects);
-        std::mem::swap(&mut w.shown, &mut w.canvas);
+        let payload = render::timing::time(render::timing::Step::Pack, || frames::pack(&w.canvas, pw, &rects));
+        render::timing::frame(payload.len());
+        // What the page will show: the changed rectangles, copied.
+        for r in &rects {
+            for y in r[1]..r[1] + r[3] {
+                let a = (y * pw + r[0]) as usize;
+                let b = a + r[2] as usize;
+                w.shown[a..b].copy_from_slice(&w.canvas[a..b]);
+            }
+        }
         w.shown_size = (pw, ph);
         w.in_flight = true;
         w.waiting.extend(layers.surfaces);

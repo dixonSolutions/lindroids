@@ -3,17 +3,20 @@
 
 pub const TILE: u32 = 64;
 
-/// Changed rectangles between `prev` and `cur` (both `w * h`, row-major). Tiles that changed and
-/// sit next to each other in a tile row become one rectangle.
-pub fn diff(prev: &[u32], cur: &[u32], w: u32, h: u32) -> Vec<[u32; 4]> {
+/// Changed rectangles between `prev` and `cur` (both `w * h`, row-major), looking only at the
+/// tiles that meet `clip` ([x0, y0, x1, y1]). Tiles that changed and sit next to each other in a
+/// tile row become one rectangle.
+pub fn diff(prev: &[u32], cur: &[u32], w: u32, h: u32, clip: [u32; 4]) -> Vec<[u32; 4]> {
     let mut rects = Vec::new();
     let tx = w.div_ceil(TILE);
     let ty = h.div_ceil(TILE);
-    for j in 0..ty {
+    let (i0, j0) = (clip[0] / TILE, clip[1] / TILE);
+    let (i1, j1) = (clip[2].div_ceil(TILE).min(tx), clip[3].div_ceil(TILE).min(ty));
+    for j in j0..j1 {
         let y0 = j * TILE;
         let th = TILE.min(h - y0);
         let mut run: Option<(u32, u32)> = None; // (x0, x1)
-        for i in 0..tx {
+        for i in i0..i1 {
             let x0 = i * TILE;
             let tw = TILE.min(w - x0);
             let changed = (y0..y0 + th).any(|y| {
@@ -53,12 +56,23 @@ pub fn pack(frame: &[u32], w: u32, rects: &[[u32; 4]]) -> Vec<u8> {
     for r in rects {
         for y in r[1]..r[1] + r[3] {
             let a = (y * w + r[0]) as usize;
-            for p in &frame[a..a + r[2] as usize] {
-                raw.extend_from_slice(&p.to_le_bytes());
-            }
+            raw.extend_from_slice(&as_le_bytes(&frame[a..a + r[2] as usize]));
         }
     }
     lz4_flex::compress_prepend_size(&raw)
+}
+
+/// Pixels as the bytes that cross the link (each u32 little-endian): on a little-endian machine
+/// (every Android ABI) the memory as it is, a row at a time instead of a pixel at a time.
+#[cfg(target_endian = "little")]
+fn as_le_bytes(px: &[u32]) -> &[u8] {
+    // SAFETY: u32 has no padding and any byte is a valid u8; the length is in bytes.
+    unsafe { std::slice::from_raw_parts(px.as_ptr() as *const u8, std::mem::size_of_val(px)) }
+}
+
+#[cfg(target_endian = "big")]
+fn as_le_bytes(px: &[u32]) -> std::borrow::Cow<'_, [u8]> {
+    px.iter().flat_map(|p| p.to_le_bytes()).collect::<Vec<u8>>().into()
 }
 
 /// The receiving side: apply a packed payload to `frame`.
@@ -93,7 +107,7 @@ mod tests {
         let mut cur = prev.clone();
         cur[(150 * w + 10) as usize] = 7; // tile (0, 2)
         cur[(150 * w + 70) as usize] = 9; // tile (1, 2): same run
-        let rects = diff(&prev, &cur, w, h);
+        let rects = diff(&prev, &cur, w, h, [0, 0, w, h]);
         assert_eq!(rects, vec![[0, 128, 128, 64]]);
         let payload = pack(&cur, w, &rects);
         let mut out = prev.clone();
@@ -104,6 +118,6 @@ mod tests {
     #[test]
     fn identical_frames_send_nothing() {
         let f = vec![5u32; 100 * 100];
-        assert!(diff(&f, &f, 100, 100).is_empty());
+        assert!(diff(&f, &f, 100, 100, [0, 0, 100, 100]).is_empty());
     }
 }

@@ -101,6 +101,16 @@ $A shell 'input text "echo%shello"; input keyevent 66'             # hardware-st
   curl -s localhost:9444/json      # webSocketDebuggerUrl -> Runtime.evaluate (Node 22 has WebSocket)
   ```
   Page functions are globals (classic script): wrap them to trace (`showKeyboard`, `tiles`, ...).
+- **Mouse on the VM**: never `input mouse swipe` (Android 12 on b15): it hangs, and the stuck
+  `input` processes took system_server down (Termux and sshd with it: `lab/provision.sh b15`
+  starts sshd again). Move the VM's USB tablet, which Android treats as a mouse, over QMP instead:
+  `input-send-event` with `abs` x/y in 0..32767 (and `btn` left for a drag) on
+  `~/VMs/lindroids-lab/run/<vm>/qmp.sock`, one connection, a move every 8 ms.
+- **Input latency**: in the page, `performance.now() - event.timeStamp` in a capture listener is
+  how long an event waited (timeStamp is Android's own event time). Wrap the page's `ws.onmessage`
+  and `ws.send` over DevTools (top-level `let`s are reachable from `Runtime.evaluate`) to time
+  key -> frame and frame -> `frame_done`. Other sessions' builds load the host: interleave the
+  builds compared, several runs each, and compare medians.
 - **Video**: the VM has no hardware encoder (`screenrecord` fails): `lab/record.sh`. The tablet
   records with `adb shell screenrecord`.
 - `pkill -f <pattern>` over ssh can kill the ssh shell itself when the pattern is in its command

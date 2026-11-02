@@ -14,6 +14,7 @@
     <application
         android:allowBackup="false"
         android:enableOnBackInvokedCallback="true"
+        android:hardwareAccelerated="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:label="@@LINDROIDS_PROGRAM_NAME@@"

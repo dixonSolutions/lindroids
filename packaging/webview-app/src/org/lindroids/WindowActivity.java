@@ -18,6 +18,8 @@ import android.os.Bundle;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.util.Base64;
+import android.view.Display;
+import android.view.InputDevice;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -145,6 +147,15 @@ public class WindowActivity extends Activity {
             webView.setDefaultFocusHighlightEnabled(false);
             webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
         }
+        // Touches, a mouse and a pen reach the page as they come, not batched to the screen's next
+        // frame: what a finger does gets to the program up to a frame sooner. Asked again at each
+        // gesture's start, since the WebView taking focus drops the standing request.
+        webView.setOnTouchListener((v, e) -> {
+            if (e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) v.requestUnbufferedDispatch(e);
+            return false;
+        });
+        unbuffered();
+        fastestRefreshRate();
 
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
@@ -166,6 +177,9 @@ public class WindowActivity extends Activity {
         webView.setWebChromeClient(new Chrome());
         webView.setDownloadListener(new Downloads());
         load(url);
+        webView.setFocusable(true);
+        webView.setFocusableInTouchMode(true);
+        takeKeys();
 
         if (Build.VERSION.SDK_INT >= 33) {
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
@@ -267,6 +281,26 @@ public class WindowActivity extends Activity {
         handleBack();
     }
 
+    /**
+     * The screen's fastest refresh rate at its resolution: tablets and phones with 90 or 120 Hz
+     * screens often run an app at 60 unless it asks. Frames and input then come that much faster.
+     */
+    private void fastestRefreshRate() {
+        try {
+            Display d = getWindowManager().getDefaultDisplay();
+            Display.Mode cur = d.getMode(), best = cur;
+            for (Display.Mode m : d.getSupportedModes()) {
+                if (m.getPhysicalWidth() == cur.getPhysicalWidth() && m.getPhysicalHeight() == cur.getPhysicalHeight()
+                        && m.getRefreshRate() > best.getRefreshRate()) best = m;
+            }
+            WindowManager.LayoutParams lp = getWindow().getAttributes();
+            lp.preferredDisplayModeId = best.getModeId();
+            getWindow().setAttributes(lp);
+        } catch (Throwable t) {
+            // The default mode, then.
+        }
+    }
+
     private void makeImmersive() {
         if (Build.VERSION.SDK_INT >= 30) {
             getWindow().setDecorFitsSystemWindows(false);
@@ -317,7 +351,25 @@ public class WindowActivity extends Activity {
     @Override
     public void onWindowFocusChanged(boolean focused) {
         super.onWindowFocusChanged(focused);
-        if (focused) makeImmersive();
+        if (focused) {
+            makeImmersive();
+            takeKeys();
+        }
+    }
+
+    /**
+     * Keys go to the page from the start: a WebView without Android's focus takes the first D-pad
+     * or arrow key to gain it, and moves the page's focus with it (to a button or the hidden text
+     * area) instead of passing the key on to the program.
+     */
+    private void takeKeys() {
+        if (webView != null && !webView.hasFocus()) webView.requestFocus(View.FOCUS_DOWN);
+        unbuffered();
+    }
+
+    /** Every pointer event unbuffered (Android 11+), mouse and pen moves without a button too. */
+    private void unbuffered() {
+        if (webView != null && Build.VERSION.SDK_INT >= 30) webView.requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_POINTER);
     }
 
     @Override

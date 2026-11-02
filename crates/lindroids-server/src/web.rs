@@ -20,6 +20,8 @@ const CLIENT_JS: &str = include_str!("../data/web/lindroids.js");
 const ICON_SVG: &str = include_str!("../data/web/icon.svg");
 /// The microphone's AudioWorklet module: a file of its own, as the page's CSP allows no blob: one.
 const MIC_WORKLET_JS: &str = include_str!("../data/web/mic-worklet.js");
+/// Drawing frames, in a worker of the page's (a file of its own for the same reason) or in the page.
+const DRAW_JS: &str = include_str!("../data/web/draw.js");
 /// An exported program's own pages, when the server cannot be reached (`export --webapk`).
 const APP_SW_JS: &str = include_str!("../data/web/app-sw.js");
 const APP_OFFLINE_HTML: &str = include_str!("../data/web/app-offline.html");
@@ -35,6 +37,7 @@ pub fn page_build() -> &'static str {
         h.update(INDEX_HTML.as_bytes());
         h.update(CLIENT_JS.as_bytes());
         h.update(MIC_WORKLET_JS.as_bytes());
+        h.update(DRAW_JS.as_bytes());
         let d = h.finalize();
         format!("{}+{:02x}{:02x}{:02x}{:02x}", crate::BUILD, d[0], d[1], d[2], d[3])
     })
@@ -175,6 +178,7 @@ pub fn answer(req: &Request, port: u16) -> Answer {
         ),
         "/icon.svg" => ("image/svg+xml", ICON_SVG.as_bytes().into()),
         "/mic-worklet.js" => ("text/javascript; charset=utf-8", MIC_WORKLET_JS.as_bytes().into()),
+        "/draw.js" => ("text/javascript; charset=utf-8", DRAW_JS.as_bytes().into()),
         p if p.starts_with("/app/") => match app_file(p, &req.query, port) {
             Some(file) => file,
             None => return Answer::Close(response(404, "text/plain", b"not found\n")),
@@ -448,8 +452,15 @@ fn accept_key(key: &str) -> String {
 /// One binary WebSocket message from the server (unmasked).
 pub fn frame(opcode: u8, data: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(data.len() + 10);
+    frame_head(&mut v, opcode, data.len());
+    v.extend_from_slice(data);
+    v
+}
+
+/// The head of an unmasked frame of `len` bytes, onto `v` (its data follows).
+pub fn frame_head(v: &mut Vec<u8>, opcode: u8, len: usize) {
     v.push(0x80 | opcode);
-    match data.len() {
+    match len {
         n if n < 126 => v.push(n as u8),
         n if n <= 0xffff => {
             v.push(126);
@@ -460,8 +471,6 @@ pub fn frame(opcode: u8, data: &[u8]) -> Vec<u8> {
             v.extend_from_slice(&(n as u64).to_be_bytes());
         }
     }
-    v.extend_from_slice(data);
-    v
 }
 
 pub const OP_BINARY: u8 = 2;
@@ -507,7 +516,10 @@ pub fn unframe(buf: &mut Vec<u8>) -> Unframed {
         }
         let mask = [b[at], b[at + 1], b[at + 2], b[at + 3]];
         at += 4;
-        let payload: Vec<u8> = b[at..at + len as usize].iter().enumerate().map(|(i, x)| x ^ mask[i % 4]).collect();
+        let mut payload = b[at..at + len as usize].to_vec();
+        for (i, x) in payload.iter_mut().enumerate() {
+            *x ^= mask[i & 3];
+        }
         pos += at + len as usize;
         match opcode {
             0 | 1 | 2 => out.data.extend_from_slice(&payload),

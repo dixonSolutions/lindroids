@@ -493,6 +493,7 @@ impl Dispatch<xdg_surface::XdgSurface, ObjectId> for State {
                         shown: Vec::new(),
                         shown_size: (0, 0),
                         canvas: Vec::new(),
+                        layout: Vec::new(),
                         in_flight: false,
                         waiting: Vec::new(),
                         popups: Vec::new(),

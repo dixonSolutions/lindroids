@@ -134,13 +134,15 @@ impl Link {
         if self.broken {
             return;
         }
-        let bytes = proto::encode_with(msg, payload);
+        // Straight into the output buffer: a frame's payload is megabytes, copied once.
+        let line = proto::encode(msg);
         if self.wire == Wire::WebSocket {
             // One message per WebSocket message: the browser needs no framer of its own.
-            self.out.extend_from_slice(&web::frame(web::OP_BINARY, &bytes));
-        } else {
-            self.out.extend_from_slice(&bytes);
+            web::frame_head(&mut self.out, web::OP_BINARY, line.len() + payload.len());
         }
+        self.out.reserve(line.len() + payload.len());
+        self.out.extend_from_slice(&line);
+        self.out.extend_from_slice(payload);
         self.flush();
     }
 

@@ -31,6 +31,10 @@ pub struct Pending {
     pub scale: Option<i32>,
     pub frame: Vec<wl_callback::WlCallback>,
     pub viewport_dst: Option<Option<(i32, i32)>>,
+    /// What changed since the last commit: rectangles (x, y, w, h) in surface and in buffer
+    /// coordinates. Only these are converted from a new buffer of the same size.
+    pub damage: Vec<(i32, i32, i32, i32)>,
+    pub damage_buffer: Vec<(i32, i32, i32, i32)>,
 }
 
 pub struct SubState {
@@ -57,6 +61,8 @@ pub struct Surface {
     pub sub: Option<SubState>,
     pub committed_once: bool,
     pub xdg: Option<super::shell::XdgInfo>,
+    /// What changed since its window was last composed, in buffer pixels; None: all of it.
+    pub damaged: Option<Vec<(i32, i32, i32, i32)>>,
 }
 
 impl Surface {
@@ -117,6 +123,7 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for State {
                         children: Vec::new(),
                         sub: None,
                         committed_once: false,
+                        damaged: None,
                         xdg: None,
                     },
                 );
@@ -169,9 +176,19 @@ impl Dispatch<wl_surface::WlSurface, ()> for State {
                     s.pending.scale = Some(scale.max(1));
                 }
             }
+            wl_surface::Request::Damage { x, y, width, height } => {
+                if let Some(s) = state.surfaces.get_mut(&id) {
+                    s.pending.damage.push((x, y, width, height));
+                }
+            }
+            wl_surface::Request::DamageBuffer { x, y, width, height } => {
+                if let Some(s) = state.surfaces.get_mut(&id) {
+                    s.pending.damage_buffer.push((x, y, width, height));
+                }
+            }
             wl_surface::Request::Commit => commit(state, &id),
             wl_surface::Request::Destroy => {}
-            // Damage, regions, transform and offset: every commit redraws the whole window.
+            // Regions, transform and offset: windows take input everywhere, and are drawn as is.
             _ => {}
         }
     }
@@ -225,6 +242,8 @@ fn merge(into: &mut Pending, p: Pending) {
         into.viewport_dst = p.viewport_dst;
     }
     into.frame.extend(p.frame);
+    into.damage.extend(p.damage);
+    into.damage_buffer.extend(p.damage_buffer);
 }
 
 fn apply(state: &mut State, id: &ObjectId, p: Pending) {
@@ -232,14 +251,40 @@ fn apply(state: &mut State, id: &ObjectId, p: Pending) {
     if let Some(b) = p.buffer {
         match b {
             Some(buf) => {
-                match read_buffer(&buf) {
-                    Ok(img) => s.image = Some(Arc::new(img)),
-                    Err(e) => warn!("unreadable buffer: {e}"),
+                // Only what the client damaged, in buffer pixels; everything when it said nothing
+                // (some clients attach without damage), or when a viewport scales the surface.
+                let scale = p.scale.unwrap_or(s.buffer_scale).max(1);
+                let viewport = p.viewport_dst.unwrap_or(s.viewport_dst).is_some();
+                let damage: Option<Vec<(i32, i32, i32, i32)>> = if viewport || (p.damage.is_empty() && p.damage_buffer.is_empty()) {
+                    None
+                } else {
+                    Some(p.damage.iter().map(|&(x, y, w, h)| (x.saturating_mul(scale), y.saturating_mul(scale), w.saturating_mul(scale), h.saturating_mul(scale)))
+                        .chain(p.damage_buffer.iter().copied()).collect())
+                };
+                let size = s.image.as_ref().map(|i| (i.width, i.height));
+                let r = super::render::timing::time(super::render::timing::Step::Convert, || read_buffer(&buf, &mut s.image, damage.as_deref()));
+                let same = size.is_some() && size == s.image.as_ref().map(|i| (i.width, i.height));
+                s.damaged = match (damage, s.damaged.take()) {
+                    (Some(d), Some(mut had)) if same && had.len() + d.len() <= 64 => {
+                        had.extend(d);
+                        Some(had)
+                    }
+                    _ => None,
+                };
+                if let Err(e) = r {
+                    warn!("unreadable buffer: {e}");
                 }
                 buf.release();
             }
-            None => s.image = None,
+            None => {
+                s.image = None;
+                s.damaged = None;
+            }
         }
+    }
+    // A new scale or viewport moves every pixel (clients often send the same one again: no change).
+    if p.scale.is_some_and(|sc| sc != s.buffer_scale) || p.viewport_dst.is_some_and(|v| v != s.viewport_dst) {
+        s.damaged = None;
     }
     if let Some(sc) = p.scale {
         s.buffer_scale = sc;
@@ -286,7 +331,16 @@ fn apply(state: &mut State, id: &ObjectId, p: Pending) {
     state.mark_dirty(id);
 }
 
-fn read_buffer(buf: &wl_buffer::WlBuffer) -> Result<Image, String> {
+/// Threads that convert a large buffer: the cores there are, up to four.
+fn converters() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| std::thread::available_parallelism().map_or(1, |n| n.get()).min(4))
+}
+
+/// The buffer's pixels into `image`: the damaged rectangles only, into the image already there,
+/// when it has the buffer's size; otherwise all of it (into the same memory when the size is the
+/// same: a new allocation per commit was megabytes of page faults).
+fn read_buffer(buf: &wl_buffer::WlBuffer, image: &mut Option<Arc<Image>>, damage: Option<&[(i32, i32, i32, i32)]>) -> Result<(), String> {
     let data = buf.data::<Arc<BufferData>>().ok_or("not a wl_shm buffer")?;
     let pool = data.pool.lock().unwrap();
     let needed = data.offset as usize + data.stride as usize * data.height as usize;
@@ -298,16 +352,66 @@ fn read_buffer(buf: &wl_buffer::WlBuffer) -> Result<Image, String> {
     if needed > pool.len {
         return Err("buffer is past the end of its pool".into());
     }
-    let mut img = Image { width: data.width as u32, height: data.height as u32, data: vec![0; (data.width * data.height) as usize], opaque: true };
-    let base = unsafe { std::slice::from_raw_parts(pool.ptr as *const u8, pool.len) };
-    let w = data.width as usize;
-    for y in 0..data.height as usize {
-        let off = data.offset as usize + y * data.stride as usize;
-        let row = &base[off..off + w * 4];
-        let o = convert_row(data.format, row, &mut img.data[y * w..(y + 1) * w]);
-        img.opaque &= o;
+    let (w, h) = (data.width as usize, data.height as usize);
+    let same = image.as_ref().is_some_and(|i| i.width as usize == w && i.height as usize == h);
+    if !same {
+        *image = Some(Arc::new(Image { width: w as u32, height: h as u32, data: vec![0; w * h], opaque: true }));
     }
-    Ok(img)
+    // Shared only while a frame is being composed; otherwise this is the image itself.
+    let img = Arc::make_mut(image.as_mut().unwrap());
+    let base = unsafe { std::slice::from_raw_parts(pool.ptr as *const u8, pool.len) };
+    let full = [(0, 0, w as i32, h as i32)];
+    let rects = match damage {
+        Some(d) if same => d,
+        _ => &full[..],
+    };
+    let whole = rects.iter().any(|&(x, y, rw, rh)| x <= 0 && y <= 0 && x.saturating_add(rw) >= w as i32 && y.saturating_add(rh) >= h as i32);
+    let mut opaque = true;
+    for &(x, y, rw, rh) in rects {
+        let x0 = x.clamp(0, w as i32) as usize;
+        let y0 = y.clamp(0, h as i32) as usize;
+        let x1 = x.saturating_add(rw).clamp(0, w as i32) as usize;
+        let y1 = y.saturating_add(rh).clamp(0, h as i32) as usize;
+        if x0 >= x1 || y0 >= y1 {
+            continue;
+        }
+        let (format, offset, stride) = (data.format, data.offset as usize, data.stride as usize);
+        // Rows y0.. of `band` (rows band_y0.. of the image), converted.
+        let convert = |band: &mut [u32], band_y0: usize, rows: std::ops::Range<usize>| {
+            let mut opaque = true;
+            for row in rows {
+                let off = offset + row * stride + x0 * 4;
+                let d = (row - band_y0) * w;
+                opaque &= convert_row(format, &base[off..off + (x1 - x0) * 4], &mut band[d + x0..d + x1]);
+            }
+            opaque
+        };
+        // A large update (a whole frame) on several cores: a phone has four to eight.
+        let threads = if (x1 - x0) * (y1 - y0) >= 1 << 18 { converters() } else { 1 };
+        if threads <= 1 {
+            opaque &= convert(&mut img.data[y0 * w..y1 * w], y0, y0..y1);
+            continue;
+        }
+        let per = (y1 - y0).div_ceil(threads);
+        opaque &= std::thread::scope(|sc| {
+            let mut rest = &mut img.data[y0 * w..y1 * w];
+            let mut handles = Vec::new();
+            let mut at = y0;
+            while at < y1 {
+                let end = (at + per).min(y1);
+                let (band, tail) = std::mem::take(&mut rest).split_at_mut((end - at) * w);
+                rest = tail;
+                let convert = &convert;
+                handles.push(sc.spawn(move || convert(band, at, at..end)));
+                at = end;
+            }
+            handles.into_iter().all(|h| h.join().unwrap_or(false))
+        });
+    }
+    // A partial update can only make an opaque image less so; an image converted whole is what
+    // its pixels say.
+    img.opaque = if whole { opaque } else { img.opaque && opaque };
+    Ok(())
 }
 
 // ------------------------------------------------------------------ subsurfaces

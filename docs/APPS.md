@@ -206,6 +206,71 @@ included. Open: twice, the first character typed right after the app started was
 ("base64" arrived as "ase64"); not reproduced after, with the page's events traced over
 DevTools (the page had the character; the loss is on the server or program side).
 
+## Input and the GPU (fifth round, lab VM)
+
+Asked for: input as fast as it can be, drawing on the GPU. Changed:
+
+- **The window app** asks Android for unbuffered pointer events (`requestUnbufferedDispatch`,
+  Android 11+): touches reach the page as they come, not batched to the screen's next frame. It
+  also asks for the screen's fastest refresh rate, and declares hardware acceleration.
+- **The page** draws in a worker that owns the canvas (`OffscreenCanvas`, `data/web/draw.js`), on
+  the GPU: each changed tile goes into a WebGL texture (`texSubImage2D`) that one triangle draws.
+  Software GL (SwiftShader, llvmpipe) falls back to `putImageData`; browsers without
+  `OffscreenCanvas` run the same code in the page. A lost GPU context gets a whole frame again.
+  LZ4 decoding copies repeated runs in doubling chunks (2.4x faster on the same data, and checked
+  byte for byte against `lz4_flex` on 60 generated payloads).
+- **Input** leaves at once: the lines one event makes go in one WebSocket message; mouse, pen (and
+  in WebView, touch) moves come from `pointerrawupdate`; the canvas position is kept, not read on
+  every event.
+- **The server** packs and sends frames with fewer copies (rows, not pixels; the payload straight
+  into the link's buffer), and converts client buffers in loops the compiler vectorizes.
+- **Only what changed** (second pass): a client's `damage`/`damage_buffer` rectangles are all that
+  is converted from its new buffer, into the memory the surface already has (a new allocation per
+  commit was megabytes of page faults); when no surface moved, only their union is composed and
+  diffed again. A whole buffer is converted on up to four cores; `lz4_flex` compresses with its
+  fast (non-`safe`) encoder. `LINDROIDS_STATS=1` now also logs the server's own time per frame.
+- **Keys from the first one:** the window app gives its WebView Android's focus when the window
+  opens (a WebView without it took the first D-pad or arrow key to gain focus, and moved the page's
+  focus to a button or the hidden text area instead of passing the key on; reported on b15 with
+  Tux Typing); the page's buttons and that text area are out of key focus; a window's canvas takes
+  the focus when it is activated.
+
+Measured on lab VM b15 (Android 12L, WebView 129, virgl GPU), foot in the windows app, the page's
+own timestamps over DevTools (`event.timeStamp` is Android's event time). Medians of three runs,
+before and after interleaved; the host was shared with other builds, so single runs vary:
+
+| What | Before | After |
+| --- | --- | --- |
+| A touch move: Android's event to the page's handler | 14.4 ms (p95 15.2) | 1.4 ms (p95 3.4); `pointerrawupdate` 0.5 ms |
+| The same during a full-screen redraw (`base64 /dev/urandom`) | 17.5 ms (p95 34.4) | 2.1 ms (p95 9.1) |
+| Full-screen redraw, 1280x800 | 31 fps, drawn in 9 ms (p95 19) | 38.6 fps, 5.7 ms (p95 17.8); final build 47 fps, 4.7 ms |
+| A key: press to the program's frame back | 14.5 ms (p95 86) | 6.1 ms (p95 9.2) |
+| A mouse move (the VM's USB tablet over QMP) | 10.9 ms | 10.9-14.3 ms: unchanged within the noise |
+
+Second pass, same VM and method, interleaved with the first pass's build (three runs each):
+
+| What | First pass | Second pass |
+| --- | --- | --- |
+| A key: press to the program's frame back | 6.9 ms (p95 9.5) | 2.9 ms (p95 4.0); 2.8 ms on the final build |
+| Full-screen redraw | 45.3 fps | 48.3 fps; 47.7 on the final build |
+| Server, per full frame (desktop, foot 1280x800) | convert 2.0 ms, compose 0.6, diff 0.5, pack 2.3 | convert 0.64, compose 0.6, diff 0.4, pack 1.9 |
+| Server, per typed character (desktop) | convert ~2 ms, compose ~1.1, diff ~0.6 | convert 0.3, compose 0.3, diff 0.01 |
+| The first D-pad key after a window opens | lost when the WebView had no focus (moved the page's focus) | reaches the program (3 of 3) |
+
+The GTK 3 widget factory run gives the same screens as before damage tracking (the only
+differing pixels are its two spinners and the pulsing progress bar).
+
+Touches now arrive at the digitizer's rate rather than once a frame, and each goes out at once
+(here ~860 a second from adb's injected swipe; a real screen gives 120-480).
+
+Checked by hand on b15: the soft keyboard (LatinIME) types into foot, with Backspace and Enter;
+foot in a Firefox 158 Custom Tab draws with WebGL 2 in a worker, takes keys and goes full screen on
+the first tap. In headless Chromium with GTK 3's widget factory, in each of the four ways to draw
+(worker or page, WebGL or 2D): a click, a touch tap, typing, soft-keyboard text (`é✓`), a touch
+drag on a slider, the wheel and a tab switch, with the same screens in all four; at
+`devicePixelRatio` 2 too; and a lost and restored WebGL context redrew the whole window. Not
+checked: a real phone or the tablet (not attached), a 90/120 Hz screen.
+
 ## What Android allows, and what we assume
 
 Checked on the tablet unless marked *assumed*:
