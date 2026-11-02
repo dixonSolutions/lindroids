@@ -277,6 +277,12 @@ fn export(args: &[String], suffix: &str, tag: Option<String>, launch: bool) -> i
         Ok(t) => t,
         Err(e) => return crate::fail(&e),
     };
+    // Its icon would start it with no X display: ask now, while there is a terminal to ask in.
+    if let Some(why) = run::needs_x11(&o, &target) {
+        if !crate::setup_x11::offer(&why) {
+            eprintln!("lindroids: X11 is not set up, so its icon will ask to set it up when tapped (or run `lindroids setup x11`)");
+        }
+    }
     let (name, icon) = run::identify(&o, &target);
     let name = format!("{name}{suffix}");
     let id = o.id.clone().unwrap_or_else(|| default_id(&o, &target, &sb));

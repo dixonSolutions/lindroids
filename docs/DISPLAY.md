@@ -266,7 +266,10 @@ The relay ties windows to runs (`icons.rs`, `x11.rs`):
   `SDL_VIDEODRIVER=wayland` it stopped with "No available video device". Without the integrated
   X display (Xwayland not installed: Termux's package only recommends it, from the x11 repository)
   the run offers to install it in its terminal (`lindroids setup x11`), restarts the server and
-  goes on; without a terminal it says so *(tested: Tux Typing on b15, Android 12L)*.
+  goes on; without a terminal it says so *(tested: Tux Typing on b15, Android 12L)*. `lindroids
+  export` asks the same when it exports such a program, so its icon does not fail later. A launch
+  with no terminal (its page asked the server) hands itself to Termux the way the icon does (the
+  launch URL shared with Termux runs `lindroids launch` in a session), where it asks.
 - **A window that appears before its launch is registered** moves to its run's window once it is.
 
 ## The origin

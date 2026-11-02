@@ -154,34 +154,38 @@ fn install(m: &Manager) -> Result<(), String> {
     Ok(())
 }
 
-/// A run needs X11 (`why`) and the server has no X display: offer to set it up now. Only in a
-/// terminal, which an exported program's icon starts its run in. True when there is one now.
+/// A program needs X11 (`why`) and what the X display needs is not all installed: offer to install
+/// it now. Only in a terminal (`export`, a run typed or started by an icon). True when nothing is
+/// missing now.
 pub fn offer(why: &str) -> bool {
+    let need = missing();
+    if need.is_empty() {
+        return true;
+    }
     if !std::io::stdin().is_terminal() {
         return false;
     }
-    let need = missing();
-    if !need.is_empty() {
-        let Some(m) = manager(&sandbox::detect()) else {
-            return false;
-        };
-        println!("{why}, and X11 is not set up here: {} missing. With {}:", need.join(", "), m.name);
-        for s in &m.steps {
-            println!("  {}", s.join(" "));
-        }
-        if !confirm("Install it now?") {
-            return false;
-        }
-        if let Err(e) = install(&m) {
+    let Some(m) = manager(&sandbox::detect()) else {
+        return false;
+    };
+    println!("{why}, and X11 is not set up here: {} missing. With {}:", need.join(", "), m.name);
+    for s in &m.steps {
+        println!("  {}", s.join(" "));
+    }
+    if !confirm("Install it now?") {
+        return false;
+    }
+    match install(&m) {
+        Ok(()) => true,
+        Err(e) => {
             eprintln!("lindroids: {e}");
-            return false;
+            false
         }
     }
-    restart_for_x11() == 0 && sandbox::x11_display(&sandbox::runtime_dir()).is_some()
 }
 
 /// The server picks up X11 when it starts: restart it if it runs without, unless windows are open.
-fn restart_for_x11() -> i32 {
+pub fn restart_for_x11() -> i32 {
     let rt = sandbox::runtime_dir();
     if sandbox::x11_display(&rt).is_some() {
         println!("X11 programs run on display {}.", sandbox::x11_display(&rt).unwrap_or_default());
