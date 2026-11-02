@@ -3,11 +3,13 @@ package org.lindroids;
 import android.app.Activity;
 import android.app.ActivityManager;
 import android.content.ActivityNotFoundException;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -86,6 +88,8 @@ public class WindowActivity extends Activity {
     private boolean autoStarted = false;
     private boolean resumed = false;
     private boolean pickerOpen = false;
+    /** A program's own app: run windows handed over by broadcast (see {@link #takeWindows}). */
+    private BroadcastReceiver windows;
 
     private final Bridge bridge = new Bridge();
     private String pickRequest;
@@ -177,6 +181,7 @@ public class WindowActivity extends Activity {
         webView.setWebChromeClient(new Chrome());
         webView.setDownloadListener(new Downloads());
         load(url);
+        if (startUrl != null && this instanceof Launch) takeWindows();
         webView.setFocusable(true);
         webView.setFocusableInTouchMode(true);
         takeKeys();
@@ -387,8 +392,50 @@ public class WindowActivity extends Activity {
         super.onPause();
     }
 
+    /**
+     * A program's own app whose page had not paired asks the server for the program; the run's
+     * window (its URL carries the ticket that pairs the page) comes back as a broadcast to this
+     * package, since Termux, in the background then, may not open the app. Only a page of this
+     * program on this app's own server is loaded.
+     */
+    private void takeWindows() {
+        windows = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context c, Intent i) {
+                String url = i.getStringExtra(EXTRA_URL);
+                if (url == null || !ownPage(url) || webView == null) return;
+                readIntent(i);
+                setTaskFromIntent(i);
+                if (url.equals(originalUrl)) return;
+                originalUrl = url;
+                load(url);
+            }
+        };
+        IntentFilter f = new IntentFilter("org.lindroids.WINDOW");
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(windows, f, Context.RECEIVER_EXPORTED);
+            } else {
+                registerReceiver(windows, f);
+            }
+        } catch (Throwable t) {
+            windows = null;
+        }
+    }
+
+    /** A page under this program's start page, on the same server. */
+    private boolean ownPage(String url) {
+        Uri u = Uri.parse(url), s = Uri.parse(startUrl);
+        return local(u) && u.getHost().equalsIgnoreCase(s.getHost()) && u.getPort() == s.getPort()
+                && u.getPath() != null && s.getPath() != null && u.getPath().startsWith(s.getPath());
+    }
+
     @Override
     protected void onDestroy() {
+        if (windows != null) {
+            try { unregisterReceiver(windows); } catch (Throwable ignored) { }
+            windows = null;
+        }
         if (webView != null) {
             webView.removeJavascriptInterface("lindroids");
             webView.stopLoading();

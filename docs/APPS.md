@@ -274,6 +274,34 @@ drag on a slider, the wheel and a tab switch, with the same screens in all four;
 `devicePixelRatio` 2 too; and a lost and restored WebGL context redrew the whole window. Not
 checked: a real phone or the tablet (not attached), a 90/120 Hz screen.
 
+## Switching between apps (sixth round, lab VM)
+
+Reported from the tablet: closing one program's app and opening another flashed the previous
+app's screen. Tested on lab VM b15 (Android 12L) with foot's and xclock's apps, recording every
+screen update from the VM's VNC display (25-50 ms apart) through each switch, with Termux's
+"display over other apps" turned off (as on the tablet: it lets Termux start activities from the
+background):
+
+| Switch | Before | After |
+| --- | --- | --- |
+| An app's first start, its WebView not paired yet, Lindroids running | the page handed the launch to Termux: **Termux's terminal, with whatever it last showed, filled the screen for about half a second**, then the program's window | the page asks its server (`/app/<id>/start`); the program starts and its window comes to the app by a broadcast to its package: splash, "Starting Xclock…", xclock (1.8 s), no Termux |
+| The icon of an app whose run is over (the server stopped it, or it ended, while the app was out of sight) | its old window (the last frame, then "Foot closed"), and the app closed itself: no program, tap again | the old frame from Android's snapshot, then its start page starts the program (foot's window 1.2 s after the tap) |
+| Close one app (Recents, Home, or the program ending), open another, both paired | no frame of the other app in any of 4 switches | unchanged |
+
+How the first start works now: Termux, in the background, may not start the app's activity
+(`Abort background activity starts`), but an explicit broadcast is not an activity start. The
+server runs `lindroids launch <id>` with `LINDROIDS_APP_BROADCAST=1`; the helper still tries the
+activity, then sends `org.lindroids.WINDOW` with the run's URL to `org.lindroids.app.<id>` alone
+(Android 12 answers 0 for the blocked start, Android 16 102, so it always sends it). The app's
+start activity loads only a URL under its own start page on its own server. Starting a program
+this way needs no pairing, as sharing its launch URL to Termux never did; the window's ticket
+reaches only the program's own package. When the server cannot (an older one) or no window comes
+within 15 s, the page hands the launch to Termux as before. With Lindroids not running at all,
+the start still goes through Termux, which must come forward to start it.
+
+Not checked: the tablet (not attached), Android 13+ (the receiver is registered with
+`RECEIVER_EXPORTED` there), a Chrome WebAPK.
+
 ## What Android allows, and what we assume
 
 Checked on the tablet unless marked *assumed*:

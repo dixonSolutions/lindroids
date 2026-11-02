@@ -1134,11 +1134,40 @@ public final class Shortcut {
             i.putExtra("org.lindroids.DEBUG", true);
         }
         Object r = call(taskManager(), "startActivity", pkg, i);
+        // A program's own app that asked the server itself for the program (its page had not
+        // paired: LINDROIDS_APP_BROADCAST) is open, but Termux is in the background, where Android
+        // blocks the start (102 on Android 16; Android 12 answers 0 all the same): the window's
+        // URL also goes to that app by a broadcast to its package, which no other app receives,
+        // and its page loads it (once: a URL it shows already is left alone). Termux stays out
+        // of sight.
+        if (app.startsWith("org.lindroids.app.") && "1".equals(System.getenv("LINDROIDS_APP_BROADCAST"))) {
+            appBroadcast(app, i);
+            return;
+        }
         // 0..3: started, delivered, brought to front. 102 (START_ABORTED): Android blocked a start
         // from the background (the terminal app is not in front), which is not an error code.
         if (r instanceof Integer && ((Integer) r < 0 || (Integer) r > 3)) {
             throw new IllegalStateException(app + ": start result " + r + ((Integer) r == 102 ? " (blocked: the terminal app is in the background)" : ""));
         }
+    }
+
+    /**
+     * {@code window}'s URL and extras as {@code org.lindroids.WINDOW} to {@code app} alone, which
+     * its open start page takes ({@code WindowActivity}). As the activity manager's own call, with
+     * no caller: a Context made here is no app the activity manager knows.
+     */
+    static void appBroadcast(String app, Intent window) throws Exception {
+        Intent b = new Intent("org.lindroids.WINDOW");
+        b.setPackage(app);
+        b.putExtras(window);
+        b.putExtra("org.lindroids.URL", window.getDataString());
+        Class<?> sm = Class.forName("android.os.ServiceManager");
+        IBinder ab = (IBinder) sm.getMethod("getService", String.class).invoke(null, "activity");
+        Object am = Class.forName("android.app.IActivityManager$Stub").getMethod("asInterface", IBinder.class).invoke(null, ab);
+        String name = hasMethod(am, "broadcastIntentWithFeature") ? "broadcastIntentWithFeature" : "broadcastIntent";
+        // The int parameters, in order: result code, app op (-1: none), user.
+        Object r = call(am, name, b, 0, -1, userId());
+        if (r instanceof Integer && (Integer) r != 0) throw new IllegalStateException(app + ": broadcast result " + r);
     }
 
     /**

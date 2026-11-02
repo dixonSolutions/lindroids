@@ -74,6 +74,8 @@ pub struct Link {
     /// The origin of the page (its WebSocket's Origin); empty for a display that is not a page.
     /// Signatures in the handshake cover it.
     pub origin: String,
+    /// The exported program its own app asked to start (`/app/<id>/start`), for the server.
+    pub start: Option<String>,
 }
 
 impl Link {
@@ -101,6 +103,7 @@ impl Link {
             hidden_since: None,
             close_frame: None,
             origin: String::new(),
+            start: None,
         }
     }
 
@@ -219,6 +222,11 @@ impl Link {
                             web::Answer::Close(bytes) => {
                                 self.wire = Wire::Closing;
                                 self.out.extend_from_slice(&bytes);
+                            }
+                            web::Answer::Start(id, bytes) => {
+                                self.wire = Wire::Closing;
+                                self.out.extend_from_slice(&bytes);
+                                self.start = Some(id);
                             }
                             web::Answer::Upgrade(bytes) => {
                                 self.origin = req.header("Origin").unwrap_or_default().to_string();

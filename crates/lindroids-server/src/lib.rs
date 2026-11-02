@@ -433,6 +433,8 @@ pub struct State {
     claims: Vec<(u32, Instant)>,
     /// Exported programs whose own page asked for their launch (`Launch`): the page, and when.
     page_launches: HashMap<String, (u64, Instant)>,
+    /// Exported programs whose own app, not paired yet, asked for their launch, and when.
+    app_starts: HashMap<String, Instant>,
 }
 
 impl State {
@@ -758,11 +760,32 @@ impl State {
             return;
         }
         self.page_launches.insert(id.clone(), (from, Instant::now()));
-        let Ok(exe) = lindroids_proto::self_exe() else { return };
         info!("launch of {id}: asked by its page");
+        self.spawn_launch(&id, "LINDROIDS_PAGE_LAUNCH", &id);
+    }
+
+    /// `lindroids launch <id>` for a program's own app whose page has not paired yet
+    /// (`/app/<id>/start`): the run's window URL, with its ticket, cannot go to that page. The
+    /// helper hands it to the app's package by a broadcast instead (`LINDROIDS_APP_BROADCAST`),
+    /// since Android lets the terminal app, in the background, start no activity. Before this,
+    /// the page handed the launch to Termux, whose terminal then came forward over the app.
+    fn app_start(&mut self, id: String) {
+        if load_exported(&id).is_none() {
+            return;
+        }
+        if self.app_starts.get(&id).is_some_and(|at| at.elapsed() < Duration::from_secs(5)) {
+            return;
+        }
+        self.app_starts.insert(id.clone(), Instant::now());
+        info!("launch of {id}: asked by its app, not paired yet");
+        self.spawn_launch(&id, "LINDROIDS_APP_BROADCAST", "1");
+    }
+
+    fn spawn_launch(&self, id: &str, key: &str, value: &str) {
+        let Ok(exe) = lindroids_proto::self_exe() else { return };
         let log = std::fs::File::create(self.cfg.runtime_dir.join(format!("page-launch-{id}.log"))).ok();
         let mut c = std::process::Command::new(exe);
-        c.arg("launch").arg(&id).env("LINDROIDS_PAGE_LAUNCH", &id).stdin(std::process::Stdio::null());
+        c.arg("launch").arg(id).env(key, value).stdin(std::process::Stdio::null());
         if let Some(l) = log {
             if let Ok(l2) = l.try_clone() {
                 c.stdout(l2);
@@ -1570,6 +1593,7 @@ pub fn run(cfg: Config) -> i32 {
         links: Vec::new(),
         next_link: 0,
         page_launches: HashMap::new(),
+        app_starts: HashMap::new(),
         primary: None,
         pending: Vec::new(),
         relay_key,
@@ -1767,6 +1791,9 @@ pub fn run(cfg: Config) -> i32 {
                 state.pending[i].flush();
             }
             let alive = state.pending[i].read();
+            if let Some(id) = state.pending[i].start.take() {
+                state.app_start(id);
+            }
             if state.pending[i].finished() || state.pending[i].broken {
                 state.pending.remove(i);
                 continue;
