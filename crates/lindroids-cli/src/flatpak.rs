@@ -624,6 +624,7 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
             path.push(':');
             path.push_str(&shims);
         }
+        env.push(("PREFIX".into(), lindroids_proto::TERMUX_PREFIX.into()));
     }
     env.push(("LD_LIBRARY_PATH".into(), ld_library_path(app)));
     env.push(("XDG_RUNTIME_DIR".into(), format!("/run/user/{uid}")));
