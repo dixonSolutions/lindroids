@@ -162,42 +162,47 @@ void main() { gl_FragColor = texture2D(t, vec2(gl_FragCoord.x, s.y - gl_FragCoor
     const w = wins.get(m.win);
     const t0 = performance.now();
     if (!w) return post({ t: 'drawn', win: m.win, ms: 0 });
-    const src = new Uint8Array(m.data, m.off + 4);
-    const head = new DataView(m.data, m.off, 4);
-    const size = head.getUint32(0, true);
-    if (raw.length < size) raw = new Uint8Array(Math.max(size, raw.length * 2));
-    lz4(src, raw);
-    const t1 = performance.now();
-    const { width, height } = m;
-    if (w.gl) {
-      const gl = w.gl;
-      if (!w.lost) {
-        if (w.canvas.width !== width || w.canvas.height !== height) { w.canvas.width = width; w.canvas.height = height; }
-        if (w.texSize[0] !== width || w.texSize[1] !== height) {
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-          w.texSize = [width, height];
-          gl.viewport(0, 0, width, height);
-          gl.uniform2f(w.size, width, height);
+    let size = 0, t1 = t0;
+    try {
+      const src = new Uint8Array(m.data, m.off + 4);
+      const head = new DataView(m.data, m.off, 4);
+      size = head.getUint32(0, true);
+      if (raw.length < size) raw = new Uint8Array(Math.max(size, raw.length * 2));
+      lz4(src, raw);
+      t1 = performance.now();
+      const { width, height } = m;
+      if (w.gl) {
+        const gl = w.gl;
+        if (!w.lost) {
+          if (w.canvas.width !== width || w.canvas.height !== height) { w.canvas.width = width; w.canvas.height = height; }
+          if (w.texSize[0] !== width || w.texSize[1] !== height) {
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+            w.texSize = [width, height];
+            gl.viewport(0, 0, width, height);
+            gl.uniform2f(w.size, width, height);
+          }
+          let off = 0;
+          for (const [x, y, rw, rh] of m.rects) {
+            const n = rw * rh * 4;
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, rw, rh, gl.RGBA, gl.UNSIGNED_BYTE, raw.subarray(off, off + n));
+            off += n;
+          }
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
         }
+      } else if (w.ctx) {
+        if (w.canvas.width !== width || w.canvas.height !== height) { w.canvas.width = width; w.canvas.height = height; }
+        const px = new Uint8ClampedArray(raw.buffer);
         let off = 0;
         for (const [x, y, rw, rh] of m.rects) {
           const n = rw * rh * 4;
-          gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, rw, rh, gl.RGBA, gl.UNSIGNED_BYTE, raw.subarray(off, off + n));
+          w.ctx.putImageData(new ImageData(px.subarray(off, off + n), rw, rh), x, y);
           off += n;
         }
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
       }
-    } else if (w.ctx) {
-      if (w.canvas.width !== width || w.canvas.height !== height) { w.canvas.width = width; w.canvas.height = height; }
-      const px = new Uint8ClampedArray(raw.buffer);
-      let off = 0;
-      for (const [x, y, rw, rh] of m.rects) {
-        const n = rw * rh * 4;
-        w.ctx.putImageData(new ImageData(px.subarray(off, off + n), rw, rh), x, y);
-        off += n;
-      }
+    } finally {
+      // Acknowledged even when drawing throws: the server holds the window's next frame until this.
+      post({ t: 'drawn', win: m.win, ms: performance.now() - t0, decode: t1 - t0, bytes: m.data.byteLength - m.off, pixels: size / 4 });
     }
-    post({ t: 'drawn', win: m.win, ms: performance.now() - t0, decode: t1 - t0, bytes: m.data.byteLength - m.off, pixels: size / 4 });
   }
 
   return (m) => {

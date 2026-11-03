@@ -620,10 +620,15 @@ impl State {
         icons::launch_for_window(&self.dh, &w.client).or_else(|| x11::run_for_window(icons::client_pid(&self.dh, &w.client), &w.title, &w.app_id))
     }
 
+    /// The run a window is known to belong to, without asking X11 (which can block up to 500 ms).
+    fn known_run(&self, win: u32) -> Option<u32> {
+        self.windows.get(&win).and_then(|w| w.claimed.or(w.run))
+    }
+
     /// A window's title as its page shows it: from an app's second instance on, with the
     /// instance's name first ("VSCodium 2 — main.rs").
     pub fn shown_title(&self, win: u32, title: &str) -> String {
-        match self.run_of(win) {
+        match self.known_run(win) {
             Some(r) if icons::ordinal(r) >= 2 => {
                 let name = icons::launch_info(r).map(|(n, _)| n).unwrap_or_default();
                 if title.is_empty() || title.starts_with(&name) {
@@ -1210,6 +1215,7 @@ impl State {
                     // The page sizes a window when it shows it or its canvas came back empty (a
                     // lost GPU context): the next frame is a whole one, not only what changed.
                     w.shown_size = (0, 0);
+                    w.in_flight = false;
                 }
                 output::screen_size_hint(self, width, height);
                 self.configure_window(win, false);
@@ -1257,7 +1263,7 @@ impl State {
                 }
             }
             ToServer::Focus { win, focused } => {
-                if let (true, Some(r)) = (focused, self.run_of(win)) {
+                if let (true, Some(r)) = (focused, self.known_run(win)) {
                     icons::touch(r);
                 }
                 seat::window_focus(self, win, focused)

@@ -305,6 +305,35 @@ fn on_android() -> bool {
     Path::new("/system/build.prop").exists() || Path::new("/system/bin/app_process").exists()
 }
 
+/// Termux's programs are bionic, not glibc: they need Android's own trees and their linker.
+const ANDROID_TREES: [&str; 7] = ["/system", "/apex", "/vendor", "/linkerconfig", "/product", "/system_ext", "/odm"];
+
+/// Starts a Termux program in the sandbox with the runtime's loader variables cleared, which
+/// would otherwise point bionic at glibc libraries.
+const TERMUX_WRAPPER: &str = "#!/bin/sh\nunset LD_PRELOAD LD_LIBRARY_PATH\nexport PREFIX=/data/data/com.termux/files/usr ANDROID_ROOT=/system ANDROID_DATA=/data\nexec \"$PREFIX/bin/${0##*/}\" \"$@\"\n";
+
+fn termux_present() -> bool {
+    on_android() && Path::new(lindroids_proto::TERMUX_PREFIX).join("bin").is_dir()
+}
+
+/// A directory in the runtime with a wrapper link for every program in Termux's `bin`; returns
+/// its path inside the sandbox.
+fn termux_shims(rt: &Path, bin: &Path, uid: u32) -> Result<String, String> {
+    let dir = rt.join("termux-bin");
+    mkdirs(&dir)?;
+    let wrapper = dir.join(".termux");
+    std::fs::write(&wrapper, TERMUX_WRAPPER).map_err(|e| io_err(&wrapper, e))?;
+    std::fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).map_err(|e| io_err(&wrapper, e))?;
+    for entry in std::fs::read_dir(bin).map_err(|e| io_err(bin, e))? {
+        let name = entry.map_err(|e| io_err(bin, e))?.file_name();
+        let link = dir.join(&name);
+        if link.symlink_metadata().is_err() {
+            std::os::unix::fs::symlink(".termux", &link).map_err(|e| io_err(&link, e))?;
+        }
+    }
+    Ok(format!("/run/user/{uid}/termux-bin"))
+}
+
 /// Android has no /etc/localtime; its zone is a system property.
 fn android_timezone() -> Option<String> {
     let out = Command::new("/system/bin/getprop").arg("persist.sys.timezone").output().ok()?;
@@ -495,6 +524,13 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
         mkdirs(&shm)?;
         binds.push((shm, "/dev/shm".into()));
     }
+    // Termux's prefix holds the runtime dir too, so it is bound before the binds below.
+    if termux_present() {
+        binds.push((lindroids_proto::TERMUX_PREFIX.into(), lindroids_proto::TERMUX_PREFIX.into()));
+        for d in ANDROID_TREES.iter().filter(|d| Path::new(d).exists()) {
+            binds.push((d.into(), d.to_string()));
+        }
+    }
     binds.push((tmp, "/tmp".into()));
     // The runtime dir also at the path the server knows it by: files the portal hands out
     // (picked documents) are named by that path.
@@ -582,6 +618,13 @@ fn command_in(app: &App, args: &[String], o: &Opts, rt: &Path, state: &Path) -> 
     }
 
     let mut env = base_env(app, &home, &user);
+    if termux_present() {
+        let shims = termux_shims(rt, Path::new(lindroids_proto::TERMUX_PREFIX).join("bin").as_path(), uid)?;
+        if let Some((_, path)) = env.iter_mut().find(|(k, _)| k == "PATH") {
+            path.push(':');
+            path.push_str(&shims);
+        }
+    }
     env.push(("LD_LIBRARY_PATH".into(), ld_library_path(app)));
     env.push(("XDG_RUNTIME_DIR".into(), format!("/run/user/{uid}")));
     env.push(("WAYLAND_DISPLAY".into(), "wayland-0".into()));
@@ -913,5 +956,22 @@ mod tests {
         assert_eq!(name, "Example");
         assert!(icon.starts_with(b"\x89PNG"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn termux_shims_link_each_program_to_the_wrapper() {
+        let base = std::env::temp_dir().join(format!("lindroids-termux-shims-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let bin = base.join("bin");
+        write(&bin.join("node"), "");
+        write(&bin.join("pnpm"), "");
+        let rt = base.join("rt");
+        let path = termux_shims(&rt, &bin, 10253).unwrap();
+        assert_eq!(path, "/run/user/10253/termux-bin");
+        let wrapper = rt.join("termux-bin/.termux");
+        assert!(std::fs::read_to_string(&wrapper).unwrap().contains("unset LD_PRELOAD LD_LIBRARY_PATH"));
+        assert_eq!(std::fs::read_link(rt.join("termux-bin/node")).unwrap(), Path::new(".termux"));
+        assert!(rt.join("termux-bin/pnpm").symlink_metadata().is_ok());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
