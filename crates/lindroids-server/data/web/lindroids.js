@@ -11,7 +11,7 @@
 
 const BUILD = '@BUILD@';
 const PICKER_TOKEN = '@PICKER_TOKEN@';
-const PROTOCOL_VERSION = 6;
+const PROTOCOL_VERSION = 7;
 // What pages kept before keys (protocol 4): gone, it no longer proves anything.
 try { localStorage.removeItem('lindroids.secret'); } catch (e) { /* storage off */ }
 
@@ -128,6 +128,7 @@ function connect() {
   replaced = false;
   ready = false;
   const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/link';
+  capsSent = null;
   try {
     ws = new WebSocket(url);
   } catch (e) {
@@ -973,8 +974,20 @@ let lastHardwareKey = -1e9;
 // D-pad or arrow key nobody took): with no window to take them (between a program's splash and
 // its window, while linking), they do nothing, rather than focus the tab bar's ✕ for Enter to press.
 const NAV_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter', ' ']);
+// The relay cannot know Caps Lock by itself (the soft keyboard turns it off without a key event),
+// so each key says whether the page's keyboard has it on, and the relay follows.
+let capsSent = null;
+function syncCaps(e, down) {
+  if (e.key === 'CapsLock' && down) return;
+  const on = e.getModifierState('CapsLock');
+  if (on === capsSent) return;
+  capsSent = on;
+  send({ t: 'caps_lock', on });
+}
+
 function onKey(e, down) {
   if (e.target.tagName === 'INPUT') return;
+  syncCaps(e, down);
   if (active === null || !ready) {
     if (panel.hidden && NAV_KEYS.has(e.key)) e.preventDefault();
     return;

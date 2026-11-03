@@ -1272,6 +1272,7 @@ impl State {
             ToServer::Pointer { win, action, x, y, button, time_ms } => seat::pointer(self, win, action, x, y, button, time_ms),
             ToServer::Scroll { win, dx, dy, time_ms } => seat::scroll(self, win, dx, dy, time_ms),
             ToServer::Key { win, code, down, time_ms } => seat::key(self, win, code, down, time_ms),
+            ToServer::CapsLock { on } => seat::caps_lock(self, on),
             ToServer::Text { win, text } => seat::text(self, win, &text),
             ToServer::Clipboard { text } => data::android_clipboard(self, text),
             ToServer::FolderPicked { request, path } => self.reply_cli(&Waiting::Folder(request), CliReply::Folder { path }),

@@ -588,8 +588,9 @@ fn send_key(state: &mut State, code: u32, down: bool, time: u32) {
         }
         mods_changed = true;
     }
-    if code == keys::KEY_CAPSLOCK && down {
-        state.seat.mods_locked ^= keys::MOD_LOCK;
+    // Caps Lock's state comes from the page (`caps_lock`); the key alone does not toggle it. The
+    // modifiers are still sent so a client's own toggle on this key is put back to ours.
+    if code == keys::KEY_CAPSLOCK {
         mods_changed = true;
     }
     let serial = state.next_serial();
@@ -599,6 +600,19 @@ fn send_key(state: &mut State, code: u32, down: bool, time: u32) {
         if mods_changed {
             k.modifiers(serial, state.seat.mods_depressed, 0, state.seat.mods_locked, 0);
         }
+    }
+}
+
+pub fn caps_lock(state: &mut State, on: bool) {
+    let locked = if on { keys::MOD_LOCK } else { 0 };
+    if state.seat.mods_locked == locked {
+        return;
+    }
+    state.seat.mods_locked = locked;
+    let Some(surface) = state.seat.kb_focus.clone() else { return };
+    let serial = state.next_serial();
+    for k in state.seat.keyboards.iter().filter(|k| same_client(*k, &surface)) {
+        k.modifiers(serial, state.seat.mods_depressed, 0, locked, 0);
     }
 }
 

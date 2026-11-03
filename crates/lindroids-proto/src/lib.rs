@@ -22,7 +22,7 @@ pub mod fdpass;
 
 /// Bumped whenever a message changes shape. The app and the server refuse to talk across
 /// versions, and the CLI says which side needs updating.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// The real uid of this process. Under proot's fake root (proot-distro, UserLAnd) getuid() says
 /// 0, but the app looks for the sandbox app's own uid; the kernel's view in /proc is not faked.
@@ -405,6 +405,8 @@ pub enum ToServer {
     Scroll { win: u32, dx: f32, dy: f32, time_ms: u32 },
     /// A key, as an Android KeyEvent keycode (the server maps it to evdev).
     Key { win: u32, code: u32, down: bool, time_ms: u32 },
+    /// Whether the page's keyboard has Caps Lock on. The page is the source of truth.
+    CapsLock { on: bool },
     /// Committed text from the soft keyboard / IME.
     Text { win: u32, text: String },
     Focus { win: u32, focused: bool },
