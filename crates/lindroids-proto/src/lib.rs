@@ -581,6 +581,8 @@ pub enum CliRequest {
     },
     /// The running instances of an app (`Launch`'s `app_key`), most recently used first.
     Instances { app_key: String },
+    /// The surviving processes and attached windows of a run, including a detached launcher.
+    RunState { pid: u32 },
     /// The run `pid` ended at once and cleanly, as a program that hands its work to an instance
     /// already running does (VSCodium, GApplications): the next new window of that app's other
     /// instances is this run's (it shows in this run's own window). Answered when one appeared
@@ -643,6 +645,7 @@ pub enum CliReply {
     Error { message: String },
     /// Answer to Launch: the instance's number among its app's.
     Launched { ordinal: u32 },
+    RunState { alive: bool, windows: Vec<WindowInfo> },
     /// Answer to Instances: the app's, most recently used first, and how many runs (processes)
     /// are running in all.
     Instances {

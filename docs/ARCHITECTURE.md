@@ -230,9 +230,11 @@ the data belong in the same container as the server. Android's files stay outsid
 browser, as before.
 Each portal interface publishes its `version` property under that name (zbus would say `Version`):
 Chromium and Electron read it to decide whether there is a portal, and without it showed their own
-GTK dialogs instead of Android's picker. Electron 43 (VSCodium 1.140) reads FileChooser's
-`version` once at startup and uses its GTK dialog below 3; FileChooser is version 4, as
-xdg-desktop-portal's (Electron also takes `--xdg-portal-required-version=4`).
+GTK dialogs instead of Android's picker. FileChooser is version 4. Older Electron paths probe
+once at startup; the bus must already be ready. In the tested stock Electron 43.0.0, Chromium's
+on-demand path uses portal 4 even with `--xdg-portal-required-version=999`, so that override is
+ineffective. Fake-root GIO clients also need correct kernel credentials before they can reach
+the bus. See [the run regression notes](RUN_REGRESSIONS.md) for the reproduction and fix.
 
 GTK 3 asks the portal only for a GtkFileChooserNative; programs that build a
 GtkFileChooserDialog (Mousepad, Xournal++, GIMP, Inkscape, LibreOffice...) showed GTK's own

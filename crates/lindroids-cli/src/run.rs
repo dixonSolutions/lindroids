@@ -1,6 +1,7 @@
 //! `lindroids run`: start a Linux program with its windows going to the browser.
 
 use std::io::IsTerminal;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -302,6 +303,9 @@ pub fn build_command(o: &Opts, target: &Target, rt: &Path) -> Result<Command, St
                 None => rt.to_path_buf(),
             };
             let mut env = sandbox::client_env(&rt_inside);
+            if o.distro.is_none() {
+                env.extend(crate::certificates::env(rt)?);
+            }
             env.extend(sandbox::integration_env(rt, &rt_inside));
             let base = if o.distro.is_some() { "/usr/local/share:/usr/share".to_string() } else { sandbox::default_data_dirs() };
             if let Some(d) = sandbox::data_dirs_with_runtime(rt, &rt_inside, &base) {
@@ -432,6 +436,95 @@ pub fn cmd_run(args: &[String]) -> i32 {
 /// handed its work to that instance (VSCodium, GApplications): it claims the window that comes.
 const HANDOVER: Duration = Duration::from_secs(5);
 
+static RUN_GROUP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static RUN_SIGNAL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static RUN_SERVER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+extern "C" fn forward_signal(signal: i32) {
+    RUN_SIGNAL.store(signal, std::sync::atomic::Ordering::Relaxed);
+    let pid = RUN_GROUP.load(std::sync::atomic::Ordering::Relaxed);
+    if pid > 0 {
+        unsafe { libc::kill(-pid, signal); }
+    }
+}
+
+fn forward_detached_signal() -> Option<i32> {
+    let signal = RUN_SIGNAL.load(std::sync::atomic::Ordering::Relaxed);
+    if signal == 0 {
+        return None;
+    }
+    let server = RUN_SERVER.load(std::sync::atomic::Ordering::Relaxed);
+    for p in lindroids_server::icons::process_tree_excluding(std::process::id(), server).into_iter().filter(|p| *p != std::process::id()) {
+        unsafe { libc::kill(p as i32, signal); }
+    }
+    Some(signal)
+}
+
+/// Called only after Child::wait/try_wait has collected the original launcher.
+fn reap_adopted() {
+    while unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) } > 0 {}
+}
+
+/// A run has its own group: forward terminal/termination signals that used to reach it through
+/// the foreground group, and restore the caller's handlers when the run is done.
+struct RunSignals {
+    previous: Vec<(i32, libc::sigaction)>,
+    foreground: Option<i32>,
+}
+
+fn set_foreground(group: i32) -> bool {
+    unsafe {
+        let mut mask: libc::sigset_t = std::mem::zeroed();
+        let mut old: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut mask);
+        libc::sigaddset(&mut mask, libc::SIGTTOU);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &mask, &mut old);
+        let ok = libc::tcsetpgrp(libc::STDIN_FILENO, group) == 0;
+        libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
+        ok
+    }
+}
+
+impl RunSignals {
+    fn new(pid: u32) -> Self {
+        RUN_SIGNAL.store(0, std::sync::atomic::Ordering::Relaxed);
+        RUN_GROUP.store(pid as i32, std::sync::atomic::Ordering::Relaxed);
+        let mut previous = Vec::new();
+        for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            unsafe {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                let mut old: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = forward_signal as *const () as usize;
+                libc::sigemptyset(&mut action.sa_mask);
+                action.sa_flags = libc::SA_RESTART;
+                if libc::sigaction(signal, &action, &mut old) == 0 {
+                    previous.push((signal, old));
+                }
+            }
+        }
+        // Interactive commands must still be able to read the controlling terminal. A child
+        // that reached read() before the transfer may already have stopped with SIGTTIN.
+        let group = unsafe { libc::getpgrp() };
+        let foreground = (unsafe { libc::tcgetpgrp(libc::STDIN_FILENO) } == group && set_foreground(pid as i32)).then_some(group);
+        if foreground.is_some() {
+            unsafe { libc::kill(-(pid as i32), libc::SIGCONT); }
+        }
+        Self { previous, foreground }
+    }
+}
+
+impl Drop for RunSignals {
+    fn drop(&mut self) {
+        if let Some(group) = self.foreground {
+            set_foreground(group);
+        }
+        for (signal, old) in &self.previous {
+            unsafe { libc::sigaction(*signal, old, std::ptr::null_mut()); }
+        }
+        RUN_GROUP.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// `run`, for the exported program `launched` (`lindroids launch <id>`) if given.
 pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
     let mut o = match parse(args) {
@@ -448,6 +541,8 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
         Ok(rt) => rt,
         Err(e) => return crate::fail(&e),
     };
+    let server_pid = std::fs::read_to_string(rt.join("server.pid")).ok().and_then(|p| p.trim().parse().ok()).unwrap_or(0);
+    RUN_SERVER.store(server_pid, std::sync::atomic::Ordering::Relaxed);
     // On Android every run gets a window of its own (a Custom Tab for `?run=<pid>`, opened once
     // the program has a pid); elsewhere, and without a browser that has Custom Tabs, the shared page.
     let own_window = sandbox::on_android();
@@ -521,10 +616,19 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
     if under_proot || own_window {
         cmd.stderr(std::process::Stdio::piped());
     }
+    // The group survives a shell/CLI launcher exiting, unlike its /proc parent links.
+    // The server uses it for window ownership and for stopping the entire run.
+    cmd.process_group(0);
+    // VS Code's CLI uses detached:true (setsid), so a process group alone cannot retain its
+    // GUI. Adopt orphaned descendants here; the server already knows this supervisor pid.
+    if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } < 0 {
+        return crate::fail(&format!("cannot supervise detached children: {}", std::io::Error::last_os_error()));
+    }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return crate::fail(&format!("cannot start {}: {e}", o.command[0])),
     };
+    let _signals = RunSignals::new(child.id());
     let tail = Arc::new(Mutex::new(std::collections::VecDeque::new()));
     let signal_watch = child.stderr.take().map(|e| {
         let tail = tail.clone();
@@ -553,6 +657,7 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
     let icon_b64 = Some(base64::engine::general_purpose::STANDARD.encode(icon));
     let symbolic_b64 = symbolic(&o, &target).map(|s| base64::engine::general_purpose::STANDARD.encode(s));
     let pid = child.id();
+    crate::app::set_run_identity(pid, &name, icon_b64.as_deref());
     let register = |window: bool| {
         let req = CliRequest::Launch {
             pid,
@@ -587,8 +692,10 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
             }
         }
     }
+    let descendant_checked = early.is_some_and(|st| st.success());
+    let mut adopted = descendant_checked && wait_for_descendant_window(&rt, pid);
     let mut window_opened = false;
-    if own_window && early.is_none() {
+    if own_window && (early.is_none() || adopted) {
         window_opened = crate::open_run_window(&sb, &rt, child.id());
         if !window_opened {
             register(false);
@@ -609,12 +716,38 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
         Some(st) => Ok(st),
         None => child.wait(),
     };
-    let code = match waited {
+    let mut code = match waited {
         // Killed (its window closed, Ctrl+C): 128 + the signal, as a shell reports it.
         Ok(st) => st.code().unwrap_or_else(|| 128 + std::os::unix::process::ExitStatusExt::signal(&st).unwrap_or(0)),
         Err(e) => return crate::fail(&e.to_string()),
     };
-    if own_window && siblings && code == 0 && spawned.elapsed() < HANDOVER + Duration::from_millis(500) {
+    let handover = own_window && siblings && code == 0 && spawned.elapsed() < HANDOVER + Duration::from_millis(500);
+    if code == 0 && !adopted && !descendant_checked {
+        adopted = wait_for_descendant_window(&rt, pid);
+    }
+    if adopted {
+        if own_window && !window_opened {
+            window_opened = crate::open_run_window(&sb, &rt, pid);
+            if !window_opened {
+                register(false);
+                crate::ensure_display(&sb, &rt, false);
+            }
+        }
+        // A detached GUI owns the run until its last window closes or its processes end.
+        while let Ok(CliReply::RunState { alive: true, windows }) = client::request(&rt, &CliRequest::RunState { pid }, Duration::from_secs(2)) {
+            forward_detached_signal();
+            reap_adopted();
+            if windows.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    if let Some(signal) = forward_detached_signal() {
+        code = 128 + signal;
+    }
+    reap_adopted();
+    if !adopted && handover && code == 0 {
         // It handed its work to the instance that runs: the window that instance opens now is
         // this run's, in this run's window; if none comes, that instance is brought forward.
         let shown = if ordinal >= 2 { format!("{name} {ordinal}") } else { name.clone() };
@@ -638,7 +771,7 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
             _ => {}
         }
     }
-    if own_window {
+    {
         // An error: its last words go to its window, which is where the user is looking. (Not
         // when its window was closed: 128 + SIGTERM, SIGKILL or SIGINT.)
         let output = if code != 0 && ![130, 137, 143].contains(&code) {
@@ -652,12 +785,39 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
     if early.is_some() && code != 0 {
         eprintln!("lindroids: {} ended at once (exit code {code}): no window", program_of(&o.command));
     }
-    match signal_watch.and_then(|t| t.join().ok()).flatten() {
+    // A background helper may still hold stderr open after a no-window launch. Never wait
+    // indefinitely for EOF from it. Give the reader a moment to drain the final crash report.
+    if signal_watch.as_ref().is_some_and(|t| !t.is_finished()) {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    match signal_watch.filter(|t| t.is_finished()).and_then(|t| t.join().ok()).flatten() {
         Some(sig) => {
             eprintln!("lindroids: {} crashed (signal {sig}, {})", program_of(&o.command), signal_name(sig));
             128 + sig
         }
         None => code,
+    }
+}
+
+/// A successful launcher may have left a GUI behind. Wait only a bounded time for its first
+/// window; helper processes without windows must not leave a run marked running forever.
+fn wait_for_descendant_window(rt: &Path, pid: u32) -> bool {
+    let until = std::time::Instant::now() + HANDOVER;
+    loop {
+        forward_detached_signal();
+        reap_adopted();
+        match client::request(rt, &CliRequest::RunState { pid }, Duration::from_secs(2)) {
+            Ok(CliReply::RunState { alive: true, windows }) if !windows.is_empty() => {
+                for w in windows {
+                    eprintln!("lindroids: run {pid} attached window {} (app id {:?}) after its launcher exited", w.win, w.app_id);
+                }
+                return true;
+            }
+            Ok(CliReply::RunState { alive: true, .. }) if std::time::Instant::now() < until => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            _ => return false,
+        }
     }
 }
 

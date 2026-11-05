@@ -29,6 +29,9 @@ struct Launch {
     /// When its process started (field 22 of /proc/<pid>/stat): a pid used again by another
     /// process is not this launch.
     start_time: Option<u64>,
+    /// A launch in its own process group keeps its identity after its wrapper exits.
+    group: bool,
+    supervisor: Option<(u32, Option<u64>)>,
     /// When it was last used (ms since the server started; 0: never).
     last_focus: u64,
     claim: Claim,
@@ -66,11 +69,65 @@ pub fn start_time(pid: u32) -> Option<u64> {
 
 /// Whether process `pid` is the one that started at `start` (None: any process with that pid).
 fn process_is(pid: u32, start: Option<u64>) -> bool {
-    match (start_time(pid), start) {
+    match (process_stat(pid).filter(|s| s.state != 'Z' && s.state != 'X').map(|s| s.start), start) {
         (Some(now), Some(then)) => now == then,
         (Some(_), None) => true,
         (None, _) => false,
     }
+}
+
+struct ProcessStat {
+    state: char,
+    group: u32,
+    start: u64,
+}
+
+fn process_stat(pid: u32) -> Option<ProcessStat> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let fields: Vec<_> = stat[stat.rfind(')')? + 2..].split_whitespace().collect();
+    Some(ProcessStat { state: fields.first()?.chars().next()?, group: fields.get(2)?.parse().ok()?, start: fields.get(19)?.parse().ok()? })
+}
+
+fn group_members(pid: u32, start: Option<u64>) -> Vec<u32> {
+    if start.zip(start_time(pid)).is_some_and(|(then, now)| then != now) {
+        return Vec::new();
+    }
+    // An absent process group needs no /proc scan (also the common non-GUI exit path).
+    if unsafe { libc::kill(-(pid as i32), 0) } < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+        return Vec::new();
+    }
+    std::fs::read_dir("/proc").into_iter().flatten().flatten().filter_map(|e| {
+        let p = e.file_name().to_str()?.parse().ok()?;
+        let s = process_stat(p)?;
+        (s.group == pid && s.state != 'Z' && s.state != 'X' && start.is_none_or(|t| s.start >= t)).then_some(p)
+    }).collect()
+}
+
+fn launch_process_alive(pid: u32, l: &Launch) -> bool {
+    process_is(pid, l.start_time) || (l.group && !group_members(pid, l.start_time).is_empty()) || !supervised_processes(l).is_empty()
+}
+
+fn supervised_processes(l: &Launch) -> Vec<u32> {
+    let Some((pid, _)) = l.supervisor.filter(|(p, s)| process_is(*p, *s)) else { return Vec::new() };
+    tree_from(vec![pid], Some(std::process::id())).into_iter().filter(|p| *p != pid && process_is(*p, None)).collect()
+}
+
+fn launch_in(map: &HashMap<u32, Launch>, pid: u32) -> Option<u32> {
+    // ensure_server may have been called by this supervisor. Its server, bus and satellite
+    // are infrastructure, not descendants of the application we are trying to identify.
+    let parent = |p| if p == std::process::id() { None } else { parent_of(p) };
+    nearest_launch(pid, |p| is_launch(map, p), parent).or_else(|| {
+        let s = process_stat(pid)?;
+        let l = map.get(&s.group)?;
+        (l.group && l.ended.is_none() && is_launch(map, s.group) && l.start_time.is_none_or(|t| s.start >= t)).then_some(s.group)
+    }).or_else(|| {
+        // A subreaper adopts even setsid()/double-forked descendants. Each CLI supervises one
+        // launch, so crossing its pid restores the original run identity after reparenting.
+        let supervisor = nearest_launch(pid, |p| map.values().any(|l| {
+            l.ended.is_none() && l.supervisor.is_some_and(|(s, start)| s == p && process_is(s, start))
+        }), parent)?;
+        map.iter().find(|(_, l)| l.ended.is_none() && l.supervisor.is_some_and(|(s, _)| s == supervisor)).map(|(p, _)| *p)
+    })
 }
 
 /// The lowest number from 1 not in `used`.
@@ -101,6 +158,7 @@ pub struct NewLaunch {
     pub window: bool,
     pub app_key: String,
     pub again: Vec<String>,
+    pub supervisor: Option<u32>,
 }
 
 /// Register a launch of no app in particular (an older CLI's).
@@ -126,6 +184,8 @@ pub fn register(pid: u32, l: NewLaunch) -> u32 {
             ordinal,
             again: l.again,
             start_time: start_time(pid),
+            group: process_stat(pid).map_or_else(|| !group_members(pid, None).is_empty(), |s| s.group == pid),
+            supervisor: l.supervisor.map(|p| (p, start_time(p))),
             last_focus: now_ms(),
             claim: Claim::None,
             ended: None,
@@ -197,7 +257,7 @@ pub fn set_claim(pid: u32, c: Claim) {
     let mut g = LAUNCHES.lock().unwrap();
     if let Some(l) = g.as_mut().and_then(|m| m.get_mut(&pid)) {
         l.claim = c;
-        if c == Claim::None && l.ended.is_none() && !process_is(pid, l.start_time) {
+        if c == Claim::None && l.ended.is_none() && !launch_process_alive(pid, l) {
             l.ended = Some(Instant::now());
         }
     }
@@ -224,10 +284,13 @@ pub fn ended(pid: u32) {
 pub fn run_alive(pid: u32) -> bool {
     let g = LAUNCHES.lock().unwrap();
     let Some(l) = g.as_ref().and_then(|m| m.get(&pid)) else { return false };
+    if l.ended.is_some() {
+        return false;
+    }
     match l.claim {
         Claim::Holding => true,
-        Claim::Pending(until) => until > Instant::now() || process_is(pid, l.start_time),
-        Claim::None => process_is(pid, l.start_time),
+        Claim::Pending(until) => until > Instant::now() || launch_process_alive(pid, l),
+        Claim::None => launch_process_alive(pid, l),
     }
 }
 
@@ -237,7 +300,7 @@ pub fn instances(app_key: &str) -> (Vec<lindroids_proto::Instance>, u32) {
     let g = LAUNCHES.lock().unwrap();
     let Some(map) = g.as_ref() else { return (Vec::new(), 0) };
     let live = |p: u32, l: &Launch| match l.claim {
-        Claim::None => l.ended.is_none() && process_is(p, l.start_time),
+        Claim::None => l.ended.is_none() && launch_process_alive(p, l),
         Claim::Pending(_) => false,
         Claim::Holding => true,
     };
@@ -276,7 +339,8 @@ pub fn reap() -> Reaped {
             Claim::Pending(until) => until > now,
             Claim::None => false,
         };
-        if waiting || process_is(*p, l.start_time) {
+        if l.ended.is_none() && (waiting || launch_process_alive(*p, l)) {
+            l.gone = None;
             continue;
         }
         let gone = *l.gone.get_or_insert(now);
@@ -301,7 +365,7 @@ pub fn reap() -> Reaped {
 pub fn launch_of_pid(pid: u32) -> Option<u32> {
     let g = LAUNCHES.lock().unwrap();
     let map = g.as_ref()?;
-    nearest_launch(pid, |p| is_launch(map, p), parent_of)
+    launch_in(map, pid)
 }
 
 /// The launch a Wayland client belongs to.
@@ -312,21 +376,49 @@ pub fn launch_for_window(dh: &DisplayHandle, client: &ClientId) -> Option<u32> {
 /// `pid` and every process below it, children first. A program under proot is proot's tracee:
 /// signalling proot alone (SIGKILL above all) leaves it running.
 pub fn process_tree(pid: u32) -> Vec<u32> {
+    let mut roots = Vec::new();
+    {
+        let g = LAUNCHES.lock().unwrap();
+        if let Some(l) = g.as_ref().and_then(|m| m.get(&pid)) {
+            if process_is(pid, l.start_time) {
+                roots.push(pid);
+            }
+            if l.group {
+                roots.extend(group_members(pid, l.start_time));
+            }
+            roots.extend(supervised_processes(l));
+        } else if process_is(pid, None) {
+            roots.push(pid);
+        }
+    }
+    roots.sort_unstable();
+    roots.dedup();
+    tree_from(roots, None)
+}
+
+/// A supervisor may itself have started the server. Exclude that entire infrastructure tree
+/// when forwarding a signal from the CLI; closing one app must never stop the server.
+pub fn process_tree_excluding(pid: u32, excluded: u32) -> Vec<u32> {
+    tree_from(vec![pid], Some(excluded))
+}
+
+fn tree_from(mut tree: Vec<u32>, excluded: Option<u32>) -> Vec<u32> {
+    tree.retain(|p| Some(*p) != excluded);
     let mut parent: HashMap<u32, u32> = HashMap::new();
     if let Ok(rd) = std::fs::read_dir("/proc") {
         for e in rd.flatten() {
             if let Some(p) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) {
-                if let Some(pp) = parent_of(p) {
+                if let Some(pp) = parent_of(p).filter(|_| Some(p) != excluded) {
                     parent.insert(p, pp);
                 }
             }
         }
     }
-    let mut tree = vec![pid];
     let mut i = 0;
     while i < tree.len() {
         let p = tree[i];
-        tree.extend(parent.iter().filter(|(_, pp)| **pp == p).map(|(c, _)| *c));
+        let children: Vec<_> = parent.iter().filter(|(c, pp)| **pp == p && !tree.contains(c)).map(|(c, _)| *c).collect();
+        tree.extend(children);
         i += 1;
     }
     tree.reverse();
@@ -336,7 +428,7 @@ pub fn process_tree(pid: u32) -> Vec<u32> {
 /// The processes `lindroids run` and `launch` started that are still running.
 pub fn launched_pids() -> Vec<u32> {
     let g = LAUNCHES.lock().unwrap();
-    g.as_ref().map(|m| m.iter().filter(|(p, l)| process_is(**p, l.start_time)).map(|(p, _)| *p).collect()).unwrap_or_default()
+    g.as_ref().map(|m| m.iter().filter(|(p, l)| l.ended.is_none() && launch_process_alive(**p, l)).map(|(p, _)| *p).collect()).unwrap_or_default()
 }
 
 /// The process `pid` belongs under: its parent, or, for an orphan (adopted by init), the process
@@ -365,7 +457,7 @@ fn with_launch<T>(dh: &DisplayHandle, client: &ClientId, f: impl Fn(&Launch) -> 
     let pid = client_pid(dh, client)?;
     let g = LAUNCHES.lock().unwrap();
     let map = g.as_ref()?;
-    let run = nearest_launch(pid, |p| is_launch(map, p), parent_of)?;
+    let run = launch_in(map, pid)?;
     f(map.get(&run)?)
 }
 
@@ -455,6 +547,37 @@ pub(crate) mod tests {
         assert_eq!(lowest_free(&[1, 2]), 3);
         assert_eq!(lowest_free(&[2, 3]), 1);
         assert_eq!(lowest_free(&[1, 3]), 2);
+    }
+
+    #[test]
+    fn detached_descendant_keeps_launch_identity_and_is_reaped_when_gone() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        let _s = serial();
+        let mut wrapper = std::process::Command::new("sh")
+            .args(["-c", "sleep 30 & echo $!; read line; exit 0"])
+            .process_group(0).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        let pid = wrapper.id();
+        let mut line = String::new();
+        std::io::BufReader::new(wrapper.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let descendant: u32 = line.trim().parse().unwrap();
+        register(pid, launch("t.detached"));
+        wrapper.stdin.take().unwrap().write_all(b"go\n").unwrap();
+        assert!(wrapper.wait().unwrap().success());
+        assert_eq!(launch_of_pid(descendant), Some(pid));
+        assert!(run_alive(pid));
+        assert!(instances("t.detached").0.iter().any(|i| i.pid == pid));
+        assert!(process_tree(pid).contains(&descendant));
+        assert!(!reap().lost.contains(&pid));
+        unsafe { libc::kill(descendant as i32, libc::SIGKILL); }
+        let until = Instant::now() + Duration::from_secs(2);
+        while run_alive(pid) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!run_alive(pid), "a zombie descendant must not keep a run alive");
+        ended(pid);
+        assert!(instances("t.detached").0.is_empty());
     }
 
     #[test]

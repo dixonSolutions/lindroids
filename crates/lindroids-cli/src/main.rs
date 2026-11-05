@@ -6,6 +6,7 @@ mod bwrap;
 mod client;
 mod config;
 mod cortex;
+mod certificates;
 mod debug;
 mod desktop;
 mod export;
