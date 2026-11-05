@@ -190,17 +190,28 @@ What Lindroids does differently there:
   with access control off (`-ac`) and listens only on its socket file inside Cortex's private
   storage, never on an abstract socket, so no other app can reach it; and the desktop portal signs
   in to its D-Bus with ANONYMOUS instead of EXTERNAL.
+- GLib sends fake uid 0 in `SCM_CREDENTIALS`, which the kernel rejects before D-Bus
+  authentication. For fake-root runs using the portal, Lindroids preloads a small `sendmsg`
+  shim that substitutes this process's kernel uid/gid in its own credentials. This also lets
+  GTK reach the portal. Other socket messages and the program's `getuid()` are unchanged.
+- A colon-separated `SSL_CERT_DIR` becomes one merged CA directory under the runtime directory,
+  with symlinks deduplicated by basename (first source wins). `SSL_CERT_FILE` names a PEM bundle
+  containing the merged certificates and any existing bundle. This accommodates Node/Electron's
+  system CA loader, which scans the directory value as one path. Explicit `run --env` values
+  override these exports.
 - Programs get `LOCPATH` pointing at Ubuntu's locales, without which glibc cannot load even
   `C.UTF-8` there.
 - Cortex replaces `update-mime-database` with a no-op, so the MIME cache GTK needs to load SVG
   icons never exists; `lindroids run` builds it with the real one when it is missing or stale.
 
 Tested with Cortex 1.26.45 on a Galaxy Tab Active5 (SM-X306B, Android 16): foot, gtk3-demo (GTK 3
-on Wayland) and xclock (X11) all show in Chrome (`lab/test-cortex.sh`). Known limits: GTK programs
-cannot reach the portal themselves (GLib sends the faked uid 0 as its socket credentials, which
-the kernel refuses), so they do not follow Android's dark theme or use its file picker; and on x86
-Android images, where Cortex's arm64 build runs under ARM translation, X11 windows stay black.
+on Wayland) and xclock (X11) all show in Chrome (`lab/test-cortex.sh`). The credential fix above
+has a host regression test reproducing fake root; it still needs verification on Cortex itself.
+On x86 Android images, where Cortex's arm64 build runs under ARM translation, X11 windows stay black.
 Google Play Protect may block Cortex's APK as harmful: that is Cortex's, not Lindroids'.
+
+Launcher tracking, CA exports and portal checks (including Electron 43) are documented in
+[the run regression notes](RUN_REGRESSIONS.md).
 
 ## Arch Linux and derivatives, including proot-distro
 

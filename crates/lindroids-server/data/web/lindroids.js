@@ -127,8 +127,8 @@ function connect() {
   clearTimeout(retry);
   replaced = false;
   ready = false;
-  const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/link';
   capsSent = null;
+  const url =(location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/link';
   try {
     ws = new WebSocket(url);
   } catch (e) {

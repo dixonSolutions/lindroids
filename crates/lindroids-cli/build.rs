@@ -1,4 +1,4 @@
-//! Builds the libraries the CLI embeds and LD_PRELOADs into programs, both without libc, so clang
+//! Builds the libraries the CLI embeds and LD_PRELOADs into programs, without libc headers, so clang
 //! alone builds them for any target (LINDROIDS_CLANG names the clang to use; another CPU than the
 //! host's needs lld):
 //!
@@ -6,6 +6,8 @@
 //!   on x86 Android need its alarm() (see the C file for why);
 //! - liblindroids-gtk.so (third_party/gtkpicker): GTK 3's own file dialogs go to the desktop
 //!   portal, which answers with Android's picker (see the C file).
+//! - liblindroids-credentials.so (third_party/compat): fake-root GLib clients send the kernel
+//!   uid/gid in SCM_CREDENTIALS so they can authenticate to the portal bus.
 //!
 //! Without clang the CLI is built without them, and says so.
 
@@ -67,6 +69,15 @@ fn main() {
         println!("cargo:warning=clang could not build liblindroids-gtk.so; GTK 3 programs' own file dialogs will not show Android's picker");
     }
     if !built {
+        std::fs::write(&out, b"").unwrap();
+    }
+
+    let credentials = dir.join("compat/lindroids-credentials.c");
+    println!("cargo:rerun-if-changed={}", credentials.display());
+    let out = out_dir.join("liblindroids-credentials.so");
+    let built = triple.is_some_and(|t| build(&credentials, &out, "liblindroids-credentials.so", t));
+    if !built {
+        println!("cargo:warning=clang could not build liblindroids-credentials.so; fake-root GLib D-Bus clients may fail");
         std::fs::write(&out, b"").unwrap();
     }
 }

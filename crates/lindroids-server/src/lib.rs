@@ -1323,8 +1323,8 @@ impl State {
                 self.running = false;
                 Some(CliReply::Ok { message: "stopping".into() })
             }
-            CliRequest::Launch { pid, name, icon_png_b64, symbolic_png_b64, window, app_key, again, supervisor: _ } => {
-                let ordinal = icons::register(pid, icons::NewLaunch { name, icon: icon_png_b64, window, app_key: app_key.clone(), again });
+            CliRequest::Launch { pid, name, icon_png_b64, symbolic_png_b64, window, app_key, again, supervisor } => {
+                let ordinal = icons::register(pid, icons::NewLaunch { name, icon: icon_png_b64, window, app_key: app_key.clone(), again, supervisor });
                 if !app_key.is_empty() {
                     info!("run {pid} is instance {ordinal} of {app_key}");
                 }
@@ -1343,6 +1343,11 @@ impl State {
                 }
                 Some(CliReply::Instances { instances, runs })
             }
+            CliRequest::RunState { pid } => {
+                let windows = self.windows.iter().filter(|(win, w)| w.mapped && self.run_of(**win) == Some(pid))
+                    .map(|(win, w)| proto::WindowInfo { win: *win, title: w.title.clone(), app_id: w.app_id.clone(), width: w.phys.map_or(0, |p| p.0), height: w.phys.map_or(0, |p| p.1) }).collect();
+                Some(CliReply::RunState { alive: icons::run_alive(pid), windows })
+            }
             CliRequest::Claim { pid } => {
                 if icons::app_key(pid).is_empty() {
                     Some(CliReply::Focused { pid: None })
@@ -1360,7 +1365,9 @@ impl State {
                 info!("run {pid} ended (exit code {code})");
                 icons::ended(pid);
                 // Its page shows the end even when the program never showed a window, and why.
-                self.send_from(Some(pid), &ToApp::RunEnded { code, output }, &[]);
+                if icons::wants_own_window(pid) {
+                    self.send_from(Some(pid), &ToApp::RunEnded { code, output }, &[]);
+                }
                 Some(CliReply::Ok { message: "noted".into() })
             }
             CliRequest::Info => Some(CliReply::Info { system: portal::system() }),

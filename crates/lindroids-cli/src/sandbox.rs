@@ -100,9 +100,19 @@ pub fn integration_env(runtime: &Path, inside: &Path) -> Vec<(String, String)> {
             v.push(("QT_QPA_PLATFORMTHEME".into(), "xdgdesktopportal".into()));
         }
         // GTK 3's own file dialogs (GtkFileChooserDialog) never ask the portal: this library
-        // makes them. LD_PRELOAD here is only it; run.rs adds what the program would have had.
+        // makes them. run.rs adds the program's existing preload to these integration helpers.
         if let Some(name) = write_gtk_preload(&runtime.join("lib")) {
             v.push(("LD_PRELOAD".into(), inside.join("lib").join(name).display().to_string()));
+        }
+        if detect().host.fake_root {
+            if let Some(name) = write_credentials_preload(&runtime.join("lib")) {
+                let lib = inside.join("lib").join(name).display().to_string();
+                if let Some((_, preload)) = v.iter_mut().find(|(k, _)| k == "LD_PRELOAD") {
+                    *preload = preload_with(&lib, Some(preload));
+                } else {
+                    v.push(("LD_PRELOAD".into(), lib));
+                }
+            }
         }
     }
     v
@@ -110,6 +120,23 @@ pub fn integration_env(runtime: &Path, inside: &Path) -> Vec<(String, String)> {
 
 /// liblindroids-gtk.so for this CPU (third_party/gtkpicker), empty where it could not be built.
 const GTK_SO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/liblindroids-gtk.so"));
+
+const CREDENTIALS_SO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/liblindroids-credentials.so"));
+
+fn write_credentials_preload(dir: &Path) -> Option<&'static str> {
+    if CREDENTIALS_SO.is_empty() {
+        return None;
+    }
+    std::fs::create_dir_all(dir).ok()?;
+    let name = "liblindroids-credentials.so";
+    let p = dir.join(name);
+    if std::fs::read(&p).ok().as_deref() != Some(CREDENTIALS_SO) {
+        let tmp = dir.join(format!(".{name}.{}", std::process::id()));
+        std::fs::write(&tmp, CREDENTIALS_SO).ok()?;
+        std::fs::rename(tmp, p).ok()?;
+    }
+    Some(name)
+}
 
 /// Writes liblindroids-gtk.so into `dir` (the runtime dir's lib/, which every run sees at the
 /// server's path or its own) and returns its file name. LINDROIDS_GTK_DIALOGS=1 leaves GTK's

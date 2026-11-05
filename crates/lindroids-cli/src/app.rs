@@ -17,7 +17,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::{config, sandbox, shortcut};
@@ -65,11 +65,29 @@ pub fn maybe_open(url: &str) -> Option<Result<String, String>> {
     }
 }
 
+/// The run this process started: its pid, name and icon. The server's registry is in another
+/// process, so a single run's window takes its identity from here.
+static RUN_IDENTITY: Mutex<Option<(u32, String, Option<String>)>> = Mutex::new(None);
+
+pub fn set_run_identity(pid: u32, name: &str, icon_b64: Option<&str>) {
+    if let Ok(mut slot) = RUN_IDENTITY.lock() {
+        *slot = Some((pid, name.to_string(), icon_b64.map(str::to_string)));
+    }
+}
+
+fn run_identity(run: Option<u32>) -> Option<(String, Option<String>)> {
+    let run = run?;
+    if let Some((pid, name, icon)) = RUN_IDENTITY.lock().ok()?.as_ref() {
+        if *pid == run {
+            return Some((name.clone(), icon.clone()));
+        }
+    }
+    lindroids_server::icons::launch_info(run)
+}
+
 fn open(url: &str) -> Result<String, String> {
     let run = shortcut::run_of_url(url);
-    let (name, icon) = run
-        .and_then(lindroids_server::icons::launch_info)
-        .unwrap_or_else(|| ("Lindroids".to_string(), None));
+    let (name, icon) = run_identity(run).unwrap_or_else(|| ("Lindroids".to_string(), None));
     let launch = LAUNCH.get().map(|(_, u)| u.clone()).unwrap_or_default();
     // The windows app built here first; the shared app of older releases (org.lindroids) if
     // that is what is installed.
