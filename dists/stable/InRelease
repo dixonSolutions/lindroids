@@ -1,0 +1,46 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Origin: Lindroids
+Label: Lindroids
+Suite: stable
+Codename: stable
+Date: Thu, 05 Nov 2026 03:53:28 +0000
+Architectures: arm64 armhf amd64 i386
+Components: main
+Acquire-By-Hash: no
+Description: Lindroids: Linux apps in Android windows
+MD5Sum:
+ 8f1c8885d9dc714dbbff9d89b734ee4c             3378 main/binary-amd64/Packages
+ 6a8c0cbae82ea6f8f4502e1e2d9a8ea0              953 main/binary-amd64/Packages.gz
+ 552cfba01ce869c962baab9eecfcb589             3378 main/binary-arm64/Packages
+ b610b2aa19327c2ab723b0169d6f65f9              954 main/binary-arm64/Packages.gz
+ 8630bcd7dabb7c9b02e61a5e456fb4ef             3378 main/binary-armhf/Packages
+ 34fee51c70acf607b4de12ead714b0ce              954 main/binary-armhf/Packages.gz
+ e2fd0d08a68e900f984cbb8cbb048256             3372 main/binary-i386/Packages
+ f11c7898ec281de4c02546d669deb863              954 main/binary-i386/Packages.gz
+SHA1:
+ cc3bd57f5aa3256d0b1e9546f7d2d4f50cacc70a             3378 main/binary-amd64/Packages
+ 7325855d8fd0fcda03339218dd61198fa00be7fa              953 main/binary-amd64/Packages.gz
+ 9a969e245f6e3554f00c933aa4bfa8a2e5d7ffa0             3378 main/binary-arm64/Packages
+ 53c602a03ad555d9dce5423554e170a0e49af187              954 main/binary-arm64/Packages.gz
+ dfaaa34e2ae5bb0e511c8dc482b74e6c839af042             3378 main/binary-armhf/Packages
+ 817c611fb85a32a2182b23528e05485e7e7964d9              954 main/binary-armhf/Packages.gz
+ 39c801e906d82e5d5fc4ec70775c5c250025fe6a             3372 main/binary-i386/Packages
+ b8fb9e903f6b56ddf976e66e5df7ec6a5f855888              954 main/binary-i386/Packages.gz
+SHA256:
+ ec7b545cf63ff9a6f59063c7f4287d504a9747b09ae32755d1c66933e0477729             3378 main/binary-amd64/Packages
+ e04cb9a66dfa858d025d764f09ef8ee20093edbd0ba976a630317c288e947db5              953 main/binary-amd64/Packages.gz
+ 3b34bee2e128175ab472167bf9b96001b359ebd49027bd729febf77784c4b70c             3378 main/binary-arm64/Packages
+ 4cb4a87f606133963fce3e94454354e3368db819c0a8177a898d9c9e13519491              954 main/binary-arm64/Packages.gz
+ 9ae541c4c22690db12932b6510ed4f53c0a3dd9642a54fbaff0322d9ab68404f             3378 main/binary-armhf/Packages
+ 653854d581d9140d7c899a1a1255a09d796e6d93e79e5c6b14bbeece800dd4ae              954 main/binary-armhf/Packages.gz
+ b5b260b6ecabf929a07854ff97607cddf76d0be6143d6903f40ae093a938ea71             3372 main/binary-i386/Packages
+ 760abd546f4451df2acdf475c72787bc2631fe08fe2fa4081afd856109b27c51              954 main/binary-i386/Packages.gz
+-----BEGIN PGP SIGNATURE-----
+
+iHUEARYKAB0WIQTPcYFO22PJEbQwR5xv/ZHJD0O/ewUCauv9uQAKCRBv/ZHJD0O/
+ey+mAQD5/MfTd6qqNISttbd0ob7rhtcauprrGJBCUwuLup2AiQEArSKx6Z2Rf3m9
+jVL1fr5DwtZUcMmDZYPoTf8FGF75AwU=
+=EsJP
+-----END PGP SIGNATURE-----

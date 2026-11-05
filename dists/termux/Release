@@ -1,0 +1,36 @@
+Origin: Lindroids
+Label: Lindroids
+Suite: termux
+Codename: termux
+Date: Thu, 05 Nov 2026 03:53:28 +0000
+Architectures: aarch64 arm x86_64 i686
+Components: main
+Acquire-By-Hash: no
+Description: Lindroids: Linux apps in Android windows
+MD5Sum:
+ a7e17c8aad592c86f8576ace92996656             3375 main/binary-aarch64/Packages
+ 4000e47fcf88047db3d612c0b9160ccd              947 main/binary-aarch64/Packages.gz
+ a107401b50a8f53239d664802526ff44             3348 main/binary-arm/Packages
+ d14a7272b7e9c619df4de178a48dfd50              943 main/binary-arm/Packages.gz
+ 4069657ab6f75a4b2f2984747300bf95             3357 main/binary-i686/Packages
+ fd945f4375b2b60c6d060a47f5f6c99a              946 main/binary-i686/Packages.gz
+ 07dddf69c51d189797c9b6ccf0155bf1             3369 main/binary-x86_64/Packages
+ f25a3fac6eb6fccbe3258e2c1370589c              945 main/binary-x86_64/Packages.gz
+SHA1:
+ cd803626a9506b55a0b4d30a004eca001da3add3             3375 main/binary-aarch64/Packages
+ 8af6c8d8e8db33c76eaf464c825f899f156f6397              947 main/binary-aarch64/Packages.gz
+ 1169cdca03615a26ce7bd2470254517b92ddc019             3348 main/binary-arm/Packages
+ 7f74ecb6ad2625f7527361f3be54b10defefc1cd              943 main/binary-arm/Packages.gz
+ 04353df76ab225c4d6a885886e7afeee9cafe5d1             3357 main/binary-i686/Packages
+ d67369d492af1eaeaff1c5d08178713e448c11fd              946 main/binary-i686/Packages.gz
+ a8bb5b24154cb48e4f4eaf292303ce3153e8a30e             3369 main/binary-x86_64/Packages
+ 998cad3db63a5764a758a66d154ad50bfaa10b5c              945 main/binary-x86_64/Packages.gz
+SHA256:
+ 6f65559971cc3985aa65446527fc62d1c1e50130b36b3bb909d97d95cc26e29a             3375 main/binary-aarch64/Packages
+ 2c9f2c55b4f35b707ee1ab01b7a0de5911446f4d88d80fd0d6bae51dcaa56a26              947 main/binary-aarch64/Packages.gz
+ d259e18c9e3beeb991bb09a1ea98f303cbd498e6ab4714999ff370be22d7b2b8             3348 main/binary-arm/Packages
+ db87fcf0d3a546fec2021de8e8e47d7b361d7f234bbbd1434d949db0e308e1b3              943 main/binary-arm/Packages.gz
+ c79e7723e4ddce6109e0d79d649b19c25ee7052706c53eb30f1486cd5a98290d             3357 main/binary-i686/Packages
+ 71e68ad0b77e03436a83aa78743ddac3d5e642ab452a7c41b264ca599c354986              946 main/binary-i686/Packages.gz
+ 4434de0f0a8f754ad17226c4a0b9a70d04881242f1582e35ee439b6b31947c44             3369 main/binary-x86_64/Packages
+ 315a8f8ccfb437b0e679044bb9b9c93a1bbb9668e2eb4b4b3c06667ec6de8caa              945 main/binary-x86_64/Packages.gz
