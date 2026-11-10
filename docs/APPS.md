@@ -332,7 +332,7 @@ export` and `lindroids doctor` list the apps the server has seen that are older.
 
 Galaxy Tab SM-X306B, Android 16, Termux from Google Play, a dev build of this round
 (`0.1.178~dev`), VSCodium (Flatpak) in its own app and GNOME Calculator as a single run in the
-shared windows app; both apps rebuilt from template 1 and installed over adb.
+shared windows app; both apps rebuilt from the new template and installed over adb.
 
 | What | Result |
 |---|---|
@@ -347,6 +347,9 @@ shared windows app; both apps rebuilt from template 1 and installed over adb.
 | Drawing | WebGL 2 in a worker on the Mali-G68; page draw 0.8 ms a frame; server per frame: convert 4-5 ms, compose 2-3, diff 5-8, pack 0.1-1.9 |
 | Server wakeups (`LINDROIDS_STATS=1`), VSCodium in its window and in use | 8-14 a second |
 | Server wakeups, VSCodium hidden behind Home | 2.4 a second |
+| Template 2 apps (`0.1.185~dev`): VSCodium's app killed in the background (`am kill`), reopened 2 minutes later | VSCodium still running; the same window with the line typed before, unsaved, in its terminal |
+| Calculator in the windows app, `LINDROIDS_BACKGROUND=45`, the app killed in the background | after 45 s "asking org.lindroids.windows whether its window is still in Recents", 0.8 s later "its window is still in Recents: it keeps running"; `lindroids show` brought the window back |
+| VSCodium started again after it was closed | its files, tabs and terminal history as they were left ("History restored") |
 
 Not tested there: a hardware keyboard's Caps Lock and held keys (adb's key events carry no lock
 state and no real hold), a mouse, the folder picker, and a card swiped away more than a minute
