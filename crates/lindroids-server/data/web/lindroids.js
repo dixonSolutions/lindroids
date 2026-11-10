@@ -127,7 +127,7 @@ function connect() {
   clearTimeout(retry);
   replaced = false;
   ready = false;
-  capsSent = null;
+  releaseAllKeys();
   const url =(location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/link';
   try {
     ws = new WebSocket(url);
@@ -156,6 +156,9 @@ function connect() {
     ws = null;
     const was = ready;
     ready = false;
+    releaseAllKeys(false);
+    // A chooser for a request the dropped link carried can no longer be answered.
+    document.querySelectorAll('.picker').forEach((p) => p.remove());
     for (const w of [...windows.keys()]) removeWindow(w);
     for (const s of [...mics.keys()]) recordClose(s);
     if (replaced) return;
@@ -411,7 +414,7 @@ async function handle(m, payload) {
     case 'pick_files': return pickFiles(m);
     case 'fetch_file': return fetchFile(m);
     case 'write_file': return writeFile(m, payload);
-    case 'pick_folder': return send({ t: 'folder_picked', request: m.request, path: null });
+    case 'pick_folder': return pickFolder(m);
     case 'log': return console.log('server', m.level, m.msg);
     default: return;
   }
@@ -666,6 +669,8 @@ function removeWindow(win) {
   const i = order.indexOf(win);
   if (i >= 0) order.splice(i, 1);
   if (active === win) {
+    // The window is gone (the server said so): its keys are not sent to it.
+    releaseAllKeys(false);
     active = null;
     const next = order[order.length - 1];
     if (next !== undefined) activate(next);
@@ -678,6 +683,8 @@ function activate(win) {
   const w = windows.get(win);
   if (!w) return;
   if (active !== null && active !== win) {
+    // Keys held go up in the window they were pressed in, not the one that gets the focus now.
+    releaseAllKeys();
     const old = windows.get(active);
     if (old) { old.canvas.classList.remove('active'); old.tab.classList.remove('active'); }
     send({ t: 'focus', win: active, focused: false });
@@ -975,9 +982,11 @@ let lastHardwareKey = -1e9;
 // its window, while linking), they do nothing, rather than focus the tab bar's ✕ for Enter to press.
 const NAV_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter', ' ']);
 // The relay cannot know Caps Lock by itself (the soft keyboard turns it off without a key event),
-// so each key says whether the page's keyboard has it on, and the relay follows.
+// so each key, pointer and touch says whether the page's keyboard has it on, and the relay follows.
+// Reset when the page loses the keyboard or the link: the next event sends the page's state again.
 let capsSent = null;
 function syncCaps(e, down) {
+  if (!ready || typeof e.getModifierState !== 'function') return;
   if (e.key === 'CapsLock' && down) return;
   const on = e.getModifierState('CapsLock');
   if (on === capsSent) return;
@@ -985,14 +994,88 @@ function syncCaps(e, down) {
   send({ t: 'caps_lock', on });
 }
 
+// Shift, Ctrl, Alt and Meta: the two keycodes of each, and the flag every key and pointer event
+// carries saying whether it is down.
+const MODIFIERS = [
+  { flag: 'shiftKey', codes: [59, 60] },
+  { flag: 'ctrlKey', codes: [113, 114] },
+  { flag: 'altKey', codes: [57, 58] },
+];
+// Meta is not reconciled: its flag is not reliable enough to release anything on (blur, hidden and
+// the link going still let it go).
+//
+// Touch-origin events (a finger, or the mouse event a touch makes) carry flags that say nothing
+// about the keyboard: they are not used to reconcile.
+function fromTouch(e) {
+  return e.pointerType === 'touch' || (typeof e.type === 'string' && e.type.startsWith('touch'))
+    || !!(e.sourceCapabilities && e.sourceCapabilities.firesTouchEvents);
+}
+// Whether the event says the modifier is down. AltGr (code 58 on the keyboards that have it) comes
+// as AltGraph, with no Alt flag.
+function modifierDown(e, mod) {
+  if (e[mod.flag]) return true;
+  return mod.flag === 'altKey' && typeof e.getModifierState === 'function' && e.getModifierState('AltGraph');
+}
+// A modifier the page holds that the event says is up: its key-up was lost (it went to another
+// window, or never came), and it would stay down on the Linux side. Let it go now, before the
+// event's own keys. `except` is the event's own key, which onKey handles: when it is one of a pair
+// (Shift 59/60 and so on), the whole pair is left to it, since the other half may still be down.
+function reconcileModifiers(e, except) {
+  if (!held.size || fromTouch(e)) return;
+  for (const mod of MODIFIERS) {
+    if (modifierDown(e, mod) || mod.codes.includes(except)) continue;
+    for (const c of mod.codes) {
+      if (!held.has(c)) continue;
+      held.delete(c);
+      if (active !== null) key(c, false);
+    }
+  }
+}
+
+// Lets go of everything the page holds down: the keys the Linux side has down, and the Shift the
+// page borrowed for a letter. Used when the page stops getting the keyboard (blur, hidden, frozen,
+// closing), when the link drops or is made again, and when the window the keys went to changes.
+// `sendUps` false when there is nothing to tell (the window or the link is gone). Keys still
+// queued for a composition go out first, so no key-up overtakes its key-down; the ups go directly.
+function releaseAllKeys(sendUps = true) {
+  clearTimeout(heldTimer);
+  heldTimer = null;
+  const queued = heldKeys;
+  heldKeys = [];
+  if (sendUps) queued.forEach((m) => send(m));
+  const ups = new Set(held);
+  if (synthShift.size) ups.add(59);
+  held.clear();
+  synthShift.clear();
+  capsSent = null;
+  if (sendUps && active !== null) {
+    for (const c of ups) send({ t: 'key', win: active, code: c, down: false, time_ms: now() });
+  }
+}
+
+// A key went up on a target that takes no keys (an input has the focus, or no window is shown):
+// it still lets go of what the page has down for it.
+function releaseKey(code) {
+  const wasHeld = held.delete(code);
+  const borrowed = synthShift.delete(code);
+  if (active === null) return;
+  if (wasHeld) key(code, false);
+  if (borrowed && !synthShift.size) key(59, false);
+}
+
 function onKey(e, down) {
-  if (e.target.tagName === 'INPUT') return;
+  const code = keyCode(e);
+  reconcileModifiers(e, code);
   syncCaps(e, down);
+  if (e.target.tagName === 'INPUT') {
+    if (!down) releaseKey(code);
+    return;
+  }
   if (active === null || !ready) {
+    if (!down) releaseKey(code);
     if (panel.hidden && NAV_KEYS.has(e.key)) e.preventDefault();
     return;
   }
-  const code = keyCode(e);
   if (!code) return;
   if (e.code) lastHardwareKey = performance.now();
   // Ctrl+V (and Ctrl+Shift+V): let the browser's paste through first, so the Linux side has the
@@ -1006,13 +1089,14 @@ function onKey(e, down) {
   // Some keyboards (virtual ones, Android's injected keys) say Shift only as a flag on the
   // letter, with no Shift key of its own: press one around it, or "A" arrives as "a".
   const shiftHeld = held.has(59) || held.has(60);
+  // One borrowed Shift serves every such letter held at once: it goes up with the last of them.
   if (down && needsShift(e) && !shiftHeld && code !== 59 && code !== 60) {
-    key(59, true);
+    if (!synthShift.size) key(59, true);
     synthShift.add(code);
   }
   if (down) held.add(code); else held.delete(code);
   key(code, down);
-  if (!down && synthShift.delete(code)) key(59, false);
+  if (!down && synthShift.delete(code) && !synthShift.size && !held.has(59) && !held.has(60)) key(59, false);
 }
 const synthShift = new Set();
 
@@ -1044,11 +1128,16 @@ function sendHeldKeys() {
 
 document.addEventListener('keydown', (e) => onKey(e, true));
 document.addEventListener('keyup', (e) => onKey(e, false));
-window.addEventListener('blur', () => {
-  // Keys held while the page lost focus would stay down on the Linux side.
-  for (const c of held) key(c, false);
-  held.clear();
-});
+// Keys held while the page loses the keyboard would stay down on the Linux side: let them go.
+window.addEventListener('blur', () => releaseAllKeys());
+document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAllKeys(); });
+document.addEventListener('freeze', () => releaseAllKeys());
+addEventListener('pagehide', () => releaseAllKeys());
+// Pointer, wheel and touch events carry the modifiers and Caps Lock too: a lost key-up is found
+// by the next touch, before the touch's own event goes to the program. Capture, so it runs first.
+for (const ev of ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mouseup', 'wheel', 'touchstart', 'touchend']) {
+  addEventListener(ev, (e) => { reconcileModifiers(e, 0); syncCaps(e, false); }, { capture: true, passive: true });
+}
 document.addEventListener('paste', (e) => {
   const text = e.clipboardData && e.clipboardData.getData('text/plain');
   if (text) { lastClipboard = text; send({ t: 'clipboard', text }); }
@@ -1660,6 +1749,16 @@ addEventListener('pointerup', () => { lastTap = performance.now(); }, { capture:
 
 // A program's file dialog first asks where the file is: in the Linux container (browsed here, the
 // program reads the path directly) or in Android (Android's own picker).
+// `lindroids pick-folder` (the CLI, through the server): a folder of the Linux side, as the path
+// the program can use. The phone's own folders are copies, not paths, so only the Linux side is offered.
+function pickFolder(m) {
+  const p = { request: m.request, directory: true, folder: true, title: 'Choose a folder' };
+  pickerSheet(p.title, [
+    ['Linux environment', 'Programs and files in the container', () => browseLinux(p, 'root')],
+    ['Home directory', 'Your home in the container', () => browseLinux(p, '~')],
+  ], () => send({ t: 'folder_picked', request: m.request, path: null }));
+}
+
 function pickFiles(p) {
   const title = p.title || (p.directory ? 'A Linux program wants a folder' : p.save ? 'Save' : 'A Linux program wants a file');
   const cancel = () => send({ t: 'files_picked', request: p.request, files: [] });
@@ -1708,8 +1807,11 @@ function browseLinux(p, start) {
   const pathEl = el.querySelector('.path'), listEl = el.querySelector('.list'), footEl = el.querySelector('.foot');
   const upBtn = el.querySelector('.up');
   let here = null, selected = new Set(), done = false, actionBtn = null, nameInput = null, footBuilt = false;
-  const cancel = () => { if (!done) send({ t: 'files_picked', request: p.request, files: [] }); };
-  const close = () => { done = true; el.remove(); cancel(); };
+  // Closed without a choice (X, a click outside, Escape): the request is answered with nothing.
+  const answer = (files) => (p.folder
+    ? send({ t: 'folder_picked', request: p.request, path: files.length ? files[0].path : null })
+    : send({ t: 'files_picked', request: p.request, files }));
+  const close = () => { if (done) return; done = true; el.remove(); answer([]); };
   el.querySelector('.x').onclick = close;
   el.onclick = (e) => { if (e.target === el) close(); };
   upBtn.onclick = () => { if (here && here.parent) go(here.parent); };
@@ -1723,7 +1825,7 @@ function browseLinux(p, start) {
     if (done || !files.length) return;
     done = true;
     el.remove();
-    send({ t: 'files_picked', request: p.request, files });
+    answer(files);
   }
   function chooseDir() { if (here) choose([picked(here.path, here.path.split('/').filter(Boolean).pop() || '/', 'inode/directory')]); }
   function chooseSave() {

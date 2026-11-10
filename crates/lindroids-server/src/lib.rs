@@ -871,6 +871,8 @@ impl State {
     }
 
     fn drop_link(&mut self, id: u64) {
+        // The page's keys and touches go with it: their key-ups and touch-ups will not come.
+        seat::release_link(self, id);
         self.links.retain(|l| l.id != id);
         if self.primary == Some(id) {
             self.primary = self.links.iter().rev().find(|l| l.app.is_none()).map(|l| l.id);
@@ -1244,6 +1246,10 @@ impl State {
                 }
             }
             ToServer::Shown { shown } => {
+                // The page of the focused window hid: its key-ups may never come.
+                if !shown && seat::focus_on_link(self.seat.focus_win, |w| self.windows.get(&w).and_then(|w| w.link), from) {
+                    seat::release_keys(self);
+                }
                 if let Some(l) = self.links.iter_mut().find(|l| l.id == from) {
                     l.hidden_since = if shown { None } else { l.hidden_since.or(Some(Instant::now())) };
                     if let (true, Some(r)) = (shown, l.run) {

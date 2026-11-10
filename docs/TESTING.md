@@ -45,6 +45,10 @@ echo "tap 1 258 101" > cmds        # open a dropdown
 Useful switches: `LINDROIDS_LOG=debug` (commits, configures, frames), `LINDROIDS_TRANSPORT=tcp`
 (loopback only, as on enforcing devices), `debug-app --tcp`.
 
+Stuck keys in the page (Shift held after blur, hidden page, lost link or key-up; Caps Lock state):
+`node tests/stuck-input.mjs [--js <lindroids.js>] [--evidence out.json]`, headless Chromium through
+playwright-core (set `LINDROIDS_PLAYWRIGHT_CORE` if it is not in `node_modules`).
+
 ## 3. Android
 
 `lab/` holds a QEMU lab of Android-x86 and BlissOS images (Android 7 to 13): fetch, start,

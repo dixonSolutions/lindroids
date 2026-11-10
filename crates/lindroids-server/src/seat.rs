@@ -1,6 +1,6 @@
 //! wl_seat (pointer, keyboard, touch) and text-input-v3, and the routing of Android input into them.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::sync::Mutex;
@@ -32,8 +32,8 @@ pub struct Seat {
     touch_targets: HashMap<i32, (wl_surface::WlSurface, f64, f64)>,
     /// Touch point driving the emulated pointer, for clients without wl_touch.
     emulating: Option<i32>,
-    mods_depressed: u32,
-    mods_locked: u32,
+    /// The keys the focused client holds down, and Caps Lock.
+    keys: KeyState,
     /// The on-screen keyboard follows taps, as on Android, never comes up without one (apps
     /// enable text input for a field focused at start: the keyboard came up on its own), and:
     /// - apps that ask for it (GTK enables text input again on a tap into a field: text-input-v3's
@@ -47,6 +47,58 @@ pub struct Seat {
     tap_answered: bool,
     /// Where and when each touch went down: a tap is short and stays put (not a scroll).
     touch_down: HashMap<i32, (f32, f32, std::time::Instant)>,
+}
+
+/// The keys the page holds down, and the lock modifiers. The modifiers a client is sent are the
+/// ones held down now, so a key-up that never comes can only leave a key down until the next
+/// `release_all`, not for good.
+#[derive(Default)]
+pub struct KeyState {
+    pressed: BTreeSet<u32>,
+    locked: u32,
+}
+
+impl KeyState {
+    /// The modifiers held down: from the keys pressed, so releasing one Shift keeps the other.
+    pub fn depressed(&self) -> u32 {
+        self.pressed.iter().fold(0, |m, &c| m | keys::modifier_of(c))
+    }
+
+    pub fn locked(&self) -> u32 {
+        self.locked
+    }
+
+    /// A key went down or up. Returns whether the code was held before this call: a key-up for a
+    /// code that was not held (the focus moved mid-hold) has nothing to release on the client.
+    pub fn set_key(&mut self, code: u32, down: bool) -> bool {
+        let was_held = self.pressed.contains(&code);
+        if down {
+            self.pressed.insert(code);
+        } else {
+            self.pressed.remove(&code);
+        }
+        was_held
+    }
+
+    /// Caps Lock's state, from the page. Returns whether it changed.
+    pub fn set_locked(&mut self, locked: u32) -> bool {
+        if self.locked == locked {
+            return false;
+        }
+        self.locked = locked;
+        true
+    }
+
+    /// Whether a key can change the modifiers a client sees (Caps Lock too: its modifiers are
+    /// sent so the client's own toggle is put back to ours).
+    pub fn is_modifier_key(code: u32) -> bool {
+        keys::modifier_of(code) != 0 || code == keys::KEY_CAPSLOCK
+    }
+
+    /// Lets go of every key: the codes that were down, in order. The lock stays.
+    pub fn release_all(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.pressed).into_iter().collect()
+    }
 }
 
 /// How long after a tap the app's text-input answer counts as answering it.
@@ -176,7 +228,7 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
                     if same_client(&k, &s) {
                         let serial = state.next_serial();
                         k.enter(serial, &s, Vec::new());
-                        k.modifiers(serial, state.seat.mods_depressed, 0, state.seat.mods_locked, 0);
+                        k.modifiers(serial, state.seat.keys.depressed(), 0, state.seat.keys.locked(), 0);
                     }
                 }
                 state.seat.keyboards.push(k);
@@ -322,6 +374,8 @@ pub fn surface_destroyed(state: &mut State, id: &ObjectId) {
     let seat = &mut state.seat;
     if seat.kb_focus.as_ref().map_or(false, |s| &s.id() == id) {
         seat.kb_focus = None;
+        // Nobody left to send the key-ups to: forget them, or the next focus gets them as held.
+        seat.keys.release_all();
     }
     if seat.ptr_focus.as_ref().map_or(false, |s| &s.id() == id) {
         seat.ptr_focus = None;
@@ -329,10 +383,80 @@ pub fn surface_destroyed(state: &mut State, id: &ObjectId) {
     seat.touch_targets.retain(|_, (s, _, _)| &s.id() != id);
 }
 
+/// Lets go of the keys the focused client holds, and of the Shift etc. on it: a key-up that never
+/// comes (the window lost the focus, its page hid or went) must not leave them down there.
+pub fn release_keys(state: &mut State) {
+    let released = state.seat.keys.release_all();
+    if released.is_empty() {
+        return;
+    }
+    let Some(surface) = state.seat.kb_focus.clone() else { return };
+    let time = state.now_ms();
+    for code in released {
+        let serial = state.next_serial();
+        for k in state.seat.keyboards.iter().filter(|k| same_client(*k, &surface)) {
+            k.key(serial, time, code, wl_keyboard::KeyState::Released);
+        }
+    }
+    let serial = state.next_serial();
+    let locked = state.seat.keys.locked();
+    for k in state.seat.keyboards.iter().filter(|k| same_client(*k, &surface)) {
+        k.modifiers(serial, 0, 0, locked, 0);
+    }
+}
+
+/// Whether the focused window is one of `link`'s windows. `link_of` maps a window to its page.
+pub fn focus_on_link(focus_win: Option<u32>, link_of: impl Fn(u32) -> Option<u64>, link: u64) -> bool {
+    focus_win.and_then(link_of) == Some(link)
+}
+
+/// The page a surface is drawn for: the link of the window it is in.
+fn surface_link(state: &State, surface: &wl_surface::WlSurface) -> Option<u64> {
+    let win = state.window_of(&surface.id())?;
+    state.windows.get(&win)?.link
+}
+
+/// A page is dropped: what it holds goes, and nothing of another page's. Its keys go only when it
+/// has the focus (its key-ups will not come); the emulated button and the touches go only when
+/// they are in its windows, so a background page leaving does not cancel a live touch elsewhere.
+pub fn release_link(state: &mut State, link: u64) {
+    if focus_on_link(state.seat.focus_win, |w| state.windows.get(&w).and_then(|w| w.link), link) {
+        release_keys(state);
+    }
+    let gone: Vec<i32> = state.seat.touch_targets.iter().filter(|(_, (s, _, _))| surface_link(state, s) == Some(link)).map(|(id, _)| *id).collect();
+    // The touch driving the emulated pointer went with its window: let go of the button.
+    if state.seat.emulating.is_some_and(|id| gone.contains(&id)) {
+        state.seat.emulating = None;
+        if let Some(surface) = state.seat.ptr_focus.clone() {
+            let serial = state.next_serial();
+            let time = state.now_ms();
+            for p in state.seat.pointers.iter().filter(|p| same_client(*p, &surface)) {
+                p.button(serial, time, BTN_LEFT, wl_pointer::ButtonState::Released);
+                if p.version() >= 5 {
+                    p.frame();
+                }
+            }
+        }
+    }
+    let mut cancelled = Vec::new();
+    for id in gone {
+        if let Some((s, _, _)) = state.seat.touch_targets.remove(&id) {
+            cancelled.push(s);
+        }
+    }
+    for t in &state.seat.touches {
+        if cancelled.iter().any(|s| same_client(t, s)) {
+            t.cancel();
+        }
+    }
+}
+
 fn set_keyboard_focus(state: &mut State, surface: Option<wl_surface::WlSurface>) {
     if state.seat.kb_focus == surface {
         return;
     }
+    // Before the leave: the old client gets its key-ups while it still has the focus.
+    release_keys(state);
     if let Some(old) = state.seat.kb_focus.take() {
         let serial = state.next_serial();
         for k in state.seat.keyboards.iter().filter(|k| same_client(*k, &old)) {
@@ -348,7 +472,7 @@ fn set_keyboard_focus(state: &mut State, surface: Option<wl_surface::WlSurface>)
         let serial = state.next_serial();
         for k in state.seat.keyboards.iter().filter(|k| same_client(*k, new)) {
             k.enter(serial, new, Vec::new());
-            k.modifiers(serial, state.seat.mods_depressed, 0, state.seat.mods_locked, 0);
+            k.modifiers(serial, state.seat.keys.depressed(), 0, state.seat.keys.locked(), 0);
         }
         for t in state.seat.text_inputs.iter().filter(|t| same_client(*t, new)) {
             t.enter(new);
@@ -578,41 +702,36 @@ pub fn touch(state: &mut State, win: u32, action: TouchAction, id: i32, x: f32, 
 
 fn send_key(state: &mut State, code: u32, down: bool, time: u32) {
     let Some(surface) = state.seat.kb_focus.clone() else { return };
-    let m = keys::modifier_of(code);
-    let mut mods_changed = false;
-    if m != 0 {
-        if down {
-            state.seat.mods_depressed |= m;
-        } else {
-            state.seat.mods_depressed &= !m;
-        }
-        mods_changed = true;
+    // A key-up for a key the client was never sent (the focus moved while it was held) is no key
+    // to release: sending it would release a key the client never had, and its modifiers with it.
+    let was_held = state.seat.keys.set_key(code, down);
+    if !down && !was_held {
+        return;
     }
     // Caps Lock's state comes from the page (`caps_lock`); the key alone does not toggle it. The
     // modifiers are still sent so a client's own toggle on this key is put back to ours.
-    if code == keys::KEY_CAPSLOCK {
-        mods_changed = true;
-    }
+    let mods_changed = KeyState::is_modifier_key(code);
     let serial = state.next_serial();
     let st = if down { wl_keyboard::KeyState::Pressed } else { wl_keyboard::KeyState::Released };
+    let (depressed, locked) = (state.seat.keys.depressed(), state.seat.keys.locked());
     for k in state.seat.keyboards.iter().filter(|k| same_client(*k, &surface)) {
         k.key(serial, time, code, st);
         if mods_changed {
-            k.modifiers(serial, state.seat.mods_depressed, 0, state.seat.mods_locked, 0);
+            k.modifiers(serial, depressed, 0, locked, 0);
         }
     }
 }
 
 pub fn caps_lock(state: &mut State, on: bool) {
     let locked = if on { keys::MOD_LOCK } else { 0 };
-    if state.seat.mods_locked == locked {
+    if !state.seat.keys.set_locked(locked) {
         return;
     }
-    state.seat.mods_locked = locked;
     let Some(surface) = state.seat.kb_focus.clone() else { return };
     let serial = state.next_serial();
+    let depressed = state.seat.keys.depressed();
     for k in state.seat.keyboards.iter().filter(|k| same_client(*k, &surface)) {
-        k.modifiers(serial, state.seat.mods_depressed, 0, locked, 0);
+        k.modifiers(serial, depressed, 0, locked, 0);
     }
 }
 
@@ -648,7 +767,7 @@ pub fn text(state: &mut State, win: u32, text: &str) {
     let time = state.now_ms();
     for c in text.chars() {
         let Some((code, shift)) = keys::char_to_key(c) else { continue };
-        let had_shift = state.seat.mods_depressed & keys::MOD_SHIFT != 0;
+        let had_shift = state.seat.keys.depressed() & keys::MOD_SHIFT != 0;
         if shift && !had_shift {
             send_key(state, keys::KEY_LEFTSHIFT, true, time);
         }
@@ -657,5 +776,108 @@ pub fn text(state: &mut State, win: u32, text: &str) {
         if shift && !had_shift {
             send_key(state, keys::KEY_LEFTSHIFT, false, time);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY_A: u32 = 30;
+
+    #[test]
+    fn set_key_says_whether_the_code_was_held() {
+        let mut k = KeyState::default();
+        // A key-up for a code never pressed (the focus moved mid-hold) is not a held key.
+        assert!(!k.set_key(KEY_A, false));
+        assert!(!k.set_key(KEY_A, true));
+        // A second down while held is held before the call.
+        assert!(k.set_key(KEY_A, true));
+        assert!(k.set_key(KEY_A, false));
+        assert!(!k.set_key(KEY_A, false));
+        assert_eq!(k.depressed(), 0);
+    }
+
+    #[test]
+    fn is_modifier_key_covers_modifiers_and_caps_lock_only() {
+        assert!(KeyState::is_modifier_key(keys::KEY_LEFTSHIFT));
+        assert!(KeyState::is_modifier_key(keys::KEY_LEFTCTRL));
+        assert!(KeyState::is_modifier_key(keys::KEY_CAPSLOCK));
+        assert!(!KeyState::is_modifier_key(KEY_A));
+    }
+
+    #[test]
+    fn release_all_takes_a_held_shift_whose_key_up_never_came() {
+        let mut k = KeyState::default();
+        assert!(!k.set_key(keys::KEY_LEFTSHIFT, true));
+        assert!(!k.set_key(KEY_A, true));
+        assert!(k.set_key(KEY_A, false));
+        // Shift is still held, and no key-up for it has come.
+        assert_eq!(k.depressed(), keys::MOD_SHIFT);
+        // Focus goes: the held key is released and nothing stays depressed.
+        assert_eq!(k.release_all(), vec![keys::KEY_LEFTSHIFT]);
+        assert_eq!(k.depressed(), 0);
+        assert!(k.release_all().is_empty());
+    }
+
+    #[test]
+    fn focus_on_link_is_true_only_for_the_focused_windows_page() {
+        // Window 1 belongs to page 10, window 2 to page 20, window 3 to no page.
+        let link_of = |w: u32| match w {
+            1 => Some(10),
+            2 => Some(20),
+            _ => None,
+        };
+        assert!(focus_on_link(Some(1), link_of, 10));
+        assert!(!focus_on_link(Some(1), link_of, 20));
+        assert!(focus_on_link(Some(2), link_of, 20));
+        // A background page dropping while another page's window has the focus: no match.
+        assert!(!focus_on_link(Some(2), link_of, 10));
+        // No focus, a window with no page, or an unknown window: nothing matches.
+        assert!(!focus_on_link(None, link_of, 10));
+        assert!(!focus_on_link(Some(3), link_of, 10));
+        assert!(!focus_on_link(Some(9), link_of, 10));
+    }
+
+    #[test]
+    fn releasing_one_shift_keeps_the_other_shift_depressed() {
+        let mut k = KeyState::default();
+        k.set_key(keys::KEY_LEFTSHIFT, true);
+        k.set_key(keys::KEY_RIGHTSHIFT, true);
+        k.set_key(keys::KEY_LEFTSHIFT, false);
+        assert_eq!(k.depressed(), keys::MOD_SHIFT);
+        k.set_key(keys::KEY_RIGHTSHIFT, false);
+        assert_eq!(k.depressed(), 0);
+    }
+
+    #[test]
+    fn release_all_returns_every_held_key_and_keeps_caps_lock() {
+        let mut k = KeyState::default();
+        k.set_locked(keys::MOD_LOCK);
+        k.set_key(keys::KEY_LEFTCTRL, true);
+        k.set_key(KEY_A, true);
+        assert_eq!(k.release_all(), vec![keys::KEY_LEFTCTRL, KEY_A]);
+        assert_eq!(k.depressed(), 0);
+        assert_eq!(k.locked(), keys::MOD_LOCK);
+    }
+
+    #[test]
+    fn caps_lock_on_then_off_leaves_no_lock() {
+        let mut k = KeyState::default();
+        assert!(k.set_locked(keys::MOD_LOCK));
+        assert_eq!(k.locked(), keys::MOD_LOCK);
+        assert!(k.set_locked(0));
+        assert_eq!(k.locked(), 0);
+        // Already off: nothing to send.
+        assert!(!k.set_locked(0));
+    }
+
+    #[test]
+    fn caps_lock_key_holds_no_modifier_bit() {
+        let mut k = KeyState::default();
+        k.set_key(keys::KEY_CAPSLOCK, true);
+        assert_eq!(k.depressed(), 0);
+        k.set_key(keys::KEY_CAPSLOCK, false);
+        assert_eq!(k.depressed(), 0);
     }
 }
