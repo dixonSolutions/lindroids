@@ -453,6 +453,7 @@ if tap_icon; then
   n=$(notes)
   tap_icon
   wait_window "$n" || log "export: no window"
+  # shellcheck disable=SC2034
   read -r url B2 < <(last_window)
   R[export-browser]=$B2
   check_recents export

@@ -27,6 +27,7 @@ REPO=$(cd "$LAB_DIR/.." && pwd)
 VM=$LAB_DIR/vm.sh
 NAME=${1:?usage: test-fullscreen.sh <vm> [app-id]}
 APP=${2:-org.gnome.Calculator}
+# shellcheck disable=SC2034
 PROC=${LAB_PROC:-"[/]app/bin/"}
 BROWSERS=${LAB_BROWSERS:-org.cromite.cromite org.mozilla.firefox}
 sh_() { "$VM" "$NAME" adb shell "$@" | tr -d '\r'; }
@@ -43,6 +44,7 @@ if [[ -n ${LAB_BIN:-} ]]; then
   tsh 'mkdir -p ~/.lab-fullscreen'
   "$VM" "$NAME" scp "$LAB_BIN" .lab-fullscreen/lindroids >/dev/null || { log "cannot copy $LAB_BIN"; exit 1; }
   tsh 'chmod 755 ~/.lab-fullscreen/lindroids'
+  # shellcheck disable=SC2088
   LIND='~/.lab-fullscreen/lindroids'
 fi
 # Full screen is the browser's question; this test runs browser windows.

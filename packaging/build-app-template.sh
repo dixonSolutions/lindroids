@@ -52,8 +52,10 @@ EOF
 "$TOOLS/aapt2" link -o "$WORK/unsigned.apk" --manifest "$SRC/AndroidManifest.program.xml" \
   -I "$JAR" --min-sdk-version 24 --target-sdk-version 35 \
   -A "$SRC/assets" --java "$WORK/gen" --custom-package org.lindroids "$WORK/res.zip"
+# shellcheck disable=SC2046
 javac --release 8 -Xlint:-options -cp "$JAR" -d "$WORK/classes" \
   $(find "$WORK/gen" "$SRC/src" -name '*.java')
+# shellcheck disable=SC2046
 "$TOOLS/d8" --release --min-api 24 --lib "$JAR" --output "$WORK/dex" $(find "$WORK/classes" -name '*.class')
 cp "$WORK/dex/classes.dex" "$WORK/classes.dex"
 (cd "$WORK" && zip -q -j unsigned.apk classes.dex)
