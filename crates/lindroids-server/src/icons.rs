@@ -106,6 +106,23 @@ fn group_members(pid: u32, start: Option<u64>) -> Vec<u32> {
     }).collect()
 }
 
+/// Whether `pid` is proot. Termux from Google Play runs every program through the system's
+/// linker (its name is then `linker64`, and proot is its first or second argument).
+fn is_proot(pid: u32) -> bool {
+    if std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim_end() == "proot") {
+        return true;
+    }
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    cmdline.split(|b| *b == 0).take(2).any(|a| a == b"proot" || a.ends_with(b"/proot"))
+}
+
+/// Whether nobody is left in process group `group` who could read the terminal or take its
+/// Ctrl+C: it is empty, or holds only proot (which ignores Ctrl+C and stays for as long as a
+/// program it traces runs, a GUI that left for a session of its own included).
+pub fn group_abandoned(group: u32) -> bool {
+    group_members(group, None).into_iter().all(is_proot)
+}
+
 fn launch_process_alive(pid: u32, l: &Launch) -> bool {
     process_is(pid, l.start_time) || (l.group && !group_members(pid, l.start_time).is_empty()) || !supervised_processes(l).is_empty()
 }
@@ -395,8 +412,7 @@ pub fn process_tree_excluding(pid: u32, excluded: u32) -> Vec<u32> {
 /// pass SIGTERM on). They get SIGTERM first, so that a program's main process can end its
 /// children itself (Electron saves its state then), before the rest is killed.
 pub fn roots(tree: &[u32]) -> Vec<u32> {
-    let proot = |p: u32| std::fs::read_to_string(format!("/proc/{p}/comm")).is_ok_and(|c| c.trim_end() == "proot");
-    let tree: Vec<u32> = tree.iter().copied().filter(|p| !proot(*p)).collect();
+    let tree: Vec<u32> = tree.iter().copied().filter(|p| !is_proot(*p)).collect();
     tree.iter().copied().filter(|p| parent_of(*p).is_none_or(|pp| !tree.contains(&pp))).collect()
 }
 

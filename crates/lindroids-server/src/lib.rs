@@ -396,6 +396,11 @@ pub fn claim_target(cands: &[ClaimCandidate], app_key: &str, claimer: u32, since
 /// How long a window app has to answer whether a run's task is still in Recents.
 const ASK_WAIT: Duration = Duration::from_secs(15);
 
+/// A window app is first asked this soon after its page was dropped in the background: a card
+/// swiped from Recents takes the app's process (and the page's link) with it, and Android has
+/// stopped the app's own watcher (`CloseWatch`) about a minute after it left the screen.
+const ASK_SOON: Duration = Duration::from_secs(3);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackgroundStep {
     /// Its window app is asked.
@@ -409,22 +414,32 @@ enum BackgroundStep {
     Nothing,
 }
 
-/// Runs whose page was dropped in the background for the limit, and whose window app was asked
-/// whether their task is still in Recents: until when it may answer.
+/// Runs whose page was dropped in the background, and whose window app was asked whether their
+/// task is still in Recents: until when it may answer, and whether that was the first, early
+/// question (`ASK_SOON`), which only a clear "gone" answers with the run's end.
 #[derive(Default)]
 struct BackgroundAsks {
-    asked: Vec<(u32, Instant)>,
+    asked: Vec<(u32, Instant, bool)>,
+    /// Runs just dropped, in a window app: their next question is the early one.
+    soon: Vec<u32>,
 }
 
 impl BackgroundAsks {
     /// The limit is over for `run`, whose window is in a window app (`window_app`) or not.
     fn limit_reached(&mut self, run: u32, window_app: bool, now: Instant) -> BackgroundStep {
+        let soon = self.soon.contains(&run);
         self.forget(run);
         if !window_app {
             return BackgroundStep::End;
         }
-        self.asked.push((run, now + ASK_WAIT));
+        self.asked.push((run, now + ASK_WAIT, soon));
         BackgroundStep::Ask
+    }
+
+    /// The page of `run`, in a window app, was dropped just now: the app is asked soon.
+    fn dropped(&mut self, run: u32) {
+        self.forget(run);
+        self.soon.push(run);
     }
 
     /// The app's answer: whether a task shows `run` with its ticket.
@@ -442,19 +457,21 @@ impl BackgroundAsks {
     /// No longer asked (its page linked again, the run ended). Whether it was.
     fn forget(&mut self, run: u32) -> bool {
         let before = self.asked.len();
-        self.asked.retain(|(r, _)| *r != run);
+        self.asked.retain(|(r, ..)| *r != run);
+        self.soon.retain(|r| *r != run);
         self.asked.len() != before
     }
 
-    /// Runs whose app did not answer in time: they end.
-    fn due(&mut self, now: Instant) -> Vec<u32> {
-        let over: Vec<u32> = self.asked.iter().filter(|(_, until)| *until <= now).map(|(r, _)| *r).collect();
-        self.asked.retain(|(_, until)| *until > now);
+    /// Runs whose app did not answer in time, and whether that was the early question: they
+    /// end, or (early) are kept for the limit, like a run in an app that answers "kept".
+    fn due(&mut self, now: Instant) -> Vec<(u32, bool)> {
+        let over: Vec<(u32, bool)> = self.asked.iter().filter(|(_, until, _)| *until <= now).map(|(r, _, soon)| (*r, *soon)).collect();
+        self.asked.retain(|(_, until, _)| *until > now);
         over
     }
 
     fn next_due(&self) -> Option<Instant> {
-        self.asked.iter().map(|(_, until)| *until).min()
+        self.asked.iter().map(|(_, until, _)| *until).min()
     }
 }
 
@@ -899,7 +916,7 @@ impl State {
             return self.page_gone(Some(run));
         }
         let app = app.unwrap_or_default();
-        info!("run {run}: its page has been gone in the background for {}s: asking {app} whether its window is still in Recents", background_limit().as_secs());
+        info!("run {run}: its page is gone in the background: asking {app} whether its window is still in Recents");
         let spawned = lindroids_proto::self_exe().and_then(|exe| {
             let mut c = std::process::Command::new(exe);
             c.args(["window-ask", &run.to_string()]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
@@ -2042,9 +2059,15 @@ pub fn run(cfg: Config) -> i32 {
                 }
             }
         }
-        for run in state.background_asks.due(Instant::now()) {
-            info!("run {run}: its window app did not answer: its window is taken for gone");
-            state.page_gone(Some(run));
+        for (run, soon) in state.background_asks.due(Instant::now()) {
+            if soon {
+                info!("run {run}: its window app has not answered yet: it keeps running, and the app is asked again in {}s", background_limit().as_secs());
+                state.unlinked.retain(|(r, ..)| *r != Some(run));
+                state.unlinked.push((Some(run), Instant::now(), background_limit(), true));
+            } else {
+                info!("run {run}: its window app did not answer: its window is taken for gone");
+                state.page_gone(Some(run));
+            }
         }
         if !state.claims.is_empty() {
             state.expire_claims();
@@ -2241,6 +2264,9 @@ pub fn run(cfg: Config) -> i32 {
                     linger()
                 };
                 let run = l.run;
+                // In a window app: it is asked at once whether the card is still in Recents.
+                let ask_soon = dropped && run.is_some_and(|r| window_browser(&state.cfg.runtime_dir, r).is_some_and(|a| a.starts_with("org.lindroids")));
+                let grace = if ask_soon { ASK_SOON } else { grace };
                 let how = match l.close_frame {
                     Some(Some(c)) => format!("close {c}"),
                     Some(None) => "close, no code".into(),
@@ -2249,8 +2275,10 @@ pub fn run(cfg: Config) -> i32 {
                 let said = if l.closing { ", said it was closing" } else { "" };
                 let hidden = l.hidden_since.map_or(String::new(), |t| format!(", out of sight {}s", t.elapsed().as_secs()));
                 let what = run.map_or("the rest".into(), |r| format!("run {r}"));
-                if dropped {
-                    info!("page for {what} lost in the background ({how}{hidden}); what was started into it runs until a page links for it again, for {}s (then its window app, if any, is asked whether its card is still in Recents)", grace.as_secs());
+                if ask_soon {
+                    info!("page for {what} lost in the background ({how}{hidden}); its window app is asked whether its card is still in Recents");
+                } else if dropped {
+                    info!("page for {what} lost in the background ({how}{hidden}); what was started into it runs until a page links for it again, for {}s", grace.as_secs());
                 } else {
                     info!("page for {what} closed ({how}{said}{hidden}); what was started into it ends in {}s unless it links again", grace.as_secs());
                 }
@@ -2258,6 +2286,9 @@ pub fn run(cfg: Config) -> i32 {
                 if !state.links.iter().any(|l| l.run == run && l.app.is_none()) {
                     state.unlinked.retain(|(r, ..)| *r != run);
                     state.unlinked.push((run, Instant::now(), grace, dropped));
+                    if let Some(r) = run.filter(|_| ask_soon) {
+                        state.background_asks.dropped(r);
+                    }
                 }
             }
         }
@@ -2459,8 +2490,8 @@ const END_TERM_WAIT: Duration = Duration::from_secs(5);
 /// links again: the program is kept for that. But a window swiped from Recents after Android
 /// stopped its app's watcher (`CloseWatch`) says nothing either, and its program must not run on
 /// for good with no window anywhere (seen on a Galaxy Tab: VSCodium's whole tree, no task). A
-/// window app is asked then whether the card is still there (`background_over`): if so, the run
-/// is kept for this long again.
+/// window app is asked whether the card is still there (`background_over`), first `ASK_SOON`
+/// after the drop and then after each limit: if so, the run is kept for this long again.
 fn background_limit() -> Duration {
     Duration::from_secs(std::env::var("LINDROIDS_BACKGROUND").ok().and_then(|v| v.parse().ok()).unwrap_or(600))
 }
@@ -2693,12 +2724,28 @@ mod tests {
         // The app cannot be reached (not installed, disabled): it ends when the wait is over.
         assert_eq!(a.limit_reached(4, true, t0), BackgroundStep::Ask);
         assert!(a.due(t0 + ASK_WAIT - Duration::from_millis(1)).is_empty());
-        assert_eq!(a.due(t0 + ASK_WAIT), vec![4]);
+        assert_eq!(a.due(t0 + ASK_WAIT), vec![(4, false)]);
         assert_eq!(a.answered(4, true), BackgroundStep::Nothing, "too late");
         // Its page linked again (or the run ended) while asked: no end for it.
         assert_eq!(a.limit_reached(5, true, t0), BackgroundStep::Ask);
         assert!(a.forget(5));
         assert!(a.due(t0 + ASK_WAIT).is_empty());
+        // Just dropped, in a window app: asked at once. "Gone" (its card swiped away) ends it;
+        // no answer keeps it for the limit (the early question never costs unsaved work), and
+        // the question after the limit is the usual one.
+        a.dropped(6);
+        assert_eq!(a.limit_reached(6, true, t0), BackgroundStep::Ask);
+        assert_eq!(a.answered(6, false), BackgroundStep::End);
+        a.dropped(7);
+        assert_eq!(a.limit_reached(7, true, t0), BackgroundStep::Ask);
+        assert_eq!(a.due(t0 + ASK_WAIT), vec![(7, true)]);
+        assert_eq!(a.limit_reached(7, true, t0), BackgroundStep::Ask);
+        assert_eq!(a.due(t0 + ASK_WAIT), vec![(7, false)]);
+        // Its page linked again before the early question: the next drop starts over.
+        a.dropped(8);
+        assert!(!a.forget(8));
+        assert_eq!(a.limit_reached(8, true, t0), BackgroundStep::Ask);
+        assert_eq!(a.due(t0 + ASK_WAIT), vec![(8, false)]);
     }
 
     #[test]

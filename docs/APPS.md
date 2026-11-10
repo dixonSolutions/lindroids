@@ -352,12 +352,28 @@ shared windows app; both apps rebuilt from the new template and installed over a
 | VSCodium started again after it was closed | its files, tabs and terminal history as they were left ("History restored") |
 
 Not tested there: a hardware keyboard's Caps Lock and held keys (adb's key events carry no lock
-state and no real hold), a mouse, the folder picker, and a card swiped away more than a minute
-after its app left the screen (Android has stopped `CloseWatch` by then: the 10 minute limit
-applies). A program that ignores Ctrl+C in Termux (VSCodium under proot does) used to keep
-`lindroids run` waiting; when the signal reaches `lindroids` itself the program is now ended 5 s
-later, but a Ctrl+C typed in the terminal goes to the program's own group, so close its window.
-A single run's card in the shared windows app still shows the app's own icon, not the program's.
+state and no real hold), a mouse, and the folder picker.
+
+### Ctrl+C in Termux, and a card swiped away late (after 0.1.187)
+
+| Case, on the tablet | Before | Now |
+| --- | --- | --- |
+| `lindroids run com.vscodium.codium` typed in Termux, then Ctrl+C there | `^C`, and nothing: the terminal belonged to the program's group, where only proot was left (VSCodium runs in a session of its own, and proot ignores Ctrl+C) | VSCodium's 12 processes gone within 2 s, the prompt back, its card gone from Recents |
+| VSCodium's card swiped from Recents 6 minutes after its app left the screen | it ran on until the 10 minute limit (Android had stopped `CloseWatch`; the app's process died with the card, without a word) | the server asks the app 3 s after the page's link is lost; "closed" 0.9 s later; all gone 13 to 15 s after the swipe |
+| Calculator's window app killed in the background (`am kill`), its card still in Recents | kept, asked after 10 minutes | asked 3 s later: "its window is still in Recents: it keeps running, for 600s more" |
+
+- **Ctrl+C.** A run's program gets the terminal (it may read it). Once nobody is left in its
+  group who could (the launcher ended; under proot only proot stays, which Termux from Google
+  Play shows as `linker64`), `lindroids` takes the terminal back, within a second. Ctrl+C then
+  reaches `lindroids`, which passes it on to everything the run started and, 5 s later, ends what
+  ignored it. A program that is still in the terminal's group keeps Ctrl+C to itself, as before
+  (a shell, a REPL).
+- **The early question.** Only a clear "its card is gone" ends the run that early. No answer
+  within 15 s keeps it for the usual limit, after which no answer ends it, as before.
+- **The Recents icon of a single run stays the windows app's on One UI.** The task has the
+  program's icon (`dumpsys activity recents`: `taskDescription { ... iconBitmap=true }`), and One
+  UI's Recents draws the installed app's icon all the same. Only an app of the program's own
+  (`lindroids export`) has its icon there.
 
 ### Review fixes (template 2)
 
