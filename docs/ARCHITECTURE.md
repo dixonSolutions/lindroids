@@ -180,10 +180,12 @@ same transform.
 
 ## Input
 
-Input is sent the moment it happens: the lines one event makes (a move's coalesced points, a key
-with its Shift) leave in one WebSocket message when its handler ends; a mouse or pen moving uses
-Chromium's `pointerrawupdate`, which does not wait for the next animation frame; the canvas
-position is kept between events rather than read (a layout) on each. The window app asks Android
+Input is sent the moment it happens: the lines one event makes (a key with its Shift) leave in
+one WebSocket message when its handler ends; a mouse or pen moving uses Chromium's
+`pointerrawupdate`, which does not wait for the next animation frame, and sends one motion per
+event (where the pointer is now, not its coalesced points), none while the link is backed up; the
+canvas position is kept between events rather than read (a layout) on each. The server hands the
+programs what a page sent as soon as it has read it, before it composes the next frame. The window app asks Android
 for unbuffered pointer events (`requestUnbufferedDispatch`, Android 11+) and the screen's fastest
 refresh rate.
 
@@ -196,6 +198,27 @@ hidden text area; the page diffs what changed there into text and backspaces (pr
 rewrite whole words), and text goes through text-input-v3 when the focused client has a text field
 (any script, emoji), as key presses otherwise. Ctrl+V lets the browser's paste through first, so
 the Linux side has the clipboard before the keys arrive.
+
+Nothing stays held. The server owns letting go: when the focused window loses the focus (the page
+blurs or hides, another window is activated), when its page hides, and when its link drops (the
+page cannot say anything then), it releases every key and mouse button that window holds; the page
+only forgets what it held. Only a key going down moves the focus; a key-up for a window without it
+is dropped. Repeats have one source, the page's keyboard: clients are told not to repeat
+(`repeat_info` 0), and the browser's auto-repeat reaches them as the key released and pressed
+again, never a second press. Only the browser knows when a key is really up, so a lost or late
+key-up can never make a program type on by itself, and Android's own repeat settings apply.
+A key-up in a composition (keyCode 229) still releases the key it names. Shift, Ctrl, Alt and
+Meta follow each key event's flags both ways (a modifier whose key-up was lost goes up, one whose
+flag is on with no key held goes down; a mouse press or wheel only lets go, and not Meta). Caps
+Lock and Num Lock come from hardware key events' `getModifierState` (locked Lock and Mod2). Mouse
+buttons follow each event's `buttons`, so chorded buttons and a cancel leave nothing held; the
+surface a button went down on keeps the pointer until the last one is up (an implicit grab). A
+wheel's notches are discrete steps; a touchpad's deltas are a continuous axis in pixels.
+
+Sizes: a ResizeObserver on the stage sends a window's size when it changed, with the screen's
+(which turns with the device, and the output with it). A frame already on its way keeps its
+acknowledgement; the page drops it if it is the old size, and the server sends the whole frame at
+the new size next, so a rotation sends each size once and never has more than one frame out.
 
 ## Sound
 

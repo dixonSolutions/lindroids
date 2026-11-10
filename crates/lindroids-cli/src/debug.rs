@@ -153,7 +153,7 @@ pub fn cmd_debug_app(args: &[String]) -> i32 {
                         send(&w, &ToServer::Key { win, code: n(2) as u32, down: true, time_ms: t() });
                         send(&w, &ToServer::Key { win, code: n(2) as u32, down: false, time_ms: t() });
                     }
-                    Some("resize") => send(&w, &ToServer::Resize { win, width: n(2) as u32, height: n(3) as u32, density: 1.0 }),
+                    Some("resize") => send(&w, &ToServer::Resize { win, width: n(2) as u32, height: n(3) as u32, density: 1.0, screen: None }),
                     Some("close") => send(&w, &ToServer::Close { win }),
                     Some("clip") => send(&w, &ToServer::Clipboard { text: p[1..].join(" ") }),
                     Some("theme") => send(&w, &system(p.get(1) == Some(&"dark"))),
@@ -207,7 +207,7 @@ fn handle(m: ToApp, payload: Vec<u8>, wins: &mut HashMap<u32, Win>, writer: &Mut
         ToApp::WindowNew { win, title, app_id, icon_png_b64 } => {
             println!("window {win} {title:?} app_id={app_id:?} icon={}", icon_png_b64.is_some());
             let _ = std::io::stdout().flush();
-            send(writer, &ToServer::Resize { win, width: size.0, height: size.1, density: 1.0 });
+            send(writer, &ToServer::Resize { win, width: size.0, height: size.1, density: 1.0, screen: None });
             send(writer, &ToServer::Focus { win, focused: true });
         }
         ToApp::AudioOpen { stream, rate, channels, format } => println!("audio {stream} open {rate}Hz {channels}ch {format:?}"),

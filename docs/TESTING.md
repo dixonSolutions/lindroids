@@ -45,9 +45,34 @@ echo "tap 1 258 101" > cmds        # open a dropdown
 Useful switches: `LINDROIDS_LOG=debug` (commits, configures, frames), `LINDROIDS_TRANSPORT=tcp`
 (loopback only, as on enforcing devices), `debug-app --tcp`.
 
-Stuck keys in the page (Shift held after blur, hidden page, lost link or key-up; Caps Lock state):
-`node tests/stuck-input.mjs [--js <lindroids.js>] [--evidence out.json]`, headless Chromium through
-playwright-core (set `LINDROIDS_PLAYWRIGHT_CORE` if it is not in `node_modules`).
+Stuck input in the page: `node tests/stuck-input.mjs [--js <lindroids.js>] [--evidence out.json]`,
+headless Chromium through playwright-core (set `LINDROIDS_PLAYWRIGHT_CORE` if it is not in
+`node_modules`). The link is a recorder; a model of the server's seat reads what the page sent.
+The cases: blur, hidden page, lost link, window switch (the focus goes, the server lets go, the
+key-up sends nothing); auto-repeat (a release and a press, never a second press; modifiers do not
+repeat); key-ups with keyCode 229; modifiers from the flags both ways, Meta from keys only; Caps
+and Num Lock from key events only; chorded mouse buttons and a page hidden mid-drag; one motion per
+move; wheel notches as steps, touchpad deltas as pixels; a rotation (one resize, the screen
+turned), a frame of the old size dropped and acknowledged, no resize when nothing changed.
+
+```sh
+node tests/stuck-input.mjs --stress [--seed N] [--storms N] [--iterations N]
+```
+
+Seeded random storms (default 5 storms of 300 events, seeds 1 to 5): keys down, auto-repeat and
+up (stray ups too), IME key events, flags that disagree with the keys held, Caps and Num Lock,
+mouse presses, moves and chorded releases, blur and focus, hidden and shown, rotations and resizes
+(`Emulation.setDeviceMetricsOverride`), the link closing and linking again. After each storm
+everything is let go and the page comes back: nothing may be held by the page or by the server
+(model), no key or button pressed while down, the last size sent is the stage's with the
+viewport's screen, the last lock state the keyboard's. A failure prints its seed and last steps.
+
+The server's side of the same: `cargo test -p lindroids-server seeded_input_storm` feeds the
+seat's routing (`KeyState`, `key_route`, focus, `release_input`, `release_link`) seeded random
+key, button, focus, shown, link-drop and lock messages, checking each client is never pressed a
+key or button it has down, holds nothing (keys, buttons, depressed modifiers) once the focus, the
+page or the link that held it is gone, and has the locks the page said last
+(`LINDROIDS_SEAT_SEED`, `LINDROIDS_SEAT_STEPS` pick another storm).
 
 ## 3. Android
 
