@@ -250,6 +250,8 @@ fn apply(state: &mut State, id: &ObjectId, p: Pending) {
     let Some(s) = state.surfaces.get_mut(id) else { return };
     if let Some(b) = p.buffer {
         match b {
+            // A cursor's picture is never drawn (the page shows its own arrow): not converted.
+            Some(buf) if s.role == Role::Cursor => buf.release(),
             Some(buf) => {
                 // Only what the client damaged, in buffer pixels; everything when it said nothing
                 // (some clients attach without damage), or when a viewport scales the surface.

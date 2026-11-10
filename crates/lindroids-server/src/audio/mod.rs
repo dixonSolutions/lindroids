@@ -49,7 +49,10 @@ const LEAD_MS: u32 = 100;
 const WINDOW_MS: u32 = 250;
 /// Size of each AudioData message.
 const CHUNK_MS: u32 = 20;
-const TICK: Duration = Duration::from_millis(10);
+/// How often the clock is looked at while sound plays: each look sends what is due, at least a
+/// chunk (CHUNK_MS) ahead of the app's lead (LEAD_MS), so the app is never below 60 ms ahead.
+/// Waking twice as often only sent half as much each time.
+const TICK: Duration = Duration::from_millis(20);
 /// A stream whose data the app has not acknowledged for this long is played into the void at
 /// real time until credits come back or a new app links: clients must never stall forever.
 const DEAF_AFTER: Duration = Duration::from_millis(500);
@@ -821,8 +824,10 @@ impl Server {
                 fds.push(libc::pollfd { fd: c.sock.as_raw_fd(), events, revents: 0 });
             }
             let busy = self.clients.iter().any(|c| c.streams.values().any(Stream::busy) || c.records.values().any(Record::busy));
-            let timeout = if busy { next_tick.saturating_duration_since(Instant::now()).as_millis() as i32 } else { 1000 };
+            // Idle (nothing plays or records): asleep until a client or the app says something.
+            let timeout = if busy { next_tick.saturating_duration_since(Instant::now()).as_micros().div_ceil(1000) as i32 } else { -1 };
             unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
+            crate::render::timing::wakeup(crate::render::timing::Loop::Sound);
 
             if fds[0].revents != 0 {
                 let mut sink = [0u8; 64];

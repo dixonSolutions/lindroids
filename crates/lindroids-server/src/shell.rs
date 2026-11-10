@@ -48,7 +48,8 @@ pub struct Popup {
 }
 
 pub fn register_globals(dh: &DisplayHandle) {
-    dh.create_global::<State, xdg_wm_base::XdgWmBase, ()>(5, ());
+    // 6: the suspended state (see `State::update_suspended`).
+    dh.create_global::<State, xdg_wm_base::XdgWmBase, ()>(6, ());
     dh.create_global::<State, zxdg_decoration_manager_v1::ZxdgDecorationManagerV1, ()>(1, ());
 }
 
@@ -76,6 +77,9 @@ pub fn send_toplevel_configure(w: &mut Window, size: (i32, i32), serial: u32) {
     }
     if w.activated {
         push(xdg_toplevel::State::Activated);
+    }
+    if w.suspended && w.toplevel.version() >= 6 {
+        push(xdg_toplevel::State::Suspended);
     }
     if w.toplevel.version() >= 4 && size.0 > 0 {
         w.toplevel.configure_bounds(size.0, size.1);
