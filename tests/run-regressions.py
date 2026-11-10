@@ -411,6 +411,51 @@ def check_suite(binary):
                     pass
             print('PASS interactive command retains terminal input')
 
+            # Ctrl+C in the terminal of a run whose launcher left a GUI in a session of its own
+            # (VSCodium): nobody is left in the group the terminal was given to, so it comes
+            # back to `lindroids`, which passes Ctrl+C on and, the GUI ignoring it, ends it.
+            deaf_pid_file = work / 'deaf.pid'
+            tty_pid, tty_fd = pty.fork()
+            if tty_pid == 0:
+                os.execve(str(binary), [str(binary), 'run', sys.executable, str(script), '--launcher-deaf',
+                          str(work / 'never'), str(deaf_pid_file)], env)
+            try:
+                os.set_blocking(tty_fd, False)
+                said = b''
+
+                def drain():
+                    nonlocal said
+                    try:
+                        said += os.read(tty_fd, 65536)
+                    except (BlockingIOError, OSError):
+                        pass
+                    return said
+
+                until('detached GUI adopted in a terminal', lambda: b'attached window' in drain())
+                deaf = int(deaf_pid_file.read_text())
+                time.sleep(1.5)  # the terminal comes back within a second
+                t0 = time.monotonic()
+                os.write(tty_fd, b'\x03')
+
+                def deaf_done():
+                    drain()
+                    pid, status = os.waitpid(tty_pid, os.WNOHANG)
+                    if pid:
+                        assert os.waitstatus_to_exitcode(status) == 130, (status, said)
+                    return pid
+                until('Ctrl+C ended the run', deaf_done, seconds=15)
+                took = time.monotonic() - t0
+                assert 4 <= took < 12, took
+                until('the GUI that ignored Ctrl+C is gone', lambda: not alive(deaf), seconds=5)
+            finally:
+                os.close(tty_fd)
+                try:
+                    os.kill(tty_pid, signal.SIGKILL)
+                    os.waitpid(tty_pid, 0)
+                except (ProcessLookupError, ChildProcessError):
+                    pass
+            print(f'PASS Ctrl+C in the terminal ends a GUI its launcher detached ({took:.1f}s, the GUI ignores it)')
+
             dest = ['--session', '--dest', 'org.freedesktop.portal.Desktop', '--object-path',
                     '/org/freedesktop/portal/desktop']
             version = checked(run('gdbus', 'call', *dest, '--method', 'org.freedesktop.DBus.Properties.Get',
@@ -559,10 +604,12 @@ if __name__ == '__main__':
         while True:  # windowless or not, it runs until it is ended
             server.accept()[0].close()
             window()
-    elif len(sys.argv) > 1 and sys.argv[1] == '--launcher-linger':
+    elif len(sys.argv) > 1 and sys.argv[1] in ('--launcher-linger', '--launcher-deaf'):
         if os.fork():
             os._exit(0)
         os.setsid()
+        if sys.argv[1] == '--launcher-deaf':
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
         Path(sys.argv[3]).write_text(str(os.getpid()))
         window_child(Path(sys.argv[2]))
         time.sleep(60)  # no window, still running

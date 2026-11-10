@@ -478,7 +478,7 @@ its place or a window it hides, still runs, and its window says so):
 | The close button, or swiped away while the browser keeps running | `Closing`, then close frame **1001** | window closed: end in 5 s |
 | Back | nothing: the page takes it (out of full screen first) | still shown |
 | Chrome's close button (no `pagehide`) | close frame **1001** while on screen, or out of sight under 3 s | window closed: end in 5 s |
-| Another app in front, then Android kills the page's process for memory | `Shown: false`, then later close frame **1001** (the browser closes the link of a page whose process died), and no `Closing` | dropped in the background: **keeps running** until its page links again, for 10 minutes at most (a window app is asked then, and its card still in Recents keeps it 10 minutes more); the browser loads the page again when the user comes back to the window *(tested, Cromite: kept, and back from Recents in 1 s)* |
+| Another app in front, then Android kills the page's process for memory | `Shown: false`, then later close frame **1001** (the browser closes the link of a page whose process died), and no `Closing` | dropped in the background: **keeps running** until its page links again, for 10 minutes at most (a window app is asked 3 s after the drop and again after each 10 minutes: its card still in Recents keeps it, its card gone ends it); the browser loads the page again when the user comes back to the window *(tested, Cromite: kept, and back from Recents in 1 s)* |
 | A Lindroids window app's task removed from Recents (or finished) | the app says so: `GET /run/<pid>/closed` with the run's ticket, from its `CloseWatch` service (`onTaskRemoved`) or the activity's `onDestroy` | window closed: end in 5 s, page or no page |
 | Another app in front, then the browser killed for memory | `Shown: false`, then **EOF** | the same *(tested)* |
 | A reload (Firefox reloads a raised window) | `Closing`, then a new link within a second | the same window: keeps running |
@@ -496,7 +496,7 @@ the page tells the relay when it leaves the screen and comes back (`Shown`).
   window, the browser loads the page again, and the page links to its run again (the ticket is in
   its history entry). The program runs on until then, for 10 minutes at most
   (`LINDROIDS_BACKGROUND`, in seconds): its notification brings the window back. In a Lindroids
-  window app, the app is asked then (below) whether the window's card is still in Recents:
+  window app, the app is asked 3 s after the drop and after each limit (below) whether the window's card is still in Recents:
   Android kills the app's process for memory in the background and keeps its card, and a tap on
   the card brings the page back. While it is there the run is kept, for the same time again. Before, it ended
   5 s later, and the window, back, said it had closed *(reported on a Samsung phone; reproduced
@@ -643,7 +643,7 @@ has a developer option to turn it off. Lindroids keeps its own process count low
 | Any Android version and vendor | Yes, with a browser that has Custom Tabs, which every major one does. Without one, the windows fall back to a plain browser tab. |
 | A window of its own, not a tab, not installed through the browser | Yes. A Custom Tab in its own task per program, opened and raised by Lindroids. Full screen from the first tap (no browser allows it sooner, see *Full screen*); before that, a thin bar with close, title and menu. |
 | The program's icon | Yes on the home screen, in the status bar and notifications, in the window, as the favicon, and on the start and end screens. In recents too with a Chromium-based browser, except on Samsung's launcher; Firefox shows its own icon there. |
-| Single run tied to its process | Window gone: the program is asked to close, and ends 5 s later (8 s if it ignores that), 60 s later if the browser died, 10 minutes later if its page was dropped in the background without a word (in a window app: once the app says its card is gone from Recents, or does not answer). Program gone: `run` exits, nothing it started is left, and the window closes itself (Chromium, the window apps, also with the page frozen), or shows its end screen until ✕ (Firefox does not let a page close a Custom Tab). |
+| Single run tied to its process | Window gone: the program is asked to close, and ends 5 s later (8 s if it ignores that), 60 s later if the browser died, 10 minutes later if its page was dropped in the background without a word (in a window app: as soon as the app, asked 3 s after the drop, says its card is gone from Recents; or when it does not answer after the 10 minutes). Program gone: `run` exits, nothing it started is left, and the window closes itself (Chromium, the window apps, also with the page frozen), or shows its end screen until ✕ (Firefox does not let a page close a Custom Tab). |
 | Export works with Termux closed | Yes. A Termux-owned shortcut with the program's icon, through the share receiver; 2 s to the window in the lab. |
 
 ## Ideas to make it better

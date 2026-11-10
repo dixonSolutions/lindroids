@@ -513,7 +513,10 @@ fn reap_adopted() {
 /// the foreground group, and restore the caller's handlers when the run is done.
 struct RunSignals {
     previous: Vec<(i32, libc::sigaction)>,
+    /// The group the terminal goes back to: set while the program's group has it.
     foreground: Option<i32>,
+    group: u32,
+    looked: std::time::Instant,
 }
 
 fn set_foreground(group: i32) -> bool {
@@ -553,8 +556,32 @@ impl RunSignals {
         if foreground.is_some() {
             unsafe { libc::kill(-(pid as i32), libc::SIGCONT); }
         }
-        Self { previous, foreground }
+        Self { previous, foreground, group: pid, looked: std::time::Instant::now() }
     }
+
+    /// The terminal comes back to `lindroids` once nobody is left in the program's group to read
+    /// it or to take its Ctrl+C (a launcher that ended and left a GUI in a session of its own,
+    /// VSCodium; under proot, only proot stays): Ctrl+C then reaches this run, which passes it on
+    /// and ends. Looks at most once a second, and no more once the terminal is back.
+    fn reclaim_abandoned(&mut self) {
+        if self.foreground.is_none() || self.looked.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        self.looked = std::time::Instant::now();
+        if lindroids_server::icons::group_abandoned(self.group) {
+            if let Some(group) = self.foreground.take() {
+                set_foreground(group);
+            }
+        }
+    }
+}
+
+/// How long a program has to end once its run was told to (Ctrl+C, SIGTERM, the terminal closed).
+const PATIENCE: Duration = Duration::from_secs(5);
+
+/// Whether this run was told to end more than `PATIENCE` ago (`told`: when that was first seen).
+fn out_of_patience(told: &mut Option<std::time::Instant>) -> bool {
+    RUN_SIGNAL.load(std::sync::atomic::Ordering::Relaxed) != 0 && told.get_or_insert_with(std::time::Instant::now).elapsed() >= PATIENCE
 }
 
 impl Drop for RunSignals {
@@ -672,7 +699,7 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
         Ok(c) => c,
         Err(e) => return crate::fail(&format!("cannot start {}: {e}", o.command[0])),
     };
-    let _signals = RunSignals::new(child.id());
+    let mut signals = RunSignals::new(child.id());
     let tail = Arc::new(Mutex::new(std::collections::VecDeque::new()));
     let signal_watch = child.stderr.take().map(|e| {
         let tail = tail.clone();
@@ -761,7 +788,7 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
     }
     let waited = match early {
         Some(st) => Ok(st),
-        None => wait_or_end(&mut child),
+        None => wait_or_end(&mut child, &mut signals),
     };
     let mut code = match waited {
         // Killed (its window closed, Ctrl+C): 128 + the signal, as a shell reports it.
@@ -783,11 +810,17 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
         // A detached GUI owns the run until its processes end, or it has had no window for a
         // while (a window it closes to open another, or a dialog in its place, is not its end).
         let mut windowless: Option<std::time::Instant> = None;
+        let mut told = None;
         // Its windows count those other runs claimed from it (an instance that handed its work
         // to this one): they are not this run's to end.
         while let Ok(CliReply::RunState { alive: true, windows, dependents }) = client::request(&rt, &CliRequest::RunState { pid }, Duration::from_secs(2)) {
+            signals.reclaim_abandoned();
             forward_detached_signal();
             reap_adopted();
+            if out_of_patience(&mut told) {
+                eprintln!("lindroids: {name} did not end when asked: ending it");
+                break;
+            }
             if !windows.is_empty() || !dependents.is_empty() {
                 windowless = None;
             } else if windowless.get_or_insert_with(std::time::Instant::now).elapsed() >= WINDOWLESS {
@@ -861,14 +894,20 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
 /// Wait for the program. Once this run was told to end (Ctrl+C passed on, SIGTERM, the terminal
 /// closed) a program that ignores the signal gets a few seconds, then is ended like anything
 /// else a run leaves behind: `lindroids run` never hangs on a program that will not go.
-fn wait_or_end(child: &mut std::process::Child) -> std::io::Result<std::process::ExitStatus> {
-    const PATIENCE: Duration = Duration::from_secs(5);
-    let mut told: Option<std::time::Instant> = None;
+fn wait_or_end(child: &mut std::process::Child, signals: &mut RunSignals) -> std::io::Result<std::process::ExitStatus> {
+    let mut told = None;
+    let mut passed_on = false;
     loop {
         if let Some(st) = child.try_wait()? {
             return Ok(st);
         }
-        if RUN_SIGNAL.load(std::sync::atomic::Ordering::Relaxed) != 0 && told.get_or_insert_with(std::time::Instant::now).elapsed() >= PATIENCE {
+        signals.reclaim_abandoned();
+        if !passed_on && RUN_SIGNAL.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+            // What left the program's group (a GUI in a session of its own) hears it too.
+            forward_detached_signal();
+            passed_on = true;
+        }
+        if out_of_patience(&mut told) {
             end_left_behind();
             return child.wait();
         }
