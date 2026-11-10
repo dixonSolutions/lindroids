@@ -1,8 +1,9 @@
-//! CPU compositing of one Linux window (its surface tree plus popups) into one Android Surface.
+//! CPU compositing of one Linux window (its surface tree plus popups) into one frame, which the
+//! page draws into the window's canvas.
 //!
-//! Clients hand us wl_shm buffers. On commit we copy them, converting to RGBA (the byte order an
-//! Android RGBA_8888 window buffer wants) and release the client's buffer at once. Drawing a window
-//! is then a row copy for the main surface and an alpha blend for menus and subsurfaces.
+//! Clients hand us wl_shm buffers. On commit we copy them, converting to RGBA (the byte order the
+//! page's WebGL texture and ImageData take) and release the client's buffer at once. Drawing a
+//! window is then a row copy for the main surface and an alpha blend for menus and subsurfaces.
 
 use std::sync::Arc;
 
@@ -190,6 +191,7 @@ pub mod timing {
     struct Totals {
         since: Instant,
         frames: u32,
+        raw: u32,
         bytes: u64,
         steps: [Duration; 4],
     }
@@ -203,7 +205,7 @@ pub mod timing {
 
     fn with(f: impl FnOnce(&mut Totals)) {
         let mut t = TOTALS.lock().unwrap();
-        let t = t.get_or_insert_with(|| Totals { since: Instant::now(), frames: 0, bytes: 0, steps: [Duration::ZERO; 4] });
+        let t = t.get_or_insert_with(|| Totals { since: Instant::now(), frames: 0, raw: 0, bytes: 0, steps: [Duration::ZERO; 4] });
         f(t);
     }
 
@@ -219,13 +221,14 @@ pub mod timing {
         r
     }
 
-    /// A frame went out with `bytes` of payload.
-    pub fn frame(bytes: usize) {
+    /// A frame went out with `bytes` of payload, RAW or LZ4.
+    pub fn frame(bytes: usize, raw: bool) {
         if !on() {
             return;
         }
         with(|t| {
             t.frames += 1;
+            t.raw += raw as u32;
             t.bytes += bytes as u64;
             let secs = t.since.elapsed().as_secs_f64();
             if secs < 5.0 {
@@ -233,16 +236,47 @@ pub mod timing {
             }
             let per = |d: Duration| d.as_secs_f64() * 1000.0 / t.frames as f64;
             log::info!(
-                "frames: {:.1} fps, {:.0} KiB/s; per frame: convert {:.2} ms, compose {:.2}, diff {:.2}, pack {:.2}",
+                "frames: {:.1} fps ({} of {} raw), {:.0} KiB/s; per frame: convert {:.2} ms, compose {:.2}, diff {:.2}, pack {:.2}",
                 t.frames as f64 / secs,
+                t.raw,
+                t.frames,
                 t.bytes as f64 / 1024.0 / secs,
                 per(t.steps[0]),
                 per(t.steps[1]),
                 per(t.steps[2]),
                 per(t.steps[3])
             );
-            *t = Totals { since: Instant::now(), frames: 0, bytes: 0, steps: [Duration::ZERO; 4] };
+            *t = Totals { since: Instant::now(), frames: 0, raw: 0, bytes: 0, steps: [Duration::ZERO; 4] };
         });
+    }
+
+    /// Which loop woke up: the compositor's or the sound thread's.
+    #[derive(Clone, Copy)]
+    pub enum Loop {
+        Main,
+        Sound,
+    }
+
+    static WAKEUPS: [std::sync::atomic::AtomicU32; 2] = [std::sync::atomic::AtomicU32::new(0), std::sync::atomic::AtomicU32::new(0)];
+    static WAKE_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
+
+    /// A loop woke up (its poll returned). With stats on, every half minute or more the log says
+    /// how often each did: on a phone, every wakeup costs battery, so an idle server should
+    /// hardly wake at all. Said when a wakeup comes, so counting adds none of its own.
+    pub fn wakeup(which: Loop) {
+        if !on() {
+            return;
+        }
+        WAKEUPS[which as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut since = WAKE_SINCE.lock().unwrap();
+        let t0 = *since.get_or_insert_with(Instant::now);
+        let secs = t0.elapsed().as_secs_f64();
+        if secs < 30.0 {
+            return;
+        }
+        let take = |i: usize| WAKEUPS[i].swap(0, std::sync::atomic::Ordering::Relaxed) as f64 / secs;
+        log::info!("wakeups: {:.2}/s compositor, {:.2}/s sound (over {secs:.0} s)", take(0), take(1));
+        *since = Some(Instant::now());
     }
 }
 

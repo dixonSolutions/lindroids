@@ -3,7 +3,8 @@
 //! do, such as notifications that show when no window is on screen.
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 /// A notification for Android's shade.
 #[derive(Debug, Clone, Default)]
@@ -64,13 +65,37 @@ pub fn symbolic_of(pid: u32) -> Option<PathBuf> {
 pub fn set(a: Box<dyn Android>) {
     if ANDROID.set(a).is_ok() {
         let _ = clear_running();
-        // Battery and battery saver every two minutes (each look runs the helper, briefly).
-        std::thread::spawn(|| loop {
-            if let Some(d) = get().and_then(|a| a.device()) {
-                crate::portal::device_changed(d);
+        // Battery and battery saver at most every two minutes, and only while a page is on
+        // screen: each look starts the helper (a Java VM), which is a battery cost of its own.
+        let t = std::thread::spawn(|| {
+            let mut last: Option<std::time::Instant> = None;
+            loop {
+                let due = last.map_or(true, |t| t.elapsed() >= DEVICE_EVERY);
+                if due && PAGE_SHOWN.load(Ordering::Relaxed) {
+                    last = Some(std::time::Instant::now());
+                    if let Some(d) = get().and_then(|a| a.device()) {
+                        crate::portal::device_changed(d);
+                    }
+                }
+                // Woken early when a page comes on screen (`page_shown`).
+                std::thread::park_timeout(DEVICE_EVERY);
             }
-            std::thread::sleep(std::time::Duration::from_secs(120));
         });
+        let _ = DEVICE_THREAD.set(t.thread().clone());
+    }
+}
+
+const DEVICE_EVERY: std::time::Duration = std::time::Duration::from_secs(120);
+static PAGE_SHOWN: AtomicBool = AtomicBool::new(false);
+static DEVICE_THREAD: OnceLock<std::thread::Thread> = OnceLock::new();
+
+/// Whether any page is on screen (the server says so as pages link, go and hide): the power
+/// state is only looked at then.
+pub fn page_shown(shown: bool) {
+    if PAGE_SHOWN.swap(shown, Ordering::Relaxed) != shown && shown {
+        if let Some(t) = DEVICE_THREAD.get() {
+            t.unpark();
+        }
     }
 }
 
@@ -107,7 +132,8 @@ pub fn get() -> Option<&'static dyn Android> {
 
 /// While the run `run` (the pid of `lindroids run`/`launch`) lives, a quiet notification stands
 /// for it: its icon in the status bar, its name, a tap brings back its window. Posted once the
-/// window's URL is settled (its ticket comes with the window), taken away when the run ends.
+/// window's URL is settled (its ticket comes with the window), taken away when the run ends
+/// (`reap_running`, as the server notices runs ending).
 pub fn run_started(run: u32) {
     let Some(a) = get() else { return };
     std::thread::spawn(move || {
@@ -120,6 +146,7 @@ pub fn run_started(run: u32) {
         let Some((url, icon, name)) = crate::run_of_pid(run) else { return };
         let id = note_id(&format!("run-{run}"));
         note_running(id, true);
+        RUNNING.lock().unwrap().push((run, id));
         a.running(Notice {
             id,
             app: name.clone(),
@@ -129,13 +156,32 @@ pub fn run_started(run: u32) {
             small_icon: symbolic_of(run),
             url: Some(url),
         });
-        // Until the run is over: its process ended, or (a run showing another instance's
-        // window) that window closed. Its pid might be another process's by then.
-        while crate::icons::run_alive(run) {
-            std::thread::sleep(std::time::Duration::from_secs(1));
+    });
+}
+
+/// The runs that have a running notification up, and its id.
+static RUNNING: Mutex<Vec<(u32, i32)>> = Mutex::new(Vec::new());
+
+/// Take away the notifications of runs that are over: their process ended, or (a run showing
+/// another instance's window) that window closed. The server calls this as it looks for runs
+/// that ended, instead of a thread a run looking every second.
+pub fn reap_running() {
+    let over: Vec<(u32, i32)> = {
+        let mut r = RUNNING.lock().unwrap();
+        let (over, on): (Vec<_>, Vec<_>) = r.drain(..).partition(|(run, _)| !crate::icons::run_alive(*run));
+        *r = on;
+        over
+    };
+    if over.is_empty() {
+        return;
+    }
+    let Some(a) = get() else { return };
+    // Each takes the helper a moment: not on the compositor's thread.
+    std::thread::spawn(move || {
+        for (_, id) in over {
+            a.cancel(id);
+            note_running(id, false);
         }
-        a.cancel(id);
-        note_running(id, false);
     });
 }
 

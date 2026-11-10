@@ -320,6 +320,11 @@ pub struct Window {
     pub in_flight: bool,
     /// Surfaces drawn in frames the app has not shown yet: their frame callbacks wait for it.
     pub waiting: Vec<ObjectId>,
+    /// Buffers the window's frames are packed in, kept from one frame to the next.
+    pub packer: frames::Packer,
+    /// Told the client it is suspended (xdg_toplevel v6): no page shows it, or its page is out
+    /// of sight. GTK 4, Qt 6 and Chromium stop their animations and timers until it is over.
+    pub suspended: bool,
     /// Popups above this window, bottom to top (their wl_surface ids).
     pub popups: Vec<ObjectId>,
     pub fullscreen: bool,
@@ -415,6 +420,10 @@ pub struct State {
     pub popups: HashMap<ObjectId, shell::Popup>,
     /// Surfaces not shown anywhere whose frame callbacks are due.
     pub frame_due: Vec<ObjectId>,
+    /// Surfaces no page can show (their window has no page, a pointer's cursor): their frame
+    /// callbacks go about once a second (`PARKED_EVERY`), so a program drawing for nobody hardly
+    /// draws, yet one that waits for a callback never hangs.
+    pub parked: Vec<ObjectId>,
     pub running: bool,
     /// Pages that went away, by the run they showed (None: the page showing everything else):
     /// what was started into them ends when the grace is over (None: never), unless a page for it
@@ -908,14 +917,64 @@ impl State {
     }
 
     pub fn mark_dirty(&mut self, surface: &ObjectId) {
+        let cursor = self.surfaces.get(surface).is_some_and(|s| s.role == surface::Role::Cursor);
         let shown = self.window_of(surface).and_then(|win| self.windows.get_mut(&win)).map(|w| {
             w.dirty = true;
-            w.announced && w.phys.is_some()
+            if w.announced && w.phys.is_some() {
+                Some(true)
+            } else if w.mapped && w.link.is_none() {
+                // No page to show it (none linked, or Android killed it in the background).
+                None
+            } else {
+                Some(false)
+            }
         });
-        if shown != Some(true) {
-            // Not on screen: let the client carry on drawing.
-            self.frame_due.push(surface.clone());
+        match shown {
+            // On screen: the callbacks go when the page has shown the frame.
+            Some(Some(true)) => {}
+            // Never shown: about once a second.
+            Some(None) => self.parked.push(surface.clone()),
+            _ if cursor => self.parked.push(surface.clone()),
+            // About to be shown (not mapped yet, the page has not sized it): carry on drawing.
+            _ => self.frame_due.push(surface.clone()),
         }
+    }
+
+    /// Fire the frame callbacks of these surfaces.
+    fn frames_done(&mut self, due: Vec<ObjectId>) {
+        let t = self.now_ms();
+        for id in due {
+            if let Some(s) = self.surfaces.get_mut(&id) {
+                for cb in s.frame_cbs.drain(..) {
+                    cb.done(t);
+                }
+            }
+        }
+    }
+
+    /// Tell each window's client whether it is suspended (xdg_toplevel v6): while no page shows
+    /// it or its page is out of sight, it may stop drawing, animating and running timers. A
+    /// window not mapped yet is never suspended: it has its first frame to draw.
+    fn update_suspended(&mut self) {
+        use wayland_server::Resource as _;
+        let visible: Vec<u64> = self.links.iter().filter(|l| l.hidden_since.is_none()).map(|l| l.id).collect();
+        let changed: Vec<u32> = self
+            .windows
+            .iter_mut()
+            .filter(|(_, w)| w.toplevel.version() >= 6)
+            .filter_map(|(k, w)| {
+                let suspended = w.mapped && !w.link.is_some_and(|id| visible.contains(&id));
+                (suspended != w.suspended).then(|| {
+                    w.suspended = suspended;
+                    *k
+                })
+            })
+            .collect();
+        for win in changed {
+            log::debug!("window {win} suspended: {}", self.windows.get(&win).is_some_and(|w| w.suspended));
+            self.configure_window(win, true);
+        }
+        android::page_shown(!visible.is_empty());
     }
 
     pub fn new_window_id(&mut self) -> u32 {
@@ -958,6 +1017,9 @@ impl State {
             w.run = run;
             w.link = Some(to);
         }
+        // Its surfaces' callbacks now go when the page has shown it.
+        let parked = std::mem::take(&mut self.parked);
+        self.parked = parked.into_iter().filter(|s| self.window_of(s) != Some(win)).collect();
         self.send_win(win, &msg);
     }
 
@@ -1625,6 +1687,7 @@ pub fn run(cfg: Config) -> i32 {
         extras: extras::ExtrasState::default(),
         popups: HashMap::new(),
         frame_due: Vec::new(),
+        parked: Vec::new(),
         unlinked: Vec::new(),
         running: true,
         clis: Vec::new(),
@@ -1666,8 +1729,11 @@ pub fn run(cfg: Config) -> i32 {
     let _ = std::io::stdout().flush();
 
     let mut last_frame_flush = Instant::now();
+    let mut last_parked_flush = Instant::now();
     let mut last_socket_check = Instant::now();
-    let mut last_reap = Instant::now();
+    let mut next_reap = Instant::now() + REAP_IDLE;
+    // Runs come and go around what the CLI says: look for ended ones often until then.
+    let mut reap_fast_until = Instant::now();
     while state.running {
         let mut fds: Vec<libc::pollfd> = Vec::with_capacity(8 + state.clis.len() + state.pending.len());
         let pfd = |fd: RawFd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
@@ -1712,26 +1778,38 @@ pub fn run(cfg: Config) -> i32 {
         if !state.claims.is_empty() {
             state.expire_claims();
         }
-        if last_reap.elapsed() >= Duration::from_secs(2) {
-            last_reap = Instant::now();
+        if Instant::now() >= next_reap {
             let reaped = icons::reap();
+            if !reaped.lost.is_empty() || !reaped.forgotten.is_empty() {
+                reap_fast_until = Instant::now() + REAP_FAST_FOR;
+            }
+            next_reap = Instant::now() + if Instant::now() < reap_fast_until { REAP_FAST } else { REAP_IDLE };
             for pid in reaped.lost {
                 warn!("run {pid} is gone, and nothing said how it ended (its `lindroids run` was killed?)");
                 state.send_from(Some(pid), &ToApp::RunEnded { code: -1, output: vec!["Lindroids lost track of this program: it ended, but not through `lindroids run`.".into()] }, &[]);
             }
+            android::reap_running();
         }
         seat::keyboard_due(&mut state);
-        let mut timeout = if state.frame_due.is_empty() { 1000 } else { 16 };
-        if let Some(at) = state.seat.kb_check {
-            timeout = timeout.min(at.saturating_duration_since(Instant::now()).as_millis() as i32 + 1);
+        // Sleep until the next thing that is due: nothing wakes the server on a timer of its own
+        // while it is idle but its own housekeeping (`SOCKET_CHECK`, `REAP_IDLE`).
+        let mut due = vec![last_socket_check + SOCKET_CHECK, next_reap];
+        if !state.frame_due.is_empty() {
+            due.push(last_frame_flush + FRAME_EVERY);
         }
+        if !state.parked.is_empty() {
+            due.push(last_parked_flush + PARKED_EVERY);
+        }
+        due.extend(state.seat.kb_check);
         if let Some(t) = x11.as_ref().and_then(|x| x.wants_timeout()) {
-            timeout = timeout.min(t.as_millis() as i32);
+            due.push(Instant::now() + t);
         }
-        if let Some(until) = state.claims.iter().map(|(_, u)| *u).min() {
-            timeout = timeout.min(until.saturating_duration_since(Instant::now()).as_millis() as i32 + 1);
-        }
+        due.extend(state.claims.iter().map(|(_, u)| *u));
+        due.extend(state.unlinked.iter().filter_map(|(_, since, grace)| grace.map(|g| *since + g)));
+        due.extend(state.pending.iter().map(|p| p.since + PENDING_FOR));
+        let timeout = poll_timeout(Instant::now(), due);
         unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
+        render::timing::wakeup(render::timing::Loop::Main);
 
         if STOP.load(std::sync::atomic::Ordering::SeqCst) {
             info!("stopping on a signal");
@@ -1739,7 +1817,7 @@ pub fn run(cfg: Config) -> i32 {
         }
         // Termux empties its tmp dir when it starts again: a server whose control socket went
         // with it can no longer be reached or stopped, and would hold the port for good.
-        if last_socket_check.elapsed() >= Duration::from_secs(2) {
+        if last_socket_check.elapsed() >= SOCKET_CHECK {
             last_socket_check = Instant::now();
             if !cli_path.exists() {
                 warn!("{} is gone (the runtime dir was emptied): stopping", cli_path.display());
@@ -1802,7 +1880,7 @@ pub fn run(cfg: Config) -> i32 {
             i -= 1;
             let ready = fds.get(pending_base + i).map_or(false, |p| p.revents != 0);
             if !ready {
-                if state.pending[i].since.elapsed() > Duration::from_secs(15) {
+                if state.pending[i].since.elapsed() > PENDING_FOR {
                     state.pending.remove(i);
                 }
                 continue;
@@ -1902,6 +1980,11 @@ pub fn run(cfg: Config) -> i32 {
                 }
             }
         }
+        if fds[3].revents != 0 || fds.get(cli_base..).is_some_and(|c| c.iter().any(|p| p.revents != 0)) {
+            // A run started, ended or was asked about: look for runs that ended soon.
+            reap_fast_until = Instant::now() + REAP_FAST_FOR;
+            next_reap = next_reap.min(Instant::now() + REAP_FAST);
+        }
         let mut i = state.clis.len();
         while i > 0 {
             i -= 1;
@@ -1933,18 +2016,17 @@ pub fn run(cfg: Config) -> i32 {
         if let Err(e) = display.dispatch_clients(&mut state) {
             warn!("dispatch: {e}");
         }
+        state.update_suspended();
         render_dirty(&mut state);
-        if !state.frame_due.is_empty() && last_frame_flush.elapsed() >= Duration::from_millis(16) {
+        if !state.frame_due.is_empty() && last_frame_flush.elapsed() >= FRAME_EVERY {
             last_frame_flush = Instant::now();
             let due = std::mem::take(&mut state.frame_due);
-            let t = state.now_ms();
-            for id in due {
-                if let Some(s) = state.surfaces.get_mut(&id) {
-                    for cb in s.frame_cbs.drain(..) {
-                        cb.done(t);
-                    }
-                }
-            }
+            state.frames_done(due);
+        }
+        if !state.parked.is_empty() && last_parked_flush.elapsed() >= PARKED_EVERY {
+            last_parked_flush = Instant::now();
+            let due = std::mem::take(&mut state.parked);
+            state.frames_done(due);
         }
         let _ = display.flush_clients();
     }
@@ -1962,6 +2044,29 @@ pub fn run(cfg: Config) -> i32 {
         std::thread::sleep(Duration::from_secs(n.min(5) as u64));
     }
     0
+}
+
+/// Frame callbacks of surfaces not on screen but about to be: at most this often.
+const FRAME_EVERY: Duration = Duration::from_millis(16);
+/// Frame callbacks of surfaces no page shows (`State::parked`): this often.
+const PARKED_EVERY: Duration = Duration::from_secs(1);
+/// How often the runtime dir is checked for the control socket.
+const SOCKET_CHECK: Duration = Duration::from_secs(10);
+/// How often runs are looked for that ended without a word (their process is gone): while all
+/// is quiet, and for a while after the CLI said something or a run ended.
+const REAP_IDLE: Duration = Duration::from_secs(10);
+const REAP_FAST: Duration = Duration::from_secs(1);
+const REAP_FAST_FOR: Duration = Duration::from_secs(6);
+/// A link that has not finished its handshake in this long is dropped.
+const PENDING_FOR: Duration = Duration::from_secs(15);
+
+/// The poll timeout (ms) that wakes the loop for the earliest of `due`: none, never (-1).
+fn poll_timeout(now: Instant, due: impl IntoIterator<Item = Instant>) -> i32 {
+    match due.into_iter().min() {
+        // Rounded up: waking a little early would only find nothing due and sleep again.
+        Some(at) => at.saturating_duration_since(now).as_micros().div_ceil(1000).min(i32::MAX as u128) as i32,
+        None => -1,
+    }
 }
 
 /// What a run's page going for good does to the run.
@@ -2135,12 +2240,16 @@ fn render_dirty(state: &mut State) {
         let n = (pw * ph) as usize;
         let layout: Vec<(ObjectId, i32, i32, u32, u32)> =
             layers.rects.iter().zip(&layers.placed).map(|(r, p)| (r.0.clone(), p.x, p.y, p.w, p.h)).collect();
-        let whole = w.shown_size != (pw, ph) || w.shown.len() != n || w.canvas.len() != n || layout != w.layout;
+        // The page has no copy to change (a new size, a canvas that came back empty): all of it
+        // goes. Something moved (a menu, a tooltip): all of it is composed again, and what
+        // differs from what the page shows goes.
+        let whole = w.shown_size != (pw, ph) || w.shown.len() != n || w.canvas.len() != n;
+        let moved = whole || layout != w.layout;
         w.layout = layout;
         // Only what the surfaces damaged, when nothing moved: the union of their rectangles,
         // mapped to the window (and a margin for the 2x2 averaging of a scaled-down client).
-        let mut clip = if whole { Some([0, 0, pw, ph]) } else { None };
-        if !whole {
+        let mut clip = if moved { Some([0, 0, pw, ph]) } else { None };
+        if !moved {
             for (i, p) in layers.placed.iter().enumerate() {
                 let Some(s) = state.surfaces.get(&layers.rects[i].0) else { continue };
                 let Some(damaged) = &s.damaged else {
@@ -2191,8 +2300,6 @@ fn render_dirty(state: &mut State) {
             state.frame_due.extend(layers.surfaces);
             continue;
         }
-        let payload = render::timing::time(render::timing::Step::Pack, || frames::pack(&w.canvas, pw, &rects));
-        render::timing::frame(payload.len());
         // What the page will show: the changed rectangles, copied.
         for r in &rects {
             for y in r[1]..r[1] + r[3] {
@@ -2204,15 +2311,48 @@ fn render_dirty(state: &mut State) {
         w.shown_size = (pw, ph);
         w.in_flight = true;
         w.waiting.extend(layers.surfaces);
-        log::debug!("frame win {win}: {} rects, {} bytes", rects.len(), payload.len());
-        let msg = ToApp::Tiles { win, width: pw, height: ph, rects, len: payload.len() as u32 };
-        state.send_win_with(win, &msg, &payload);
+        let Some(link) = w.link else { continue };
+        let Some(l) = state.links.iter_mut().find(|l| l.id == link) else { continue };
+        // Content LZ4 hardly shrinks (dense text, photos) goes as it is, written straight into
+        // the link's buffer; the rest LZ4-compressed, in buffers the window keeps.
+        let raw = match frames::mode() {
+            frames::Mode::Auto => render::timing::time(render::timing::Step::Pack, || w.packer.raw(&w.canvas, pw, &rects)),
+            m => m == frames::Mode::Raw,
+        };
+        let len = if raw {
+            let len = frames::raw_len(&rects);
+            let msg = ToApp::Tiles { win, width: pw, height: ph, rects: rects.clone(), len: len as u32, raw };
+            render::timing::time(render::timing::Step::Pack, || l.send_filled(&msg, len, |out| frames::gather(&w.canvas, pw, &rects, out)));
+            len
+        } else {
+            let payload = render::timing::time(render::timing::Step::Pack, || w.packer.lz4(&w.canvas, pw, &rects));
+            let msg = ToApp::Tiles { win, width: pw, height: ph, rects: rects.clone(), len: payload.len() as u32, raw };
+            l.send_with(&msg, payload);
+            payload.len()
+        };
+        render::timing::frame(len, raw);
+        log::debug!("frame win {win}: {} rects, {len} bytes{}", rects.len(), if raw { " raw" } else { "" });
+        if l.broken {
+            warn!("app link write failed");
+            state.drop_link(link);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{claim_target, pick_page, run_of_page, via_of_page, when_page_gone, ClaimCandidate, PageGone};
+
+    #[test]
+    fn the_loop_sleeps_until_the_first_thing_due() {
+        use super::poll_timeout;
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        assert_eq!(poll_timeout(now, []), -1, "nothing due: asleep until something happens");
+        let due = [now + Duration::from_secs(10), now + Duration::from_micros(15_200), now + Duration::from_secs(1)];
+        assert_eq!(poll_timeout(now, due), 16, "rounded up, not woken early to find nothing due");
+        assert_eq!(poll_timeout(now, [now - Duration::from_secs(1)]), 0, "overdue: at once");
+    }
     use std::time::{Duration, Instant};
 
     #[test]

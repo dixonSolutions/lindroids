@@ -190,14 +190,14 @@ pub fn cmd_debug_app(args: &[String]) -> i32 {
 
 fn handle(m: ToApp, payload: Vec<u8>, wins: &mut HashMap<u32, Win>, writer: &Mutex<Conn>, dir: &std::path::Path, size: (u32, u32)) {
     match m {
-        ToApp::Tiles { win, width, height, rects, .. } => {
+        ToApp::Tiles { win, width, height, rects, raw, .. } => {
             let w = wins.entry(win).or_insert(Win { width, height, frame: vec![], frames: 0 });
             if (w.width, w.height) != (width, height) || w.frame.len() != (width * height) as usize {
                 w.width = width;
                 w.height = height;
                 w.frame = vec![0; (width * height) as usize];
             }
-            if let Err(e) = lindroids_server::frames::unpack(&mut w.frame, width, &rects, &payload) {
+            if let Err(e) = lindroids_server::frames::unpack(&mut w.frame, width, &rects, &payload, raw) {
                 eprintln!("debug-app: bad tiles: {e}");
             }
             w.frames += 1;

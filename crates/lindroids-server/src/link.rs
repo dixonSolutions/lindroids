@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
 use std::time::Instant;
 
-use lindroids_proto::{self as proto, Framer, ToApp, ToServer};
+use lindroids_proto::{self as proto, Framer, ToServer};
 use serde::Serialize;
 
 use crate::web;
@@ -134,18 +134,25 @@ impl Link {
     }
 
     pub fn send_with<T: Serialize>(&mut self, msg: &T, payload: &[u8]) {
+        self.send_filled(msg, payload.len(), |out| out.extend_from_slice(payload));
+    }
+
+    /// A message whose payload of `len` bytes `fill` appends to the output buffer: a frame's
+    /// pixels are written there straight from the window's canvas, with no copy in between.
+    pub fn send_filled<T: Serialize>(&mut self, msg: &T, len: usize, fill: impl FnOnce(&mut Vec<u8>)) {
         if self.broken {
             return;
         }
-        // Straight into the output buffer: a frame's payload is megabytes, copied once.
         let line = proto::encode(msg);
         if self.wire == Wire::WebSocket {
             // One message per WebSocket message: the browser needs no framer of its own.
-            web::frame_head(&mut self.out, web::OP_BINARY, line.len() + payload.len());
+            web::frame_head(&mut self.out, web::OP_BINARY, line.len() + len);
         }
-        self.out.reserve(line.len() + payload.len());
+        self.out.reserve(line.len() + len);
         self.out.extend_from_slice(&line);
-        self.out.extend_from_slice(payload);
+        let at = self.out.len();
+        fill(&mut self.out);
+        debug_assert_eq!(self.out.len() - at, len, "the payload is the length it said");
         self.flush();
     }
 
@@ -268,5 +275,3 @@ impl Link {
     }
 }
 
-/// Messages queued for the app: kept for completeness of the type list.
-pub type Outgoing = (ToApp, Vec<u8>);

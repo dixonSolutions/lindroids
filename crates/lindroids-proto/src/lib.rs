@@ -22,7 +22,7 @@ pub mod fdpass;
 
 /// Bumped whenever a message changes shape. The app and the server refuse to talk across
 /// versions, and the CLI says which side needs updating.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// The real uid of this process. Under proot's fake root (proot-distro, UserLAnd) getuid() says
 /// 0, but the app looks for the sandbox app's own uid; the kernel's view in /proc is not faked.
@@ -167,9 +167,18 @@ pub enum ToApp {
     WindowClose { win: u32 },
     /// Part of a new frame: `rects` changed (x, y, w, h); the payload is their RGBA pixels, row
     /// by row, one rect after another, LZ4-compressed (lz4_flex block format with prepended
-    /// size). A frame of a new size always covers the whole window. The app answers with
-    /// FrameDone; until then no further frame for this window is sent.
-    Tiles { win: u32, width: u32, height: u32, rects: Vec<[u32; 4]>, len: u32 },
+    /// size), or as they are when `raw` (content LZ4 hardly shrinks: decoding it would cost more
+    /// than the bytes it saves). A frame of a new size always covers the whole window. The app
+    /// answers with FrameDone; until then no further frame for this window is sent.
+    Tiles {
+        win: u32,
+        width: u32,
+        height: u32,
+        rects: Vec<[u32; 4]>,
+        len: u32,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        raw: bool,
+    },
     /// Show or hide the soft keyboard for a window (text-input focus).
     Keyboard { win: u32, show: bool },
     /// The Linux side set the clipboard.

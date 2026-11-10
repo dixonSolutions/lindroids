@@ -73,6 +73,8 @@ TCP link was found.
 Screens are recorded without a hardware encoder (the VMs have none) by `lab/record.sh`, which
 pulls raw `screencap` frames over adb and encodes an MP4 and an animated WebP for the README.
 A server started with `LINDROIDS_STATS=1` puts the frame rate and drawing time in a corner of
-each window and the page's layout in `server.log`; pages also log their errors there.
+each window and the page's layout in `server.log`; pages also log their errors there. It also logs
+how often the server woke up (`wakeups: …/s`); `tests/idle-wakeups.py` checks on any Linux machine
+that an idle server hardly wakes and that a program whose page is gone draws about once a second.
 [lab/CHECKLIST.md](https://github.com/dixonSolutions/lindroids/blob/main/lab/CHECKLIST.md) lists what "fully working" means and where each item
 stands.

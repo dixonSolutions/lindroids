@@ -140,6 +140,72 @@ pub struct X11 {
     runtime: PathBuf,
     phase: Phase,
     quick_deaths: u32,
+    /// Readable when a child of the server exited (SIGCHLD): satellite is looked at then,
+    /// instead of every half second.
+    child_exited: Option<OwnedFd>,
+}
+
+/// The write end of the pipe SIGCHLD writes to (-1: none).
+static CHILD_PIPE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+/// The SIGCHLD handler there was before (a library's, such as async-process's), and its flags:
+/// it is called too.
+static PREV_CHILD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(libc::SIG_DFL);
+static PREV_CHILD_FLAGS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+extern "C" fn on_child(sig: libc::c_int, info: *mut libc::siginfo_t, ctx: *mut libc::c_void) {
+    let fd = CHILD_PIPE.load(Ordering::Relaxed);
+    if fd >= 0 {
+        // The interrupted code may be about to read errno: leave it as it was.
+        #[cfg(target_os = "android")]
+        let errno = unsafe { libc::__errno() };
+        #[cfg(not(target_os = "android"))]
+        let errno = unsafe { libc::__errno_location() };
+        let saved = unsafe { *errno };
+        unsafe { libc::write(fd, b"c".as_ptr() as *const _, 1) };
+        unsafe { *errno = saved };
+    }
+    let prev = PREV_CHILD.load(Ordering::Relaxed);
+    if prev != libc::SIG_DFL && prev != libc::SIG_IGN {
+        unsafe {
+            if PREV_CHILD_FLAGS.load(Ordering::Relaxed) & libc::SA_SIGINFO != 0 {
+                let f: extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void) = std::mem::transmute(prev);
+                f(sig, info, ctx);
+            } else {
+                let f: extern "C" fn(libc::c_int) = std::mem::transmute(prev);
+                f(sig);
+            }
+        }
+    }
+}
+
+/// A pipe that becomes readable when any child of the server exits. None if it cannot be set up
+/// (then satellite is looked at on a timer).
+fn child_exit_pipe() -> Option<OwnedFd> {
+    let mut fds = [0; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+        return None;
+    }
+    let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
+    if unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut old) } != 0 || old.sa_sigaction == libc::SIG_IGN {
+        // Ignored children are reaped by the kernel: no exit to wait for, and nothing to change.
+        return None;
+    }
+    PREV_CHILD.store(old.sa_sigaction, Ordering::Relaxed);
+    PREV_CHILD_FLAGS.store(old.sa_flags, Ordering::Relaxed);
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_sigaction = on_child as *const () as usize;
+    // Restarted: other threads' reads and writes go on; only polls wake up.
+    action.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART | libc::SA_NOCLDSTOP;
+    unsafe { libc::sigemptyset(&mut action.sa_mask) };
+    CHILD_PIPE.store(w.as_raw_fd(), Ordering::Relaxed);
+    if unsafe { libc::sigaction(libc::SIGCHLD, &action, std::ptr::null_mut()) } != 0 {
+        CHILD_PIPE.store(-1, Ordering::Relaxed);
+        return None;
+    }
+    // The write end lives as long as the server: the handler may run at any time.
+    std::mem::forget(w);
+    Some(r)
 }
 
 impl X11 {
@@ -171,21 +237,27 @@ impl X11 {
             runtime: runtime.to_path_buf(),
             phase: Phase::Waiting,
             quick_deaths: 0,
+            child_exited: None,
         })
     }
 
-    /// The sockets to poll for a first connection, while satellite is not running.
+    /// The sockets to poll for a first connection, while satellite is not running; while it
+    /// runs, the pipe that says a child exited.
     pub fn poll_fds(&self) -> Vec<RawFd> {
         match self.phase {
             Phase::Waiting | Phase::Failed => self.listeners.iter().map(|l| l.as_raw_fd()).collect(),
-            _ => Vec::new(),
+            Phase::Running { .. } => self.child_exited.iter().map(|p| p.as_raw_fd()).collect(),
+            Phase::Backoff { .. } => Vec::new(),
         }
     }
 
-    /// A poll timeout this needs (to notice satellite exiting, or to end a backoff).
+    /// A poll timeout this needs: to end a backoff, or to notice satellite exiting where no
+    /// signal says so.
     pub fn wants_timeout(&self) -> Option<Duration> {
         match self.phase {
-            Phase::Running { .. } | Phase::Backoff { .. } => Some(Duration::from_millis(500)),
+            Phase::Running { .. } if self.child_exited.is_some() => None,
+            Phase::Running { .. } => Some(Duration::from_millis(500)),
+            Phase::Backoff { until } => Some(until.saturating_duration_since(Instant::now())),
             _ => None,
         }
     }
@@ -211,6 +283,10 @@ impl X11 {
 
     /// Notice satellite exiting, and end a backoff.
     pub fn tick(&mut self) {
+        if let Some(p) = &self.child_exited {
+            let mut sink = [0u8; 64];
+            while unsafe { libc::read(p.as_raw_fd(), sink.as_mut_ptr() as *mut _, sink.len()) } > 0 {}
+        }
         match &mut self.phase {
             Phase::Running { child, since } => {
                 let Ok(Some(status)) = child.try_wait() else { return };
@@ -263,6 +339,10 @@ impl X11 {
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
                 Ok(())
             });
+        }
+        // Before it starts, so that an exit at once is not missed.
+        if self.child_exited.is_none() {
+            self.child_exited = child_exit_pipe();
         }
         match cmd.spawn() {
             Ok(child) => {
@@ -457,4 +537,18 @@ fn listen_path(path: &Path) -> std::io::Result<OwnedFd> {
 
 fn listen_abstract(name: &str) -> std::io::Result<OwnedFd> {
     listen_on(name.as_bytes(), true)
+}
+
+#[cfg(test)]
+mod child_tests {
+    use super::*;
+
+    #[test]
+    fn a_child_exiting_wakes_the_pipe() {
+        let pipe = child_exit_pipe().expect("SIGCHLD pipe");
+        let mut child = Command::new("true").spawn().unwrap();
+        child.wait().unwrap();
+        let mut p = libc::pollfd { fd: pipe.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        assert_eq!(unsafe { libc::poll(&mut p, 1, 2000) }, 1, "the exit is seen without a timer");
+    }
 }
