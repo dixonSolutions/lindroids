@@ -49,7 +49,7 @@ code, and a signature. Building one normally takes the Android SDK (aapt2, d8, z
 apksigner) and Java: hundreds of megabytes that Termux users should not need. So the project
 builds **one template** and the phone only fills it in:
 
-1. **The template** (`crates/lindroids-apk/template/window-app.apk`, unsigned, 148 KB) is built by
+1. **The template** (`crates/lindroids-apk/template/window-app.apk`, unsigned, about 160 KB) is built by
    `packaging/build-app-template.sh` with the SDK, from `packaging/webview-app` and
    `AndroidManifest.program.xml`, whose package, label and meta-data are placeholder strings. It is
    committed, like the helper's `shortcut.dex`, and carried inside the `lindroids` binary.
@@ -301,6 +301,79 @@ the start still goes through Termux, which must come forward to start it.
 
 Not checked: the tablet (not attached), Android 13+ (the receiver is registered with
 `RECEIVER_EXPORTED` there), a Chrome WebAPK.
+
+## A window and its program go together (seventh round)
+
+Seen on the tablet: VSCodium's whole process tree running under Termux, with no Lindroids task in
+Recents. A window swiped away after Android had dropped its page said nothing, and the server kept
+programs lost in the background with no limit; a detached GUI also outlived its run, and a window
+brought back after its run ended sat on a dead panel. Now (docs/DISPLAY.md, "Lifecycles"):
+
+| | Before | Now |
+|---|---|---|
+| Task removed from Recents | nothing told the server once the page was gone | the app says so (`CloseWatch.onTaskRemoved`, or `onDestroy` when finishing): the program is asked to close, and ends 5 s later |
+| Page lost in the background without a word | the program ran for good | it runs until its page links again, 10 minutes at most (since template 2: longer while its window app says its card is in Recents) |
+| The program ends while its page is frozen | the card stayed (only the page could close it) | the server sends the app `org.lindroids.END` with the run's ticket (`End` receiver), and the app removes that task; cards of runs that ended go when the next run's window opens |
+| Task rebuilt from Recents after its run ended | "This window was not opened by `lindroids run`" | the end, then the window closes; a program's own app starts the program again |
+| "New window" in a program's own app while a run is shown | the new run's page replaced the shown one, which then ended 5 s later | the new run gets a task of its own |
+| Android's folder picker | listed on the main thread (Android's "not responding" on big folders), cut silently at 20,000 entries, and the folder itself left out of what the program got | listed on a thread; more than 20,000 entries is an error, unless the folder is in shared storage (`primary:…`), whose path (`/storage/emulated/0/…`) the program gets as it is when Termux can read it (storage access), with no copy; picked files there are used in place too |
+| A big picked file | opened again and skipped to each 512 KB chunk (quadratic) | one stream, read on |
+| A second picker while one is open | ignored: the program waited an hour | answered at once with an error |
+
+**Out-of-date apps.** The app's code is in each APK, built from the template of the Lindroids that
+built it: an app built before these fixes lacks them all, whatever Lindroids is installed now.
+The template has a number (`WindowActivity.TEMPLATE`, `lindroids_proto::APP_TEMPLATE`, bumped
+together; a test checks), which the app's bridge reports (`template()`; none before this round).
+A page in an app older than its server says so once ("This app is out of date", with `lindroids
+export <id>` or `lindroids app install`); `lindroids run` (when its window opens), `lindroids
+export` and `lindroids doctor` list the apps the server has seen that are older.
+
+### On the tablet (2026-11-10)
+
+Galaxy Tab SM-X306B, Android 16, Termux from Google Play, a dev build of this round
+(`0.1.178~dev`), VSCodium (Flatpak) in its own app and GNOME Calculator as a single run in the
+shared windows app; both apps rebuilt from the new template and installed over adb.
+
+| What | Result |
+|---|---|
+| VSCodium's old app (29 Oct, template 0) with the new Lindroids | opens and works; Termux prints "was built by an older Lindroids (template 0, now 1) ... run `lindroids export com.vscodium.codium`" |
+| VSCodium's card swiped away in Recents | "the window app says the window of run ... is closed"; every VSCodium process gone 9 s later |
+| Calculator's card (shared windows app) swiped away | its process gone 7 s later |
+| VSCodium closed with its own X | its window and card gone in under 3 s |
+| Calculator closed with its own X | back in Termux 2 s later |
+| Home for 5 s, back to VSCodium | the same window, typing goes on |
+| Rotation: landscape, then portrait and landscape twice within 3 s | the window ends at 1920x1200, sharp, nothing stuck |
+| Typing in VSCodium's terminal (`input text`, a long press of X) | every character once; the long press gives two, and nothing repeats after it |
+| Drawing | WebGL 2 in a worker on the Mali-G68; page draw 0.8 ms a frame; server per frame: convert 4-5 ms, compose 2-3, diff 5-8, pack 0.1-1.9 |
+| Server wakeups (`LINDROIDS_STATS=1`), VSCodium in its window and in use | 8-14 a second |
+| Server wakeups, VSCodium hidden behind Home | 2.4 a second |
+| Template 2 apps (`0.1.185~dev`): VSCodium's app killed in the background (`am kill`), reopened 2 minutes later | VSCodium still running; the same window with the line typed before, unsaved, in its terminal |
+| Calculator in the windows app, `LINDROIDS_BACKGROUND=45`, the app killed in the background | after 45 s "asking org.lindroids.windows whether its window is still in Recents", 0.8 s later "its window is still in Recents: it keeps running"; `lindroids show` brought the window back |
+| VSCodium started again after it was closed | its files, tabs and terminal history as they were left ("History restored") |
+
+Not tested there: a hardware keyboard's Caps Lock and held keys (adb's key events carry no lock
+state and no real hold), a mouse, the folder picker, and a card swiped away more than a minute
+after its app left the screen (Android has stopped `CloseWatch` by then: the 10 minute limit
+applies). A program that ignores Ctrl+C in Termux (VSCodium under proot does) used to keep
+`lindroids run` waiting; when the signal reaches `lindroids` itself the program is now ended 5 s
+later, but a Ctrl+C typed in the terminal goes to the program's own group, so close its window.
+A single run's card in the shared windows app still shows the app's own icon, not the program's.
+
+### Review fixes (template 2)
+
+| | Before | Now |
+|---|---|---|
+| Android kills the window app's process in the background; its card stays in Recents | after 10 minutes without its page the program was closed, then ended, though tapping the card would have brought the window back (unsaved work lost) | after 10 minutes the server asks the app (`lindroids window-ask`: an `org.lindroids.ASK` broadcast to that app alone, with the run's ticket and the server's port, through the helper as Termux, no permission); its `End` receiver looks at its tasks and answers over loopback: `/run/<pid>/kept` (the card is there: the run is kept, and asked about again 10 minutes later) or `/run/<pid>/closed` (ends 5 s later). No answer within 15 s (the app gone or disabled), or a window in a browser: it ends, as before |
+| A card left by an ended run whose pid a new run got, swiped away | it shared the new run's entry (tasks were known by their URL without the ticket), and said the new run's window closed: the new run ended | tasks are known by run and ticket |
+| A window brought back after its window said it closed, swiped away again | said nothing the second time (the app remembered it had told) | its page linking again clears that: it says so again |
+| Two runs of one single-instance program (a second VSCodium hands its work to the first), the first one's window closed | the first run ended 5 s later and took the process, and the second run's window with its unsaved work, with it | the process stays while another run shows a window of it, and ends with the last such run |
+| Holding a key in a game (SDL, GLFW, Godot) | each repeat came as a release and a press: a jump repeated while Space was held | `wl_seat` 10: a client of `wl_keyboard` 10 gets `repeated`; an older one repeats on its own (20/s after 500 ms), and a key whose key-up was lost there is let go when the page has said nothing of it for 2 s |
+
+To check on the tablet: an app built from template 2 (`lindroids app install`, `lindroids export
+<id>`); a window left in the background while Android kills its app (`am kill org.lindroids` with
+`LINDROIDS_BACKGROUND=60` set for the server): its program still runs after the limit, and the
+server log says the app answered that the card is in Recents; the card swiped away then: the
+program ends; a game or `wev` with a held key on a hardware keyboard.
 
 ## What Android allows, and what we assume
 

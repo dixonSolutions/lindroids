@@ -1,5 +1,5 @@
-// Drawing a window's frames: the changed tiles the server sends (LZ4, RGBA) go into the window's
-// canvas. On the GPU where the browser has WebGL: each tile is uploaded into a texture
+// Drawing a window's frames: the changed tiles the server sends (RGBA, LZ4-compressed or as they
+// are) go into the window's canvas. On the GPU where the browser has WebGL: each tile is uploaded into a texture
 // (texSubImage2D) and one triangle draws it, so the browser composites the canvas without a copy
 // through the CPU. Without WebGL, putImageData.
 //
@@ -10,8 +10,9 @@
 
 /// A drawer: `post` gets its answers, the returned function takes the page's messages.
 /// - {t:'canvas', win, canvas}: a window's canvas (an OffscreenCanvas in a worker).
-/// - {t:'tiles', win, width, height, rects, data, off}: a frame; `data` (an ArrayBuffer) holds,
-///   from `off`, the raw size (u32 LE) and the LZ4 block. Answered by {t:'drawn', win, ms}.
+/// - {t:'tiles', win, width, height, rects, data, off, len, raw}: a frame; `data` (an ArrayBuffer)
+///   holds, from `off`, `len` bytes: the pixels as they are when `raw`, else their size (u32 LE)
+///   and the LZ4 block. Answered by {t:'drawn', win, ms}.
 /// - {t:'close', win}.
 /// It also posts {t:'mode', win, mode, renderer} once per canvas, and {t:'lost', win} when the
 /// GPU context is lost and back (the page then asks the server for a whole frame).
@@ -67,7 +68,7 @@ precision mediump float;
 uniform sampler2D t; uniform vec2 s;
 void main() { gl_FragColor = texture2D(t, vec2(gl_FragCoord.x, s.y - gl_FragCoord.y) / s); }`;
   const GL_OPTS = { alpha: false, antialias: false, depth: false, stencil: false, premultipliedAlpha: true,
-    preserveDrawingBuffer: false, desynchronized: true, powerPreference: 'high-performance' };
+    preserveDrawingBuffer: false, desynchronized: true, powerPreference: 'default' };
 
   function glSetup(w) {
     const gl = w.gl;
@@ -164,11 +165,18 @@ void main() { gl_FragColor = texture2D(t, vec2(gl_FragCoord.x, s.y - gl_FragCoor
     if (!w) return post({ t: 'drawn', win: m.win, ms: 0 });
     let size = 0, t1 = t0;
     try {
-      const src = new Uint8Array(m.data, m.off + 4);
-      const head = new DataView(m.data, m.off, 4);
-      size = head.getUint32(0, true);
-      if (raw.length < size) raw = new Uint8Array(Math.max(size, raw.length * 2));
-      lz4(src, raw);
+      // RAW: the pixels are uploaded straight from the buffer the page handed over.
+      let px;
+      if (m.raw) {
+        size = m.len;
+        px = new Uint8Array(m.data, m.off, m.len);
+      } else {
+        const src = new Uint8Array(m.data, m.off + 4, m.len - 4);
+        size = new DataView(m.data, m.off, 4).getUint32(0, true);
+        if (raw.length < size) raw = new Uint8Array(Math.max(size, raw.length * 2));
+        lz4(src, raw);
+        px = raw;
+      }
       t1 = performance.now();
       const { width, height } = m;
       if (w.gl) {
@@ -184,24 +192,24 @@ void main() { gl_FragColor = texture2D(t, vec2(gl_FragCoord.x, s.y - gl_FragCoor
           let off = 0;
           for (const [x, y, rw, rh] of m.rects) {
             const n = rw * rh * 4;
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, rw, rh, gl.RGBA, gl.UNSIGNED_BYTE, raw.subarray(off, off + n));
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, rw, rh, gl.RGBA, gl.UNSIGNED_BYTE, px.subarray(off, off + n));
             off += n;
           }
           gl.drawArrays(gl.TRIANGLES, 0, 3);
         }
       } else if (w.ctx) {
         if (w.canvas.width !== width || w.canvas.height !== height) { w.canvas.width = width; w.canvas.height = height; }
-        const px = new Uint8ClampedArray(raw.buffer);
+        const clamped = new Uint8ClampedArray(px.buffer, px.byteOffset, size);
         let off = 0;
         for (const [x, y, rw, rh] of m.rects) {
           const n = rw * rh * 4;
-          w.ctx.putImageData(new ImageData(px.subarray(off, off + n), rw, rh), x, y);
+          w.ctx.putImageData(new ImageData(clamped.subarray(off, off + n), rw, rh), x, y);
           off += n;
         }
       }
     } finally {
       // Acknowledged even when drawing throws: the server holds the window's next frame until this.
-      post({ t: 'drawn', win: m.win, ms: performance.now() - t0, decode: t1 - t0, bytes: m.data.byteLength - m.off, pixels: size / 4 });
+      post({ t: 'drawn', win: m.win, ms: performance.now() - t0, decode: t1 - t0, bytes: m.len, pixels: size / 4, raw: !!m.raw });
     }
   }
 

@@ -118,6 +118,48 @@ pub(crate) fn run_of_url(url: &str) -> Option<u32> {
     query.split('&').find_map(|kv| kv.strip_prefix("run=")).and_then(|v| v.parse().ok())
 }
 
+/// `lindroids window-end <run>`, which the server runs when a run ends: the run's window in a
+/// Lindroids app closes, by a broadcast that only that app receives and that names the run's
+/// ticket. The page closes its window itself when it can; this also closes a window whose page is
+/// frozen in the background, or whose app's process is gone while its task stays in Recents.
+pub fn cmd_window_end(args: &[String]) -> i32 {
+    let Some(run) = args.first().and_then(|a| a.parse::<u32>().ok()) else { return crate::fail("usage: lindroids window-end <run>") };
+    let Some((url, app)) = noted_window(&sandbox::runtime_dir(), run).filter(|(_, app)| app.starts_with("org.lindroids")) else { return 0 };
+    let Some(ticket) = ticket_of_url(&url) else { return 0 };
+    match helper(&["app-end", &package(), &app, &run.to_string(), ticket]) {
+        Ok(_) => 0,
+        Err(e) => crate::fail(&format!("{app}: {e}")),
+    }
+}
+
+/// `lindroids window-ask <run>`, which the server runs when the page of a run in a Lindroids app
+/// has been gone in the background for its limit: the app is asked (`org.lindroids.ASK`, to that
+/// app alone, with the run's ticket) whether a task of its still shows the run, and answers the
+/// server over loopback (`/run/<pid>/kept`, or `/run/<pid>/closed`). No answer: the run ends.
+pub fn cmd_window_ask(args: &[String]) -> i32 {
+    let Some(run) = args.first().and_then(|a| a.parse::<u32>().ok()) else { return crate::fail("usage: lindroids window-ask <run>") };
+    let Some((url, app)) = noted_window(&sandbox::runtime_dir(), run).filter(|(_, app)| app.starts_with("org.lindroids")) else { return 0 };
+    let Some(ticket) = ticket_of_url(&url) else { return 0 };
+    let Some(host) = host_of_url(&url) else { return 0 };
+    match helper(&["app-ask", &package(), &app, &run.to_string(), ticket, host]) {
+        Ok(_) => 0,
+        Err(e) => crate::fail(&format!("{app}: {e}")),
+    }
+}
+
+/// `host:port` of a window's URL (`http://<label>.localhost:<port>/?window...`).
+fn host_of_url(url: &str) -> Option<&str> {
+    let rest = url.split_once("://")?.1;
+    let host = rest.split(['/', '?', '#']).next()?;
+    host.contains(':').then_some(host)
+}
+
+/// The ticket in a window's URL (`#t=<ticket>`).
+fn ticket_of_url(url: &str) -> Option<&str> {
+    let t = url.split_once('#')?.1.split('&').find_map(|kv| kv.strip_prefix("t="))?;
+    (!t.is_empty()).then_some(t)
+}
+
 /// The window last noted for run `run`: its URL and where it went.
 fn noted_window(rt: &Path, run: u32) -> Option<(String, String)> {
     let opened = std::fs::read_to_string(rt.join("windows")).ok()?;
@@ -679,6 +721,16 @@ mod tests {
         assert!(s.contains(OPENER_MARK));
         assert!(s.contains("exec \"/p/bin/lindroids\" launch \"$id\""));
         assert!(s.contains("exec \"/h/.local/share/lindroids/termux-url-opener.before\" \"$@\""));
+    }
+
+    #[test]
+    fn a_windows_ticket() {
+        assert_eq!(super::ticket_of_url("http://x.localhost:1/?window&run=5#t=abc"), Some("abc"));
+        assert_eq!(super::ticket_of_url("http://x.localhost:1/?window&run=5"), None);
+        assert_eq!(super::ticket_of_url("http://x.localhost:1/?window&run=5#t="), None);
+        assert_eq!(super::host_of_url("http://x.localhost:8123/?window&run=5#t=abc"), Some("x.localhost:8123"));
+        assert_eq!(super::host_of_url("http://x.localhost:8123/app/demo/?window&run=5"), Some("x.localhost:8123"));
+        assert_eq!(super::host_of_url("http://x.localhost/?window"), None);
     }
 
     #[test]

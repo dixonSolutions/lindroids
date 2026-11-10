@@ -84,6 +84,7 @@ if [[ $(sh_ 'tail -n 1 /data/data/com.termux/files/home/lab-setup.log' 2>/dev/nu
     sleep $((3 * try))
     "$VM" "$NAME" adb shell "input text 'sshd'"
     "$VM" "$NAME" adb shell input keyevent 66
+    # shellcheck disable=SC2034
     for i in $(seq 1 10); do
       timeout 15 "$VM" "$NAME" ssh true 2>/dev/null && { log "ssh works"; exit 0; }
       sleep 2

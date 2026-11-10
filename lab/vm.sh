@@ -38,6 +38,7 @@ RESERVE_MB=${RESERVE_MB:-6144}   # host MemAvailable that must remain after a VM
 
 # Boxes' QEMU has virgl (virtio-vga-gl); linuxbrew's does not.
 QEMU_FLATPAK=(flatpak run --command=qemu-system-x86_64 org.gnome.Boxes)
+# shellcheck disable=SC2034
 QEMU_BREW=/home/linuxbrew/.linuxbrew/bin/qemu-system-x86_64
 
 # name | adb port | ssh port (-> guest 8022) | kernel cmdline (SRC= finds the ISO on the cdrom)
@@ -173,6 +174,7 @@ cmd_start() {
     cmdline+=" HWACCEL=0"
     echo "$cmdline" >"$RUN/cmdline"
   fi
+  # shellcheck disable=SC2054
   case $gpu in
     # The VNC socket (no TCP port) gives QMP screendump a surface, for screenshots while adb is down.
     gl) qemu=("${QEMU_FLATPAK[@]}"); display=(-device virtio-vga-gl -display egl-headless,rendernode=/dev/dri/renderD128 -vnc "unix:$RUN/vnc.sock") ;;
@@ -262,6 +264,7 @@ cmd_stop() {
   local i
   for i in $(seq 1 30); do running || break; sleep 1; done
   if running; then qmp '{"execute":"quit"}' >/dev/null 2>&1 || kill "$(pid_of)"; fi
+  # shellcheck disable=SC2034
   for i in $(seq 1 10); do running || break; sleep 1; done
   running && kill -9 "$(pid_of)"
   "$ADB" disconnect "$SERIAL" >/dev/null 2>&1 || true

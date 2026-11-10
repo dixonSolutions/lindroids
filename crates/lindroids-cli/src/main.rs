@@ -167,6 +167,9 @@ fn main() {
         Some("remove") => export::cmd_remove(&args[1..]),
         Some("pick-folder") => cmd_pick_folder(),
         Some("debug-app") => debug::cmd_debug_app(&args[1..]),
+        // The server, when a run ends: its window in a Lindroids app closes.
+        Some("window-end") => shortcut::cmd_window_end(&args[1..]),
+        Some("window-ask") => shortcut::cmd_window_ask(&args[1..]),
         Some(other) => {
             eprintln!("lindroids: unknown command {other:?}\n");
             eprint!("{HELP}");
@@ -634,9 +637,16 @@ fn cmd_doctor() -> i32 {
     }
     let rt = sandbox::runtime_dir();
     let running = match client::status(&rt) {
-        Ok(CliReply::Status { app_connected, .. }) => {
+        Ok(CliReply::Status { app_connected, apps, .. }) => {
             println!("server      running, display {}", if app_connected { "linked (browser)" } else { "not linked" });
             println!("windows at  {}", shown_origin(&rt));
+            let stale = app::out_of_date(&rt, None);
+            for (pkg, t) in apps {
+                match stale.iter().find(|(p, ..)| *p == pkg) {
+                    Some((_, _, how)) => println!("app         {pkg}: out of date (template {t}, now {}): `{how}`", lindroids_proto::APP_TEMPLATE),
+                    None => println!("app         {pkg}: up to date (template {t})"),
+                }
+            }
             true
         }
         _ => {

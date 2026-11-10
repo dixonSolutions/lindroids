@@ -32,5 +32,22 @@
             android:resizeableActivity="true"
             android:taskAffinity=""
             android:windowSoftInputMode="adjustResize" />
+
+        <!-- Tells the server when a window is removed from Recents (CloseWatch.java). -->
+        <service
+            android:name=".CloseWatch"
+            android:exported="false"
+            android:stopWithTask="false" />
+
+        <!-- A run ended: its window goes; or is its window still in Recents? (End.java). Only
+             with that run's ticket. -->
+        <receiver
+            android:name=".End"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="org.lindroids.END" />
+                <action android:name="org.lindroids.ASK" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

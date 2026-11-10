@@ -54,5 +54,22 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Tells the server when a window is removed from Recents (CloseWatch.java). -->
+        <service
+            android:name="org.lindroids.CloseWatch"
+            android:exported="false"
+            android:stopWithTask="false" />
+
+        <!-- A run ended: its window goes; or is its window still in Recents? (End.java). Only
+             with that run's ticket. -->
+        <receiver
+            android:name="org.lindroids.End"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="org.lindroids.END" />
+                <action android:name="org.lindroids.ASK" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

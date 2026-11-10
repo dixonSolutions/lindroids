@@ -60,8 +60,10 @@ mkdir -p "$WORK/gen"
   -I "$JAR" --min-sdk-version 24 --target-sdk-version 35 \
   --version-code "$CODE" --version-name "$VERSION" --replace-version \
   -A "$SRC/assets" --java "$WORK/gen" "$WORK/res.zip"
+# shellcheck disable=SC2046
 javac --release 8 -Xlint:-options -cp "$JAR" -d "$WORK/classes" \
   $(find "$WORK/gen" "$SRC/src" -name '*.java')
+# shellcheck disable=SC2046
 "$TOOLS/d8" --release --min-api 24 --lib "$JAR" --output "$WORK/dex" $(find "$WORK/classes" -name '*.class')
 cp "$WORK/dex/classes.dex" "$WORK/classes.dex"
 (cd "$WORK" && zip -q -j unsigned.apk classes.dex)

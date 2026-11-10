@@ -17,6 +17,7 @@ NAME=${1:-b16}
 OUT=$REPO/lab/results/$NAME/linux-picker
 rm -rf "$OUT"
 mkdir -p "$OUT"
+# shellcheck disable=SC2034
 RT='$TMPDIR/lindroids-$(id -u)'
 DIR=.lindroids-picker-test
 FILE=picker.txt

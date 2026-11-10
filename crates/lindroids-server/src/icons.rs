@@ -39,6 +39,9 @@ struct Launch {
     ended: Option<Instant>,
     gone: Option<Instant>,
     registered: Instant,
+    /// Every process seen in its tree while it ran (pid, start time): what must not outlive it.
+    /// A process the run detached and its supervisor lost (killed) is still found here.
+    members: Vec<(u32, u64)>,
 }
 
 /// A run whose process handed its work to another instance and ended (see `CliRequest::Claim`).
@@ -161,11 +164,6 @@ pub struct NewLaunch {
     pub supervisor: Option<u32>,
 }
 
-/// Register a launch of no app in particular (an older CLI's).
-pub fn register_launch(pid: u32, name: String, icon: Option<String>, window: bool) {
-    register(pid, NewLaunch { name, icon, window, ..Default::default() });
-}
-
 /// Register a launch; returns its number among its app's instances.
 pub fn register(pid: u32, l: NewLaunch) -> u32 {
     let mut g = LAUNCHES.lock().unwrap();
@@ -191,6 +189,7 @@ pub fn register(pid: u32, l: NewLaunch) -> u32 {
             ended: None,
             gone: None,
             registered: Instant::now(),
+            members: Vec::new(),
         },
     );
     ordinal
@@ -341,6 +340,7 @@ pub fn reap() -> Reaped {
         };
         if l.ended.is_none() && (waiting || launch_process_alive(*p, l)) {
             l.gone = None;
+            note_members(*p, l);
             continue;
         }
         let gone = *l.gone.get_or_insert(now);
@@ -376,30 +376,71 @@ pub fn launch_for_window(dh: &DisplayHandle, client: &ClientId) -> Option<u32> {
 /// `pid` and every process below it, children first. A program under proot is proot's tracee:
 /// signalling proot alone (SIGKILL above all) leaves it running.
 pub fn process_tree(pid: u32) -> Vec<u32> {
-    let mut roots = Vec::new();
-    {
-        let g = LAUNCHES.lock().unwrap();
-        if let Some(l) = g.as_ref().and_then(|m| m.get(&pid)) {
-            if process_is(pid, l.start_time) {
-                roots.push(pid);
-            }
-            if l.group {
-                roots.extend(group_members(pid, l.start_time));
-            }
-            roots.extend(supervised_processes(l));
-        } else if process_is(pid, None) {
-            roots.push(pid);
-        }
+    let g = LAUNCHES.lock().unwrap();
+    match g.as_ref().and_then(|m| m.get(&pid)) {
+        Some(l) => tree_of(pid, l),
+        None if process_is(pid, None) => tree_from(vec![pid], Some(std::process::id())),
+        None => Vec::new(),
     }
-    roots.sort_unstable();
-    roots.dedup();
-    tree_from(roots, None)
 }
 
 /// A supervisor may itself have started the server. Exclude that entire infrastructure tree
 /// when forwarding a signal from the CLI; closing one app must never stop the server.
 pub fn process_tree_excluding(pid: u32, excluded: u32) -> Vec<u32> {
     tree_from(vec![pid], Some(excluded))
+}
+
+/// The roots of a process tree: its processes whose parent is not in it (the program, or what a
+/// supervisor adopted), seen through proot (its tracee, the program, is a root: proot does not
+/// pass SIGTERM on). They get SIGTERM first, so that a program's main process can end its
+/// children itself (Electron saves its state then), before the rest is killed.
+pub fn roots(tree: &[u32]) -> Vec<u32> {
+    let proot = |p: u32| std::fs::read_to_string(format!("/proc/{p}/comm")).is_ok_and(|c| c.trim_end() == "proot");
+    let tree: Vec<u32> = tree.iter().copied().filter(|p| !proot(*p)).collect();
+    tree.iter().copied().filter(|p| parent_of(*p).is_none_or(|pp| !tree.contains(&pp))).collect()
+}
+
+fn note_members(pid: u32, l: &mut Launch) {
+    for p in tree_of(pid, l) {
+        if let Some(t) = start_time(p) {
+            if !l.members.iter().any(|m| *m == (p, t)) {
+                l.members.push((p, t));
+            }
+        }
+    }
+    // Keep it small: the ones gone are of no use.
+    if l.members.len() > 256 {
+        l.members.retain(|(p, t)| start_time(*p) == Some(*t));
+    }
+}
+
+/// Processes of the ended launch `pid` that still run (not the server, not the supervisor that
+/// says it ended): orphans to end, so that none is left to capture the next launch (VS Code's
+/// single-instance socket) or show windows of a run that is over.
+pub fn survivors(pid: u32) -> Vec<u32> {
+    let mut g = LAUNCHES.lock().unwrap();
+    let Some(l) = g.as_mut().and_then(|m| m.get_mut(&pid)) else { return Vec::new() };
+    if l.ended.is_none() && launch_process_alive(pid, l) {
+        note_members(pid, l);
+    }
+    let supervisor = l.supervisor.map(|(s, _)| s);
+    let me = std::process::id();
+    l.members.iter().filter(|(p, t)| Some(*p) != supervisor && *p != me && start_time(*p) == Some(*t) && process_is(*p, Some(*t))).map(|(p, _)| *p).collect()
+}
+
+/// What runs under a launch now, children first.
+fn tree_of(pid: u32, l: &Launch) -> Vec<u32> {
+    let mut roots = Vec::new();
+    if process_is(pid, l.start_time) {
+        roots.push(pid);
+    }
+    if l.group {
+        roots.extend(group_members(pid, l.start_time));
+    }
+    roots.extend(supervised_processes(l));
+    roots.sort_unstable();
+    roots.dedup();
+    tree_from(roots, Some(std::process::id()))
 }
 
 fn tree_from(mut tree: Vec<u32>, excluded: Option<u32>) -> Vec<u32> {

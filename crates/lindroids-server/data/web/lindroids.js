@@ -11,7 +11,7 @@
 
 const BUILD = '@BUILD@';
 const PICKER_TOKEN = '@PICKER_TOKEN@';
-const PROTOCOL_VERSION = 7;
+const PROTOCOL_VERSION = 8;
 // What pages kept before keys (protocol 4): gone, it no longer proves anything.
 try { localStorage.removeItem('lindroids.secret'); } catch (e) { /* storage off */ }
 
@@ -39,7 +39,7 @@ const order = []; // most recently active last
 // address bar, history and bookmarks at once. It stays with this window's history entry
 // (history.state, which no other page can read), so the page the browser loads again after it
 // dropped this one in the background, or a reload, still attaches to its run.
-let ticket = null, ticketRestored = false;
+let ticket = null;
 function takeTicketFromUrl() {
   const m = /[#&]t=([^&]+)/.exec(location.hash);
   if (!m) return false;
@@ -49,7 +49,6 @@ function takeTicketFromUrl() {
 }
 if (!takeTicketFromUrl() && history.state && typeof history.state.t === 'string') {
   ticket = history.state.t;
-  ticketRestored = true;
 }
 
 // `lindroids run` opens the page again to bring it to the front; the browser reuses this tab and
@@ -127,7 +126,6 @@ function connect() {
   clearTimeout(retry);
   replaced = false;
   ready = false;
-  releaseAllKeys();
   const url =(location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/link';
   try {
     ws = new WebSocket(url);
@@ -142,6 +140,7 @@ function connect() {
       t: 'hello', version: PROTOCOL_VERSION, build: BUILD, density: dpr, nonce: myNonce,
       screen: [Math.round(screen.width * dpr), Math.round(screen.height * dpr)],
       page: location.pathname + location.search,
+      ...(NATIVE && NATIVE.packageName ? { app: [String(NATIVE.packageName()), NATIVE.template ? Number(NATIVE.template()) : 0] } : {}),
     });
   };
   ws.onmessage = (ev) => {
@@ -156,7 +155,7 @@ function connect() {
     ws = null;
     const was = ready;
     ready = false;
-    releaseAllKeys(false);
+    forgetInput();
     // A chooser for a request the dropped link carried can no longer be answered.
     document.querySelectorAll('.picker').forEach((p) => p.remove());
     for (const w of [...windows.keys()]) removeWindow(w);
@@ -299,17 +298,19 @@ async function handle(m, payload) {
     case 'auth_failed':
       if (m.reason === 'this window was not opened by lindroids run') {
         replaced = true;
-        // Its ticket worked before (on this page, or the one before a reload): its run is over
-        // (the server forgets a run's ticket with it).
-        if (OWN_WINDOW && RUN && (relinking || everLinked || ticketRestored)) {
-          // A program's own app (or its WebAPK) is the program: brought back to a run that is
-          // over (it ended, or the server stopped it, while the app was out of sight), it starts
-          // the program again from its start page instead of showing the end and closing.
+        // A run's window whose ticket is refused: its run is over (the server forgets a run's
+        // ticket with it). Seen when the window comes back (Android rebuilt its task from Recents,
+        // a reload) after the program ended or the server stopped it while out of sight. Never a
+        // dead panel: a program's own app (or its WebAPK) is the program, and starts it again from
+        // its start page; any other window says the program closed, and closes.
+        if (OWN_WINDOW && RUN) {
           if (APP) {
             trace('its run is over: back to the start page');
+            leaving = true;
             return location.replace(location.pathname);
           }
           relinking = 0;
+          runOver = true;
           if (ended === null) ended = program ? program.name : (history.state && history.state.name) || 'The program';
           return showEnded();
         }
@@ -340,8 +341,12 @@ async function handle(m, payload) {
       }
       if (m.stats) enableStats();
       ready = true;
-      everLinked = true;
       if (document.hidden) send({ t: 'shown', shown: false });
+      // The window app learns which run this window shows, and its ticket: when its task is
+      // removed from Recents it tells the server (the page may be gone by then), and the server
+      // can close this window when the run ends even with the page frozen.
+      if (OWN_WINDOW && RUN && ticket && NATIVE && NATIVE.attached) NATIVE.attached(String(RUN), ticket);
+      staleApp();
       for (const l of traced.splice(0)) plog(`trace: ${l} (while unlinked)`);
       if (relinking) {
         plog(`linked again after the browser dropped the link (${lostLink})`);
@@ -356,6 +361,7 @@ async function handle(m, payload) {
       const to = new URL(m.url, location.href);
       if (!APP || to.origin !== location.origin || !to.pathname.startsWith(`/app/${APP}/`)) return;
       replaced = true;
+      leaving = true;
       return location.replace(to.href);
     }
     case 'bye':
@@ -390,7 +396,7 @@ async function handle(m, payload) {
     case 'audio_open': return audioOpen(m);
     case 'audio_data': return audioData(m, payload);
     case 'audio_cork': return;
-    case 'audio_close': return streams.delete(m.stream);
+    case 'audio_close': return audioClose(m.stream);
     case 'record_open': return recordOpen(m);
     case 'record_close': return recordClose(m.stream);
     case 'open_uri': return openUri(m);
@@ -474,9 +480,27 @@ let ended = null, endedIcon = null, endTimer = null, endedNote = '', endedOutput
 let program = null; // { name, icon } of this window's run, from the server
 // The server said the program ended; this page linked to its run before; tries at linking again
 // after a lost link (0: none under way), and how that link was lost (for the server's log).
-let runOver = false, everLinked = false, relinking = 0, lostLink = '';
+let runOver = false, relinking = 0, lostLink = '';
+// This page goes to another of its program's pages in the same window (not closed): no `closing`.
+let leaving = false;
 
 // ------------------------------------------------------------------ an exported program's app
+
+// The window app's code is in its APK, built from the template of the Lindroids that built it:
+// an app built by an older Lindroids lacks what was fixed since (closing with its program, file
+// pickers...). Said once per page, with what rebuilds it.
+const APP_TEMPLATE = Number('@APP_TEMPLATE@') || 0;
+let staleSaid = false;
+function staleApp() {
+  if (staleSaid || !NATIVE || !APP_TEMPLATE) return;
+  const have = NATIVE.template ? Number(NATIVE.template()) : 0;
+  if (have >= APP_TEMPLATE) return;
+  staleSaid = true;
+  const pkg = NATIVE.packageName ? String(NATIVE.packageName()) : 'the window app';
+  const how = APP ? `lindroids export ${APP}` : 'lindroids app install';
+  plog(`window app ${pkg} is from template ${have}, older than ${APP_TEMPLATE}: ${how}`);
+  toast({ title: 'This app is out of date', body: `It was built by an older Lindroids. In Termux, run: ${how}` }, 10000);
+}
 
 const appIcon = () => `/app/${APP}/icon.png`;
 let installPrompt = null, installed = false;
@@ -591,6 +615,7 @@ $('tools').addEventListener('click', () => showTools(true));
 
 function showEnded() {
   trace(`shows the end (${runOver ? 'the program ended' : 'the program is gone'})`);
+  if (NATIVE && NATIVE.detached) NATIVE.detached();
   const icon = endedIcon || (program && program.icon);
   const out = endedOutput.length ? `<pre class="output">${esc(endedOutput.join('\n'))}</pre>` : '';
   const how = NATIVE ? 'The window closes with the program.' : 'Close this window with the ✕ at the top.';
@@ -669,8 +694,8 @@ function removeWindow(win) {
   const i = order.indexOf(win);
   if (i >= 0) order.splice(i, 1);
   if (active === win) {
-    // The window is gone (the server said so): its keys are not sent to it.
-    releaseAllKeys(false);
+    // The window is gone (the server said so): what it held went with it.
+    forgetInput();
     active = null;
     const next = order[order.length - 1];
     if (next !== undefined) activate(next);
@@ -683,8 +708,9 @@ function activate(win) {
   const w = windows.get(win);
   if (!w) return;
   if (active !== null && active !== win) {
-    // Keys held go up in the window they were pressed in, not the one that gets the focus now.
-    releaseAllKeys();
+    // What is held goes up in the window it was pressed in, not the one that gets the focus now:
+    // the server lets go of it there when it hears that window lost the focus.
+    forgetInput();
     const old = windows.get(active);
     if (old) { old.canvas.classList.remove('active'); old.tab.classList.remove('active'); }
     send({ t: 'focus', win: active, focused: false });
@@ -720,14 +746,25 @@ function resizeWindow(w) {
   const [width, height, density] = stageSize();
   if (w.size[0] === width && w.size[1] === height) return;
   w.size = [width, height];
-  send({ t: 'resize', win: w.win, width, height, density });
+  // The screen too: it turns with the device, and the Linux side's output turns with it.
+  send({ t: 'resize', win: w.win, width, height, density, screen: [Math.round(screen.width * density), Math.round(screen.height * density)] });
 }
 
 // Where the canvases are (they fill the stage), kept between events: reading it can make the
 // browser lay out the page, mid-gesture.
 let stageRect = null;
 const forgetStageRect = () => { stageRect = null; };
-new ResizeObserver(() => { stageRect = null; for (const w of windows.values()) resizeWindow(w); }).observe(stage);
+// Every window is the stage's size. The ResizeObserver says when the stage's size changed (a
+// rotation, the browser's bars, full screen), once per frame and after layout, with the size it
+// settled at; a window is sized only when its size changed, so a rotation sends each size once.
+// The window's own resize covers a density change; coming back on screen checks too (sizes are
+// not observed while hidden).
+function checkSizes() {
+  stageRect = null;
+  for (const w of windows.values()) resizeWindow(w);
+}
+new ResizeObserver(checkSizes).observe(stage);
+addEventListener('resize', checkSizes, { passive: true });
 for (const ev of ['resize', 'scroll', 'fullscreenchange']) addEventListener(ev, forgetStageRect, { passive: true });
 if (window.visualViewport) visualViewport.addEventListener('resize', forgetStageRect);
 
@@ -741,18 +778,8 @@ function unscroll() {
   }
   if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
 }
-for (const ev of ['resize', 'fullscreenchange', 'visibilitychange', 'pageshow']) addEventListener(ev, () => requestAnimationFrame(unscroll));
+for (const ev of ['resize', 'fullscreenchange', 'pageshow']) addEventListener(ev, () => requestAnimationFrame(unscroll));
 if (window.visualViewport) visualViewport.addEventListener('resize', () => requestAnimationFrame(unscroll));
-
-// Sizes sent while the page was hidden (full screen ending behind another app) may not take, and
-// the size settles only after the browser's bars do: on coming back, and when full screen
-// changes, every window's size again.
-function resizeAgain() {
-  if (document.hidden) return;
-  for (const t of [0, 400]) setTimeout(() => { for (const w of windows.values()) { w.size = [0, 0]; resizeWindow(w); ackLater(w); } }, t);
-}
-document.addEventListener('visibilitychange', resizeAgain);
-document.addEventListener('fullscreenchange', resizeAgain);
 
 // ------------------------------------------------------------------ frames
 
@@ -762,13 +789,13 @@ document.addEventListener('fullscreenchange', resizeAgain);
 let STATS = null;
 function enableStats() {
   if (STATS) return;
-  STATS = { frames: 0, bytes: 0, pixels: 0, ms: 0, decode: 0, el: null };
+  STATS = { frames: 0, raw: 0, bytes: 0, pixels: 0, ms: 0, decode: 0, el: null };
   STATS.el = document.createElement('div');
   STATS.el.style.cssText = 'position:fixed;left:4px;bottom:4px;z-index:9;font:12px monospace;color:#0f0;background:#000a;padding:2px 6px;pointer-events:none';
   document.body.appendChild(STATS.el);
   setInterval(() => {
-    STATS.el.textContent = `${STATS.frames} fps  ${(STATS.bytes / 1024).toFixed(0)} KiB/s  ${(STATS.pixels / 1e6).toFixed(2)} Mpx/s  draw ${STATS.frames ? (STATS.ms / STATS.frames).toFixed(1) : 0} ms (LZ4 ${STATS.frames ? (STATS.decode / STATS.frames).toFixed(1) : 0})  ${drawMode}`;
-    STATS.frames = STATS.bytes = STATS.pixels = STATS.ms = STATS.decode = 0;
+    STATS.el.textContent = `${STATS.frames} fps  ${(STATS.bytes / 1024).toFixed(0)} KiB/s  ${(STATS.pixels / 1e6).toFixed(2)} Mpx/s  draw ${STATS.frames ? (STATS.ms / STATS.frames).toFixed(1) : 0} ms (LZ4 ${STATS.frames ? (STATS.decode / STATS.frames).toFixed(1) : 0}, ${STATS.raw} raw)  ${drawMode}`;
+    STATS.frames = STATS.raw = STATS.bytes = STATS.pixels = STATS.ms = STATS.decode = 0;
   }, 1000);
 }
 
@@ -783,7 +810,7 @@ const drawer = (() => {
     const w = windows.get(a.win);
     switch (a.t) {
       case 'drawn':
-        if (STATS) { STATS.frames++; STATS.bytes += a.bytes || 0; STATS.pixels += a.pixels || 0; STATS.ms += a.ms; STATS.decode += a.decode || 0; }
+        if (STATS) { STATS.frames++; STATS.raw += a.raw ? 1 : 0; STATS.bytes += a.bytes || 0; STATS.pixels += a.pixels || 0; STATS.ms += a.ms; STATS.decode += a.decode || 0; }
         if (!w) return send({ t: 'frame_done', win: a.win });
         w.pendingAck = true;
         return ackLater(w);
@@ -830,10 +857,16 @@ let drawMode = '', drawModeSaid = false;
 function tiles(m, payload) {
   const w = windows.get(m.win);
   if (!w) return send({ t: 'frame_done', win: m.win });
+  // A frame of a size the window no longer has (it was on its way when the window was resized):
+  // not drawn, only acknowledged. The whole frame at the new size comes next.
+  if (w.size[0] && (m.width !== w.size[0] || m.height !== w.size[1])) {
+    w.pendingAck = true;
+    return ackLater(w);
+  }
   w.phys = [m.width, m.height];
   // The message's own buffer goes to the drawer (moved, not copied); the page is done with it.
-  drawer.post({ t: 'tiles', win: m.win, width: m.width, height: m.height, rects: m.rects, data: payload.buffer, off: payload.byteOffset },
-    [payload.buffer]);
+  drawer.post({ t: 'tiles', win: m.win, width: m.width, height: m.height, rects: m.rects, raw: !!m.raw,
+    data: payload.buffer, off: payload.byteOffset, len: payload.byteLength }, [payload.buffer]);
 }
 
 /// Acknowledge a frame as soon as it is drawn, so the program starts the next one while this one
@@ -845,11 +878,36 @@ function ackLater(w) {
   send({ t: 'frame_done', win: w.win });
 }
 
-document.addEventListener('visibilitychange', () => {
+// Whether the page has the keyboard: shown, and its window focused. The active window has the
+// focus on the Linux side while it does. When it stops, the server lets go of every key and button
+// that window holds (the server owns that, as it does when the link drops: a key-up the page never
+// gets cannot leave anything down), and the page forgets them.
+let blurred = false;
+function sayFocus() {
+  const focused = !document.hidden && !blurred;
+  if (!focused) forgetInput();
   const w = windows.get(active);
-  if (!w) return;
-  send({ t: 'focus', win: w.win, focused: !document.hidden });
-  ackLater(w);
+  if (w) send({ t: 'focus', win: w.win, focused });
+}
+addEventListener('blur', () => { blurred = true; sayFocus(); });
+addEventListener('focus', () => { blurred = false; sayFocus(); });
+
+// The page shown or hidden: one handler, in a fixed order. Input first (the focus, above); then
+// the server is told; then what waits for the page to be seen: the frame acknowledgement held
+// back, the window sizes, full screen, the clipboard, the wake lock.
+document.addEventListener('visibilitychange', () => {
+  const shown = !document.hidden;
+  trace(shown ? 'shown' : 'hidden');
+  sayFocus();
+  if (ready) send({ t: 'shown', shown });
+  requestAnimationFrame(unscroll);
+  if (!shown) return;
+  const w = windows.get(active);
+  if (w) ackLater(w);
+  checkSizes();
+  wantFull = true;
+  clipboardOnReturn();
+  if (wantWake) wakeLock(true);
 });
 
 // ------------------------------------------------------------------ pointer, touch, pen
@@ -860,6 +918,23 @@ function toPhys(w, e) {
 }
 
 const touchIds = new Map(); // pointerId -> small touch id
+
+// The mouse buttons the Linux side has down, as the page sent them (1 left, 2 right, 3 middle, 4
+// back, 5 forward). They follow each mouse event's `buttons`, not its `button`: a second button
+// pressed or let go while another is held comes as a move, and a cancel names no button. Like the
+// keys, the server lets go of them when the window loses the focus or the link drops.
+const buttonsHeld = new Set();
+const BUTTON_BITS = [[1, 1], [2, 2], [4, 3], [8, 4], [16, 5]];
+function syncButtons(w, e, x, y) {
+  for (const [bit, b] of BUTTON_BITS) {
+    const down = (e.buttons & bit) !== 0;
+    if (down === buttonsHeld.has(b)) continue;
+    if (down) buttonsHeld.add(b); else buttonsHeld.delete(b);
+    send({ t: 'pointer', win: w.win, action: down ? 'press' : 'release', x, y, button: b, time_ms: now() });
+  }
+}
+// A move is dropped, not queued, while the link is backed up: the next one says where it is.
+const linkBacklog = () => !!ws && ws.bufferedAmount > (256 << 10);
 
 function attachInput(w) {
   const c = w.canvas;
@@ -876,18 +951,20 @@ function attachInput(w) {
       while ([...touchIds.values()].includes(id)) id++;
       touchIds.set(e.pointerId, id);
       send({ t: 'touch', win: w.win, action: 'down', id, x, y, time_ms: now() });
-    } else {
+    } else if (e.pointerType === 'pen') {
       // A pen acts as a mouse with its button held: it draws in note and paint programs.
-      const button = e.pointerType === 'pen' ? (e.button === 2 || e.button === 5 ? 2 : 1) : mouseButton(e.button);
-      if (!button) return;
-      if (e.pointerType === 'pen') penDown.add(e.pointerId);
+      penDown.add(e.pointerId);
       send({ t: 'pointer', win: w.win, action: 'motion', x, y, button: 0, time_ms: now() });
-      send({ t: 'pointer', win: w.win, action: 'press', x, y, button, time_ms: now() });
+      send({ t: 'pointer', win: w.win, action: 'press', x, y, button: e.button === 2 || e.button === 5 ? 2 : 1, time_ms: now() });
+    } else {
+      send({ t: 'pointer', win: w.win, action: 'motion', x, y, button: 0, time_ms: now() });
+      syncButtons(w, e, x, y);
     }
   });
   // Moves: Chromium's pointerrawupdate comes as soon as the move does; pointermove can wait for
   // the next animation frame (up to a frame later). Taken for the pointer types that have it (a
   // mouse and a pen; touch too in Android's WebView); pointermove for the rest and in other browsers.
+  // One message per event, where the pointer is now (not its coalesced points: they only queue up).
   const raw = new Set();
   if ('onpointerrawupdate' in window) {
     c.addEventListener('pointerrawupdate', (e) => {
@@ -895,17 +972,19 @@ function attachInput(w) {
       move(e);
     });
   }
-  c.addEventListener('pointermove', (e) => { if (!raw.has(e.pointerType)) move(e); });
+  c.addEventListener('pointermove', (e) => {
+    if (!raw.has(e.pointerType)) move(e);
+    else if (e.pointerType === 'mouse') syncButtons(w, e, ...toPhys(w, e));
+  });
   const move = (e) => {
-    const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
-    for (const ev of events.length ? events : [e]) {
-      const [x, y] = toPhys(w, ev);
-      if (e.pointerType === 'touch') {
-        const id = touchIds.get(e.pointerId);
-        if (id !== undefined) send({ t: 'touch', win: w.win, action: 'move', id, x, y, time_ms: now() });
-      } else {
-        send({ t: 'pointer', win: w.win, action: 'motion', x, y, button: 0, time_ms: now() });
-      }
+    if (linkBacklog()) return;
+    const [x, y] = toPhys(w, e);
+    if (e.pointerType === 'touch') {
+      const id = touchIds.get(e.pointerId);
+      if (id !== undefined) send({ t: 'touch', win: w.win, action: 'move', id, x, y, time_ms: now() });
+    } else {
+      send({ t: 'pointer', win: w.win, action: 'motion', x, y, button: 0, time_ms: now() });
+      if (e.pointerType === 'mouse') syncButtons(w, e, x, y);
     }
   };
   const up = (e, cancel) => {
@@ -919,8 +998,7 @@ function attachInput(w) {
       if (!penDown.delete(e.pointerId)) return;
       send({ t: 'pointer', win: w.win, action: 'release', x, y, button: e.button === 2 || e.button === 5 ? 2 : 1, time_ms: now() });
     } else {
-      const button = mouseButton(e.button);
-      if (button) send({ t: 'pointer', win: w.win, action: 'release', x, y, button, time_ms: now() });
+      syncButtons(w, cancel ? { buttons: 0 } : e, x, y);
     }
   };
   c.addEventListener('pointerup', (e) => up(e, false));
@@ -937,14 +1015,20 @@ function attachInput(w) {
   });
   c.addEventListener('wheel', (e) => {
     e.preventDefault();
-    // Wheel notches: Chrome and Firefox report 100 px (or 3 lines) per notch.
-    const k = e.deltaMode === 1 ? 1 / 3 : e.deltaMode === 2 ? 1 : 1 / 100;
-    send({ t: 'scroll', win: w.win, dx: e.deltaX * k, dy: e.deltaY * k, time_ms: now() });
+    // A mouse wheel's notches: lines or pages (Firefox), or whole multiples of 120 in wheelDelta
+    // (Chromium, one per notch). Anything else (a touchpad, a free-spinning wheel) is a distance,
+    // in the window's pixels, scrolled smoothly.
+    const wx = e.wheelDeltaX || 0, wy = e.wheelDeltaY || 0;
+    if (e.deltaMode) {
+      const k = e.deltaMode === 1 ? 1 / 3 : 1;
+      send({ t: 'scroll', win: w.win, dx: e.deltaX * k, dy: e.deltaY * k, time_ms: now() });
+    } else if ((wx || wy) && wx % 120 === 0 && wy % 120 === 0) {
+      send({ t: 'scroll', win: w.win, dx: -wx / 120, dy: -wy / 120, time_ms: now() });
+    } else {
+      const r = stageRect || (stageRect = stage.getBoundingClientRect());
+      send({ t: 'scroll', win: w.win, dx: e.deltaX * w.phys[0] / r.width, dy: e.deltaY * w.phys[1] / r.height, pixels: true, time_ms: now() });
+    }
   }, { passive: false });
-}
-
-function mouseButton(b) {
-  return { 0: 1, 1: 3, 2: 2, 3: 4, 4: 5 }[b] || 0;
 }
 
 // ------------------------------------------------------------------ keys and text
@@ -968,11 +1052,17 @@ const CODES = (() => {
 const KEYS = { Enter: 66, Backspace: 67, Delete: 112, Tab: 61, Escape: 111, ArrowUp: 19, ArrowDown: 20,
   ArrowLeft: 21, ArrowRight: 22, Home: 122, End: 123, PageUp: 92, PageDown: 93 };
 
-function keyCode(e) {
-  if (e.isComposing || e.keyCode === 229) return 0;
+// The key an event is about. A key going down in a composition (keyCode 229) is the IME's, which
+// types its text itself; a key going up is resolved all the same, by `code` or `key`, so a key
+// held is let go whatever the IME did with it.
+function keyCode(e, down) {
+  if (down && (e.isComposing || e.keyCode === 229)) return 0;
   return CODES[e.code] || KEYS[e.key] || 0;
 }
 
+// The keys the Linux side has down, as the page sent them. The server lets go of them when the
+// window loses the focus (blur, hidden, another window) or the link drops; the page then only
+// forgets them (`forgetInput`).
 const held = new Set();
 let pasteWait = null;
 let lastHardwareKey = -1e9;
@@ -981,99 +1071,81 @@ let lastHardwareKey = -1e9;
 // D-pad or arrow key nobody took): with no window to take them (between a program's splash and
 // its window, while linking), they do nothing, rather than focus the tab bar's ✕ for Enter to press.
 const NAV_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter', ' ']);
-// The relay cannot know Caps Lock by itself (the soft keyboard turns it off without a key event),
-// so each key, pointer and touch says whether the page's keyboard has it on, and the relay follows.
-// Reset when the page loses the keyboard or the link: the next event sends the page's state again.
-let capsSent = null;
-function syncCaps(e, down) {
-  if (!ready || typeof e.getModifierState !== 'function') return;
-  if (e.key === 'CapsLock' && down) return;
-  const on = e.getModifierState('CapsLock');
-  if (on === capsSent) return;
-  capsSent = on;
-  send({ t: 'caps_lock', on });
-}
 
-// Shift, Ctrl, Alt and Meta: the two keycodes of each, and the flag every key and pointer event
-// carries saying whether it is down.
+// Shift, Ctrl, Alt and Meta: the two keycodes of each, and the flag every key event carries saying
+// whether it is down. Then the lock keys, which, like them, do not repeat.
 const MODIFIERS = [
   { flag: 'shiftKey', codes: [59, 60] },
   { flag: 'ctrlKey', codes: [113, 114] },
   { flag: 'altKey', codes: [57, 58] },
+  { flag: 'metaKey', codes: [117, 118] },
 ];
-// Meta is not reconciled: its flag is not reliable enough to release anything on (blur, hidden and
-// the link going still let it go).
-//
-// Touch-origin events (a finger, or the mouse event a touch makes) carry flags that say nothing
-// about the keyboard: they are not used to reconcile.
-function fromTouch(e) {
-  return e.pointerType === 'touch' || (typeof e.type === 'string' && e.type.startsWith('touch'))
-    || !!(e.sourceCapabilities && e.sourceCapabilities.firesTouchEvents);
-}
+const LOCK_KEYS = [115, 143]; // Caps Lock, Num Lock
+const isModifier = (c) => LOCK_KEYS.includes(c) || MODIFIERS.some((m) => m.codes.includes(c));
+
 // Whether the event says the modifier is down. AltGr (code 58 on the keyboards that have it) comes
 // as AltGraph, with no Alt flag.
 function modifierDown(e, mod) {
   if (e[mod.flag]) return true;
   return mod.flag === 'altKey' && typeof e.getModifierState === 'function' && e.getModifierState('AltGraph');
 }
-// A modifier the page holds that the event says is up: its key-up was lost (it went to another
-// window, or never came), and it would stay down on the Linux side. Let it go now, before the
-// event's own keys. `except` is the event's own key, which onKey handles: when it is one of a pair
-// (Shift 59/60 and so on), the whole pair is left to it, since the other half may still be down.
-function reconcileModifiers(e, except) {
-  if (!held.size || fromTouch(e)) return;
-  for (const mod of MODIFIERS) {
-    if (modifierDown(e, mod) || mod.codes.includes(except)) continue;
-    for (const c of mod.codes) {
-      if (!held.has(c)) continue;
-      held.delete(c);
-      if (active !== null) key(c, false);
+// The modifiers as the event says they are, set before its own key goes. One held whose flag is
+// off lost its key-up (it went to another window; Samsung keeps Meta's): it goes up. With `press`,
+// one whose flag is on and neither key held goes down (a keyboard that says Shift only as a flag
+// on the letter, or a capital letter on a keyboard that does not say it at all; a modifier pressed
+// while the page did not have the keyboard). `code` is the event's own key: when it is one of a
+// pair, the pair is left to onKey (the other half may still be down).
+function reconcileModifiers(e, code, press, mods = MODIFIERS) {
+  if (active === null || !ready) return;
+  for (const mod of mods) {
+    if (mod.codes.includes(code)) continue;
+    const want = modifierDown(e, mod) || (press && mod.flag === 'shiftKey' && needsShift(e));
+    const have = mod.codes.filter((c) => held.has(c));
+    if (!want) {
+      for (const c of have) { held.delete(c); key(c, false); }
+    } else if (press && !have.length) {
+      const c = mod.flag === 'altKey' && !e.altKey ? 58 : mod.codes[0];
+      held.add(c);
+      key(c, true);
     }
   }
 }
 
-// Lets go of everything the page holds down: the keys the Linux side has down, and the Shift the
-// page borrowed for a letter. Used when the page stops getting the keyboard (blur, hidden, frozen,
-// closing), when the link drops or is made again, and when the window the keys went to changes.
-// `sendUps` false when there is nothing to tell (the window or the link is gone). Keys still
-// queued for a composition go out first, so no key-up overtakes its key-down; the ups go directly.
-function releaseAllKeys(sendUps = true) {
-  clearTimeout(heldTimer);
-  heldTimer = null;
-  const queued = heldKeys;
-  heldKeys = [];
-  if (sendUps) queued.forEach((m) => send(m));
-  const ups = new Set(held);
-  if (synthShift.size) ups.add(59);
-  held.clear();
-  synthShift.clear();
-  capsSent = null;
-  if (sendUps && active !== null) {
-    for (const c of ups) send({ t: 'key', win: active, code: c, down: false, time_ms: now() });
-  }
+// Caps Lock and Num Lock as the page's keyboard has them, from the hardware keys' events (a soft
+// keyboard's say nothing about them), sent when they differ from what this link was told last.
+let locksSent = null;
+function syncLocks(e, code, down) {
+  if (!e.code || typeof e.getModifierState !== 'function') return;
+  // A lock key's own keydown may give the state before its toggle or after; its key-up, after.
+  if (down && LOCK_KEYS.includes(code)) return;
+  const on = e.getModifierState('CapsLock'), num = e.getModifierState('NumLock');
+  if (locksSent && locksSent[0] === on && locksSent[1] === num) return;
+  locksSent = [on, num];
+  send({ t: 'caps_lock', on, num });
 }
 
-// A key went up on a target that takes no keys (an input has the focus, or no window is shown):
-// it still lets go of what the page has down for it.
-function releaseKey(code) {
-  const wasHeld = held.delete(code);
-  const borrowed = synthShift.delete(code);
-  if (active === null) return;
-  if (wasHeld) key(code, false);
-  if (borrowed && !synthShift.size) key(59, false);
+// The page forgets what it holds: the Linux side has let go of it, or is about to (the window lost
+// the focus, it is gone, or the link is). Keys still waiting for a composition go out first, so
+// none is lost and none overtakes the focus moving. The locks are said again on the next key.
+function forgetInput() {
+  sendHeldKeys();
+  held.clear();
+  buttonsHeld.clear();
+  locksSent = null;
+}
+
+function release(code) {
+  if (held.delete(code) && active !== null) key(code, false);
 }
 
 function onKey(e, down) {
-  const code = keyCode(e);
-  reconcileModifiers(e, code);
-  syncCaps(e, down);
-  if (e.target.tagName === 'INPUT') {
-    if (!down) releaseKey(code);
-    return;
-  }
-  if (active === null || !ready) {
-    if (!down) releaseKey(code);
-    if (panel.hidden && NAV_KEYS.has(e.key)) e.preventDefault();
+  const code = keyCode(e, down);
+  const toWindow = active !== null && ready && e.target.tagName !== 'INPUT';
+  if (toWindow) syncLocks(e, code, down);
+  reconcileModifiers(e, code, down && toWindow);
+  if (!toWindow) {
+    if (!down) release(code);
+    if (e.target.tagName !== 'INPUT' && panel.hidden && NAV_KEYS.has(e.key)) e.preventDefault();
     return;
   }
   if (!code) return;
@@ -1086,24 +1158,23 @@ function onKey(e, down) {
   }
   if (!down && code === 50 && pasteWait) return;
   e.preventDefault();
-  // Some keyboards (virtual ones, Android's injected keys) say Shift only as a flag on the
-  // letter, with no Shift key of its own: press one around it, or "A" arrives as "a".
-  const shiftHeld = held.has(59) || held.has(60);
-  // One borrowed Shift serves every such letter held at once: it goes up with the last of them.
-  if (down && needsShift(e) && !shiftHeld && code !== 59 && code !== 60) {
-    if (!synthShift.size) key(59, true);
-    synthShift.add(code);
+  if (!down) return release(code);
+  if (held.has(code)) {
+    // The browser's auto-repeat (or a key-up that never came): the key goes down again, which
+    // the server sends as a repeat (`repeated`) to programs that let it repeat for them, and
+    // takes as word that the key is still held for those that repeat on their own. Never a
+    // release and a press: a game takes that for the key pressed again. Modifiers and locks do
+    // not repeat.
+    if (isModifier(code)) return;
   }
-  if (down) held.add(code); else held.delete(code);
-  key(code, down);
-  if (!down && synthShift.delete(code) && !synthShift.size && !held.has(59) && !held.has(60)) key(59, false);
+  held.add(code);
+  key(code, true);
 }
-const synthShift = new Set();
 
 /// Whether the character typed needs Shift on a US keyboard (the keymap the Linux side has).
 function needsShift(e) {
   if (e.shiftKey) return true;
-  if (e.key.length !== 1 || e.ctrlKey || e.altKey || e.metaKey) return false;
+  if (typeof e.key !== 'string' || e.key.length !== 1 || e.ctrlKey || e.altKey || e.metaKey) return false;
   if (/^[A-Z]$/.test(e.key)) return !e.getModifierState('CapsLock');
   return '~!@#$%^&*()_+{}|:"<>?'.includes(e.key);
 }
@@ -1128,15 +1199,12 @@ function sendHeldKeys() {
 
 document.addEventListener('keydown', (e) => onKey(e, true));
 document.addEventListener('keyup', (e) => onKey(e, false));
-// Keys held while the page loses the keyboard would stay down on the Linux side: let them go.
-window.addEventListener('blur', () => releaseAllKeys());
-document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAllKeys(); });
-document.addEventListener('freeze', () => releaseAllKeys());
-addEventListener('pagehide', () => releaseAllKeys());
-// Pointer, wheel and touch events carry the modifiers and Caps Lock too: a lost key-up is found
-// by the next touch, before the touch's own event goes to the program. Capture, so it runs first.
-for (const ev of ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mouseup', 'wheel', 'touchstart', 'touchend']) {
-  addEventListener(ev, (e) => { reconcileModifiers(e, 0); syncCaps(e, false); }, { capture: true, passive: true });
+// A mouse's (or pen's) press, or the wheel, says which modifiers are up: a Shift whose key-up was
+// lost goes up before the click (a Shift-click selects), a Ctrl before the wheel (Ctrl zooms). Only
+// to let go, and not Meta (its flag on pointer events is not reliable enough); a finger's flags say
+// nothing about the keyboard. Capture, so it runs before the canvas sends the press.
+for (const ev of ['pointerdown', 'wheel']) {
+  addEventListener(ev, (e) => { if (e.pointerType !== 'touch') reconcileModifiers(e, 0, false, MODIFIERS.slice(0, 3)); }, { capture: true, passive: true });
 }
 document.addEventListener('paste', (e) => {
   const text = e.clipboardData && e.clipboardData.getData('text/plain');
@@ -1257,7 +1325,6 @@ if (NATIVE) addEventListener('lindroids:back', () => {
 // browser has left full screen: the next input asks again. A refused request is asked again on the
 // next input, until one is granted.
 let wantFull = true, askingFull = false, fullRefusals = 0;
-document.addEventListener('visibilitychange', () => { if (!document.hidden) wantFull = true; });
 // A key that may ask: a plain key typed on a hardware keyboard, not one of the on-screen
 // keyboard's (its window resizes with the screen and would close), nor a shortcut (Ctrl+V needs
 // the key's activation for the clipboard).
@@ -1343,7 +1410,6 @@ async function clipboardOnReturn() {
   }
 }
 window.addEventListener('focus', clipboardOnReturn);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) clipboardOnReturn(); });
 
 // 📋: paste on a phone, which has no Ctrl+V. The tap lets the browser read the clipboard.
 $('paste').onclick = async () => {
@@ -1356,10 +1422,40 @@ $('paste').onclick = async () => {
 
 let audio = null;
 const streams = new Map();
+// Sound scheduled and not played out yet (each source's credit is sent when it ends).
+const queued = new Set();
+// The page put the context to sleep itself (nothing played for a while): unlike a context the
+// browser holds until the user touches the page, it is woken by the next sound.
+let audioNapping = false, audioNap = 0;
+const AUDIO_NAP_MS = 2000;
 
 function resumeAudio() {
   if (audio && audio.state === 'suspended') audio.resume();
   for (const r of mics.values()) if (r.ctx && r.ctx.state === 'suspended') r.ctx.resume();
+}
+
+// A running AudioContext keeps the audio output open and its thread rendering silence: on a
+// phone, that is battery spent on nothing. Asleep once nothing has played for a while (no stream
+// open, all paused, or none sending).
+function audioIdleLater() {
+  clearTimeout(audioNap);
+  audioNap = setTimeout(() => {
+    if (!audio || queued.size || audio.state !== 'running') return;
+    audioNapping = true;
+    audio.suspend().catch(() => { audioNapping = false; });
+  }, AUDIO_NAP_MS);
+}
+
+function audioWake() {
+  audioNapping = false;
+  audio.resume().catch(() => {});
+  // Sound is scheduled meanwhile and plays once the context runs. Should the browser not let it
+  // run again (it wants a touch first), what was scheduled is credited, as if played, so the
+  // program is not held up.
+  setTimeout(() => {
+    if (audio.state === 'running') return;
+    for (const q of [...queued]) { try { q.src.onended = null; q.src.stop(); } catch (e) { /* not started */ } q.done(); }
+  }, 1000);
 }
 
 function audioOpen(m) {
@@ -1371,10 +1467,17 @@ function audioOpen(m) {
   streams.set(m.stream, { rate: m.rate, channels: m.channels, format: m.format, next: 0 });
 }
 
+function audioClose(stream) {
+  streams.delete(stream);
+  audioIdleLater();
+}
+
 function audioData(m, payload) {
   const s = streams.get(m.stream);
   const credit = () => send({ t: 'audio_credit', stream: m.stream, bytes: m.len });
-  if (!s || !audio || audio.state !== 'running') return credit();
+  if (!s || !audio) return credit();
+  if (audioNapping) audioWake();
+  else if (audio.state !== 'running') return credit();
   const bytes = payload.slice().buffer; // aligned copy
   const samples = s.format === 'f32le' ? new Float32Array(bytes) : new Int16Array(bytes);
   const scale = s.format === 'f32le' ? 1 : 1 / 32768;
@@ -1391,7 +1494,9 @@ function audioData(m, payload) {
   const at = Math.max(s.next, audio.currentTime + 0.03);
   src.start(at);
   s.next = at + buf.duration;
-  src.onended = credit;
+  const q = { src, done: () => { if (queued.delete(q)) { credit(); if (!queued.size) audioIdleLater(); } } };
+  queued.add(q);
+  src.onended = q.done;
 }
 
 // ------------------------------------------------------------------ microphone
@@ -1599,7 +1704,6 @@ async function wakeLock(on) {
     plog('screen wake lock held');
   } catch (e) { plog(`screen wake lock: ${e}`); }
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden && wantWake) wakeLock(true); });
 
 function activeGesture() {
   return navigator.userActivation ? navigator.userActivation.isActive : false;
@@ -1681,11 +1785,14 @@ window.__lindroidsPicked = (request, result) => {
   if (!result || result.cancel) return send({ t: 'files_picked', request: id, files: [] });
   if (result.error) {
     plog(`picker: ${result.error}`);
+    toast({ title: 'Android\'s picker', body: String(result.error) }, 8000);
     return send({ t: 'files_picked', request: id, files: [] });
   }
+  // `path`: where the document is in shared storage (a folder of /storage/emulated/0), which the
+  // Linux side uses as it is when it can read it, instead of a copy.
   const files = (result.entries || []).map((e) => {
     nativeKeys.set(e.uri, e.key);
-    return { uri: e.uri, name: e.name, size: e.size || 0, mime: e.mime, rel: e.rel, writable: !!e.writable };
+    return { uri: e.uri, name: e.name, size: e.size || 0, mime: e.mime, rel: e.rel, writable: !!e.writable, ...(e.path ? { path: e.path } : {}) };
   });
   send({ t: 'files_picked', request: id, files });
 };
@@ -2166,12 +2273,9 @@ if (navigator.getBattery) {
   }).catch(() => {});
 }
 
-// Whether the page is on screen: a page the browser drops while it is out of sight (Android kills
-// a background page's process) was not closed, and its program keeps running until it is back.
-document.addEventListener('visibilitychange', () => {
-  trace(document.hidden ? 'hidden' : 'shown');
-  if (ready) send({ t: 'shown', shown: !document.hidden });
-});
+// Whether the page is on screen (`shown`, sent by the visibility handler with the input's focus): a
+// page the browser drops while it is out of sight (Android kills a background page's process) was
+// not closed, and its program keeps running until it is back.
 addEventListener('pageshow', (e) => trace(`pageshow${e.persisted ? ' (from the back/forward cache)' : ''}`));
 document.addEventListener('freeze', () => trace('frozen'));
 document.addEventListener('resume', () => trace('resumed'));
@@ -2182,7 +2286,7 @@ document.addEventListener('fullscreenchange', () => trace(document.fullscreenEle
 // (persisted) is not going away.
 addEventListener('pagehide', e => {
   trace(`pagehide${e.persisted ? ' (kept in the back/forward cache)' : ''}`);
-  if (!e.persisted && ready) send({ t: 'closing' });
+  if (!e.persisted && ready && !leaving) send({ t: 'closing' });
   // Out now, not after this handler: the page is going.
   sendLines();
 });

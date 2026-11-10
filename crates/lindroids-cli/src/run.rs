@@ -460,6 +460,50 @@ fn forward_detached_signal() -> Option<i32> {
     Some(signal)
 }
 
+/// How long a detached GUI may have no window at all before its run is over.
+const WINDOWLESS: Duration = Duration::from_secs(5);
+
+/// SIGTERM, then (3 s later) SIGKILL, to every process this supervisor still has below it (it
+/// adopts what its program detached): not the server, if this CLI started it.
+fn end_left_behind() {
+    let me = std::process::id();
+    let server = RUN_SERVER.load(std::sync::atomic::Ordering::Relaxed);
+    let left = || lindroids_server::icons::process_tree_excluding(me, server).into_iter().filter(|p| *p != me).collect::<Vec<u32>>();
+    let first = left();
+    if first.is_empty() {
+        return;
+    }
+    for p in lindroids_server::icons::roots(&first) {
+        unsafe { libc::kill(p as i32, libc::SIGTERM) };
+    }
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < Duration::from_secs(3) && !left().is_empty() {
+        reap_adopted();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    for p in left() {
+        unsafe { libc::kill(p as i32, libc::SIGKILL) };
+    }
+    reap_adopted();
+}
+
+/// Wait while other runs show windows of this run's processes (they claimed them: another
+/// instance handed its work over): what it left behind is theirs too, and ends after them.
+fn wait_for_dependents(rt: &Path, pid: u32) {
+    let mut said = false;
+    while let Ok(CliReply::RunState { dependents, .. }) = client::request(rt, &CliRequest::RunState { pid }, Duration::from_secs(2)) {
+        if dependents.is_empty() {
+            return;
+        }
+        if !said {
+            eprintln!("lindroids: run {pid} also shows runs {dependents:?}: it ends with them");
+            said = true;
+        }
+        reap_adopted();
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 /// Called only after Child::wait/try_wait has collected the original launcher.
 fn reap_adopted() {
     while unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) } > 0 {}
@@ -702,6 +746,9 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
             crate::ensure_display(&sb, &rt, false);
         }
     }
+    if window_opened {
+        crate::app::warn_out_of_date(&rt, None);
+    }
     // Another instance runs: this one may hand its work over to it and end at once.
     if siblings && early.is_none() {
         while early.is_none() && spawned.elapsed() < HANDOVER {
@@ -714,7 +761,7 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
     }
     let waited = match early {
         Some(st) => Ok(st),
-        None => child.wait(),
+        None => wait_or_end(&mut child),
     };
     let mut code = match waited {
         // Killed (its window closed, Ctrl+C): 128 + the signal, as a shell reports it.
@@ -733,11 +780,18 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
                 crate::ensure_display(&sb, &rt, false);
             }
         }
-        // A detached GUI owns the run until its last window closes or its processes end.
-        while let Ok(CliReply::RunState { alive: true, windows }) = client::request(&rt, &CliRequest::RunState { pid }, Duration::from_secs(2)) {
+        // A detached GUI owns the run until its processes end, or it has had no window for a
+        // while (a window it closes to open another, or a dialog in its place, is not its end).
+        let mut windowless: Option<std::time::Instant> = None;
+        // Its windows count those other runs claimed from it (an instance that handed its work
+        // to this one): they are not this run's to end.
+        while let Ok(CliReply::RunState { alive: true, windows, dependents }) = client::request(&rt, &CliRequest::RunState { pid }, Duration::from_secs(2)) {
             forward_detached_signal();
             reap_adopted();
-            if windows.is_empty() {
+            if !windows.is_empty() || !dependents.is_empty() {
+                windowless = None;
+            } else if windowless.get_or_insert_with(std::time::Instant::now).elapsed() >= WINDOWLESS {
+                eprintln!("lindroids: {name} has had no window for {}s: ending it", WINDOWLESS.as_secs());
                 break;
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -746,6 +800,11 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
     if let Some(signal) = forward_detached_signal() {
         code = 128 + signal;
     }
+    // Nothing of this run outlives it: a GUI it detached, a helper. Left behind, it would hold
+    // on to what the next launch needs (VS Code's single-instance socket hands that launch to
+    // it, and its window to another page). Not while other runs show windows of it.
+    wait_for_dependents(&rt, pid);
+    end_left_behind();
     reap_adopted();
     if !adopted && handover && code == 0 {
         // It handed its work to the instance that runs: the window that instance opens now is
@@ -799,6 +858,24 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
     }
 }
 
+/// Wait for the program. Once this run was told to end (Ctrl+C passed on, SIGTERM, the terminal
+/// closed) a program that ignores the signal gets a few seconds, then is ended like anything
+/// else a run leaves behind: `lindroids run` never hangs on a program that will not go.
+fn wait_or_end(child: &mut std::process::Child) -> std::io::Result<std::process::ExitStatus> {
+    const PATIENCE: Duration = Duration::from_secs(5);
+    let mut told: Option<std::time::Instant> = None;
+    loop {
+        if let Some(st) = child.try_wait()? {
+            return Ok(st);
+        }
+        if RUN_SIGNAL.load(std::sync::atomic::Ordering::Relaxed) != 0 && told.get_or_insert_with(std::time::Instant::now).elapsed() >= PATIENCE {
+            end_left_behind();
+            return child.wait();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// A successful launcher may have left a GUI behind. Wait only a bounded time for its first
 /// window; helper processes without windows must not leave a run marked running forever.
 fn wait_for_descendant_window(rt: &Path, pid: u32) -> bool {
@@ -807,7 +884,7 @@ fn wait_for_descendant_window(rt: &Path, pid: u32) -> bool {
         forward_detached_signal();
         reap_adopted();
         match client::request(rt, &CliRequest::RunState { pid }, Duration::from_secs(2)) {
-            Ok(CliReply::RunState { alive: true, windows }) if !windows.is_empty() => {
+            Ok(CliReply::RunState { alive: true, windows, .. }) if !windows.is_empty() => {
                 for w in windows {
                     eprintln!("lindroids: run {pid} attached window {} (app id {:?}) after its launcher exited", w.win, w.app_id);
                 }

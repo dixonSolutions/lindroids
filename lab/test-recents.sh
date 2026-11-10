@@ -41,6 +41,7 @@ build_dex() { # <java file> <out dex>
   jar=$(ls -d "$ANDROID_HOME"/platforms/android-*/android.jar | sort -V | tail -1)
   d8=$(ls -d "$ANDROID_HOME"/build-tools/*/d8 | sort -V | tail -1)
   tmp=$(mktemp -d)
+  # shellcheck disable=SC2046
   PATH=${JAVA_BIN:+$JAVA_BIN:}$PATH javac --release 11 -Xlint:-options -cp "$jar" -d "$tmp" "$1" &&
     PATH=${JAVA_BIN:+$JAVA_BIN:}$PATH "$d8" --min-api 26 --lib "$jar" --output "$tmp" $(find "$tmp" -name '*.class') &&
     cp "$tmp/classes.dex" "$2"
@@ -96,6 +97,7 @@ for b in $([[ ${ROUTES_ONLY:-0} == 1 ]] || echo $browsers); do
     [[ -n $task ]] && opened+=("$task")
     td="browser's icon"
     if [[ $iconfile == /* ]]; then
+      # shellcheck disable=SC2034
       for i in $(seq 1 20); do [[ $(sh_ "test -f $iconfile && echo yes") == yes ]] && break; sleep 0.5; done
       "$VM" "$NAME" adb exec-out cat "$iconfile" >"$OUT/$tag-$b-icon.png" 2>/dev/null
       if [[ $(head -c 4 "$OUT/$tag-$b-icon.png" | tail -c 3) == PNG ]]; then

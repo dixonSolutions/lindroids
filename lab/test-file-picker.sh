@@ -111,6 +111,7 @@ check_dialog() {
   local tag=$1 method=$2 how=$3 d0 s0 calls dialogs
   d0=$(dbus_lines); s0=$(server_lines)
   # Up to three tries: a menu tap is lost now and then while the page changes size.
+  # shellcheck disable=SC2034
   for try in 1 2 3; do
     focus_window
     $how
@@ -165,6 +166,7 @@ tsh 'lindroids start >/dev/null 2>&1; true'
 tsh "rm -f ~/file-picker-dbus.log; (nohup dbus-monitor --address unix:path=$RT/bus > ~/file-picker-dbus.log 2>&1 </dev/null &); sleep 1; true"
 log "lindroids run $APP"
 tsh "cd ~; (${LAB_BROWSER:+LINDROIDS_BROWSER=$LAB_BROWSER} nohup lindroids run $APP > ~/file-picker-run.log 2>&1 </dev/null &); true"
+# shellcheck disable=SC2034
 for i in $(seq 1 60); do
   running && tsh "grep -q 'mapped:' $RT/server.log" && tsh "grep -q 'app linked' $RT/server.log" && break
   sleep 1

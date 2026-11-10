@@ -476,6 +476,7 @@ fn install_own_app(sb: &sandbox::Sandbox, id: &str, name: &str, icon: &[u8]) -> 
     let (apk, package) = crate::app::build_program_app(id, name, &plain, &start, &shortcut::launch_url(sb.uid, id))?;
     let size = std::fs::metadata(&apk).map(|m| m.len()).unwrap_or(0);
     println!("Built {name}'s app ({package}, {} KB, {} ms).", size / 1024, t0.elapsed().as_millis());
+    crate::app::warn_out_of_date(&rt, Some(&package));
     match crate::app::offer(&apk, name, &start)? {
         crate::app::Offered::Adb => {
             println!("Installed through Termux's adb, with no taps: {name}'s icon is in the app list. Tap it: {name} starts");

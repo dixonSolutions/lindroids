@@ -94,6 +94,7 @@ fetch_magiskpolicy() {
 
 rc=0
 fetch_magiskpolicy || rc=1
+# shellcheck disable=SC2034
 while IFS='|' read -r name what url md5 size; do
   [[ -z $name ]] && continue
   if ((${#want[@]})) && [[ ! " ${want[*]} " == *" $name "* ]]; then continue; fi

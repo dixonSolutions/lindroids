@@ -22,7 +22,13 @@ pub mod fdpass;
 
 /// Bumped whenever a message changes shape. The app and the server refuse to talk across
 /// versions, and the CLI says which side needs updating.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
+
+/// The window app's own code (packaging/webview-app), numbered: bumped whenever it changes, so
+/// that an app built from an older template (its code is in the APK, and only `lindroids export`
+/// or `lindroids app install` builds it again) can be told apart. Its bridge says its number
+/// (`template()`; none before 1). `WindowActivity.TEMPLATE` is the same number.
+pub const APP_TEMPLATE: u32 = 2;
 
 /// The real uid of this process. Under proot's fake root (proot-distro, UserLAnd) getuid() says
 /// 0, but the app looks for the sandbox app's own uid; the kernel's view in /proc is not faked.
@@ -167,9 +173,18 @@ pub enum ToApp {
     WindowClose { win: u32 },
     /// Part of a new frame: `rects` changed (x, y, w, h); the payload is their RGBA pixels, row
     /// by row, one rect after another, LZ4-compressed (lz4_flex block format with prepended
-    /// size). A frame of a new size always covers the whole window. The app answers with
-    /// FrameDone; until then no further frame for this window is sent.
-    Tiles { win: u32, width: u32, height: u32, rects: Vec<[u32; 4]>, len: u32 },
+    /// size), or as they are when `raw` (content LZ4 hardly shrinks: decoding it would cost more
+    /// than the bytes it saves). A frame of a new size always covers the whole window. The app
+    /// answers with FrameDone; until then no further frame for this window is sent.
+    Tiles {
+        win: u32,
+        width: u32,
+        height: u32,
+        rects: Vec<[u32; 4]>,
+        len: u32,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        raw: bool,
+    },
     /// Show or hide the soft keyboard for a window (text-input focus).
     Keyboard { win: u32, show: bool },
     /// The Linux side set the clipboard.
@@ -376,6 +391,10 @@ pub enum ToServer {
         /// URL, which Firefox answers by switching to the tab instead of opening another.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         page: Option<String>,
+        /// The Android app showing the page, when it is one of Lindroids' window apps: its package
+        /// and the number of the template it was built from (`APP_TEMPLATE`; 0: older than 1).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app: Option<(String, u32)>,
     },
     /// Second message. A paired display: its id (`display`) and its signature over the relay's
     /// nonce (`proof`, `auth::display_transcript`). Pairing: a new public key (`public_key`), the
@@ -398,15 +417,38 @@ pub enum ToServer {
     },
     /// The frame sent last for this window is on screen (or dropped); send the next one.
     FrameDone { win: u32 },
-    /// The window's surface changed size, in physical pixels.
-    Resize { win: u32, width: u32, height: u32, density: f32 },
+    /// The window's surface changed size, in physical pixels, and the screen's size now (it turns
+    /// with the device), if the page knows it.
+    Resize {
+        win: u32,
+        width: u32,
+        height: u32,
+        density: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        screen: Option<(u32, u32)>,
+    },
     Touch { win: u32, action: TouchAction, id: i32, x: f32, y: f32, time_ms: u32 },
     Pointer { win: u32, action: PointerAction, x: f32, y: f32, button: u32, time_ms: u32 },
-    Scroll { win: u32, dx: f32, dy: f32, time_ms: u32 },
-    /// A key, as an Android KeyEvent keycode (the server maps it to evdev).
+    /// Scrolling. `pixels` false: wheel steps (notches), positive down and right. `pixels` true: a
+    /// touchpad's (or any smooth source's) distance, in the window's physical pixels.
+    Scroll {
+        win: u32,
+        dx: f32,
+        dy: f32,
+        time_ms: u32,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pixels: bool,
+    },
+    /// A key, as an Android KeyEvent keycode (the server maps it to evdev). A key already down
+    /// going down again is the browser's auto-repeat: the client gets a release and a press.
     Key { win: u32, code: u32, down: bool, time_ms: u32 },
-    /// Whether the page's keyboard has Caps Lock on. The page is the source of truth.
-    CapsLock { on: bool },
+    /// The page keyboard's lock state: Caps Lock (`on`) and Num Lock (`num`, when the page knows
+    /// it). The page is the source of truth.
+    CapsLock {
+        on: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        num: Option<bool>,
+    },
     /// Committed text from the soft keyboard / IME.
     Text { win: u32, text: String },
     Focus { win: u32, focused: bool },
@@ -638,6 +680,10 @@ pub enum CliReply {
         /// The origin pages are served in.
         #[serde(default)]
         origin: String,
+        /// Lindroids' window apps that showed a page since the server started: package and
+        /// template number (`APP_TEMPLATE`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        apps: Vec<(String, u32)>,
     },
     Ok { message: String },
     Folder { path: Option<String> },
@@ -645,7 +691,14 @@ pub enum CliReply {
     Error { message: String },
     /// Answer to Launch: the instance's number among its app's.
     Launched { ordinal: u32 },
-    RunState { alive: bool, windows: Vec<WindowInfo> },
+    /// Answer to RunState: whether it runs, and the windows it shows, with those of its process
+    /// that other runs claimed (`dependents`: those runs, still on).
+    RunState {
+        alive: bool,
+        windows: Vec<WindowInfo>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        dependents: Vec<u32>,
+    },
     /// Answer to Instances: the app's, most recently used first, and how many runs (processes)
     /// are running in all.
     Instances {

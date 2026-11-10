@@ -108,19 +108,69 @@ The compositor implements wl_compositor, wl_subcompositor, wl_shm, wp_viewporter
 (pointer/keyboard/touch), text-input-v3, wl_data_device (clipboard), wl_output and xdg-output.
 
 Client buffers are copied (and converted to RGBA) at commit, so clients get their buffers back at
-once: only the rectangles the client damaged, into the memory the surface already has. Each window is composited on the CPU into a canvas the size of the page's drawing area, in
-physical pixels — the root surface copied, subsurfaces and popups blended — then compared with the
-last frame sent in 64×64 tiles (when no surface moved, only the union of what they damaged is
-composed and compared); the changed tiles go to the page LZ4-compressed, written straight
-into the link's output buffer (one copy of the payload). The page draws them on the GPU: a worker
-that owns the window's canvas (`OffscreenCanvas`, `data/web/draw.js`) decodes the LZ4 and uploads
-each tile into a WebGL texture (`texSubImage2D`) that one triangle draws, so decoding and drawing
-never delay input on the page's main thread. Without a GPU (a software GL such as SwiftShader or
-llvmpipe) it uses `putImageData`; without `OffscreenCanvas` the same code runs in the page. A lost
-GPU context asks the server for a whole frame (a resize always gets one). One frame per window is
-in flight; the page acknowledges it once drawn, and only then do the clients' frame callbacks
-fire, so clients render at the speed the page takes frames. A window whose tab is not shown (or a
-page in the background) holds its acknowledgement and its clients idle.
+once: only the rectangles the client damaged, into the memory the surface already has (a cursor's
+buffer is not converted at all: the page shows its own arrow). Each window is composited on the
+CPU into a canvas the size of the page's drawing area, in physical pixels — the root surface
+copied, subsurfaces and popups blended — then compared with the last frame sent in 64×64 tiles.
+When no surface moved, only the union of what they damaged is composed and compared; when one did
+(a menu, a tooltip) the whole window is composed again but still only the tiles that differ go.
+Only a new size, or a page that lost its copy (a lost GPU context), gets a whole frame.
+
+The changed tiles travel in one of two encodings, chosen per frame (`frames.rs`, `Tiles.raw`):
+**LZ4** for content it shrinks well (flat UI: 20–250×), **RAW** for content it hardly does (dense
+text, photos), where compressing here and decoding in JavaScript cost far more than the bytes
+saved on a loopback socket. Frames under 128 KiB are always LZ4; for larger ones, 64 KiB of the
+pixels in eight slices are compressed first (about 0.07 ms) and below 4× (the whole frame then
+does about a third better) the frame goes RAW. `LINDROIDS_FRAMES=lz4|raw` forces one, to compare
+them on a device. A RAW frame's pixels are written from the window's canvas straight into the
+link's output buffer; an LZ4 frame is packed in buffers the window keeps, so a frame allocates
+nothing. Measured on a desktop (x86-64, release build, 1280×800 full frames):
+
+| content | LZ4 ratio | server: pack (before → now) | page: JS decode | RAW instead |
+|---|---|---|---|---|
+| flat UI | 249× | 0.58 → 0.50 ms | 0.13 ms | — (stays LZ4) |
+| dense text (synthetic) | 4.0× | 8.3 → 5.8 ms | 6.6 ms | 0.2 ms copy, no decode |
+
+(`cargo test --release -p lindroids-server frames::tests::bench -- --ignored --nocapture`; the
+page's decoder timed in node on the payloads it writes.) The page draws on the GPU: a worker that
+owns the window's canvas (`OffscreenCanvas`, `data/web/draw.js`) decodes an LZ4 frame, or takes a
+RAW one as it came (the WebSocket message's buffer, moved to the worker), and uploads each tile
+into a WebGL texture (`texSubImage2D`) that one triangle draws, so decoding and drawing never
+delay input on the page's main thread. The context asks for the default GPU (`powerPreference:
+'default'`), not the fast one. Without a GPU (a software GL such as SwiftShader or llvmpipe) it
+uses `putImageData`; without `OffscreenCanvas` the same code runs in the page. A lost GPU context
+asks the server for a whole frame (a resize always gets one).
+
+One frame per window is in flight; the page acknowledges it once drawn, and only then do the
+clients' frame callbacks fire, so clients render at the speed the page takes frames. A window
+whose tab is not shown (or a page in the background) holds its acknowledgement and its clients
+idle. A window no page shows at all (none linked yet, or Android killed the page in the
+background) and a pointer's cursor surface get their callbacks about once a second, not every
+16 ms: a program animating for nobody draws once a second instead of sixty times, yet one that
+waits for a callback never hangs. Their buffers are still taken at each commit, so the page that
+shows the window again gets a whole, current frame at once. Clients that speak xdg_toplevel v6
+(GTK 4, Qt 6, Chromium) are also told they are `suspended` while no page shows their window or its
+page is out of sight, and stop their animations and timers.
+
+**Wakeups.** On a phone every wakeup costs battery, so nothing in the server runs on a timer of
+its own while it is idle. The compositor's loop sleeps until the first thing due (a frame
+callback, a grace period, a handshake's deadline); its own housekeeping (is the control socket
+still there, did a run end without a word) runs every 10 s, and every second only for a few
+seconds after the CLI said something. Xwayland-satellite's exit is noticed through SIGCHLD rather
+than a 500 ms timer; running programs' notifications go when the loop notices their run ended,
+not from a thread per run looking every second; the battery is read (which starts Android's
+helper, a Java VM) at most every two minutes and only while a page is on screen. With
+`LINDROIDS_STATS=1` the log says how often each loop woke (`wakeups: …/s compositor, …/s sound`).
+Measured here with `debug-app` as the page (voluntary context switches of the server's threads):
+
+| situation | before | now |
+|---|---|---|
+| idle, a page linked, with or without an idle window | 4.0 wakeups/s | 0.1/s |
+| a program animating, its page gone (killed in the background) | 78.5 wakeups/s, the program at ~40 fps | 2.2/s, the program at 1 fps |
+
+Before, the compositor woke every second for nothing, the sound thread too, and an idle thread
+of the D-Bus library's pool (the `blocking` crate 1.7 never lets its idle threads go) twice a
+second; `Cargo.lock` keeps `blocking` at 1.6.1, whose idle threads end after half a second.
 
 **Scale.** The output scale is an integer a little below the screen density (`density × 0.75`,
 rounded): desktop apps get ~540 logical pixels across a phone instead of 360. A client that is
@@ -130,10 +180,12 @@ same transform.
 
 ## Input
 
-Input is sent the moment it happens: the lines one event makes (a move's coalesced points, a key
-with its Shift) leave in one WebSocket message when its handler ends; a mouse or pen moving uses
-Chromium's `pointerrawupdate`, which does not wait for the next animation frame; the canvas
-position is kept between events rather than read (a layout) on each. The window app asks Android
+Input is sent the moment it happens: the lines one event makes (a key with its Shift) leave in
+one WebSocket message when its handler ends; a mouse or pen moving uses Chromium's
+`pointerrawupdate`, which does not wait for the next animation frame, and sends one motion per
+event (where the pointer is now, not its coalesced points), none while the link is backed up; the
+canvas position is kept between events rather than read (a layout) on each. The server hands the
+programs what a page sent as soon as it has read it, before it composes the next frame. The window app asks Android
 for unbuffered pointer events (`requestUnbufferedDispatch`, Android 11+) and the screen's fastest
 refresh rate.
 
@@ -147,14 +199,48 @@ rewrite whole words), and text goes through text-input-v3 when the focused clien
 (any script, emoji), as key presses otherwise. Ctrl+V lets the browser's paste through first, so
 the Linux side has the clipboard before the keys arrive.
 
+Nothing stays held. The server owns letting go: when the focused window loses the focus (the page
+blurs or hides, another window is activated), when its page hides, and when its link drops (the
+page cannot say anything then), it releases every key that window holds, and the mouse buttons
+held in the window or page the pointer is in (focused or not: a click needs no keyboard focus); the
+page only forgets what it held. Only a key going down moves the focus; a key-up for a window without it
+is dropped. The browser's auto-repeat goes to the server as the key down again, never a second
+press and never a release and a press (SDL, GLFW and Godot take that for a new key-down: a jump
+repeated while Space was held). The seat is `wl_seat` 10: a client with `wl_keyboard` 10 or later
+is told not to repeat (`repeat_info` 0) and gets each page repeat as `repeated`, so Android's own
+repeat settings apply and a lost key-up cannot make it type on. An older client is told to repeat
+on its own (`repeat_info` 20/s after 500 ms, Android's default), as on a desktop, and gets nothing
+for a page repeat. A lost key-up there is caught up with: the key it repeats (the last
+non-modifier pressed, while down) is let go when the page has said nothing of it for 2 s after
+its press or 1 s after its last repeat (`KeyState::stale_key`), so it repeats for a moment, never
+for good; a key held under another (W while Space jumps) is not watched, since a client repeats
+only the last key pressed. Wheel steps go as `axis_value120` to `wl_pointer` 8 and later.
+A key-up in a composition (keyCode 229) still releases the key it names. Shift, Ctrl, Alt and
+Meta follow each key event's flags both ways (a modifier whose key-up was lost goes up, one whose
+flag is on with no key held goes down; a mouse press or wheel only lets go, and not Meta). Caps
+Lock and Num Lock come from hardware key events' `getModifierState` (locked Lock and Mod2). Mouse
+buttons follow each event's `buttons`, so chorded buttons and a cancel leave nothing held; the
+surface a button went down on keeps the pointer until the last one is up (an implicit grab). A
+wheel's notches are discrete steps; a touchpad's deltas are a continuous axis in pixels.
+
+Sizes: a ResizeObserver on the stage sends a window's size when it changed, with the screen's
+(which turns with the device, and the output with it). A frame already on its way keeps its
+acknowledgement; the page drops it if it is the old size, and the server sends the whole frame at
+the new size next, so a rotation sends each size once and never has more than one frame out.
+
 ## Sound
 
 `<runtime>/pulse/native` speaks the PulseAudio native protocol (playback; no shm). Each stream is
 sent to the page as PCM chunks paced at real time, about 100 ms ahead, with credits from the page
 bounding what is outstanding; the page schedules each chunk as a Web Audio buffer and credits it
-once played. Browsers start sound only after a tap on the page; until then chunks are credited
-and dropped. Formats other than s16/f32 are converted, more than two channels
-are folded to stereo, stream and sink volumes are applied in the server.
+once played. The sound thread looks at its clock every 20 ms while something plays (each look
+sends at least a 20 ms chunk, so the page stays 60–100 ms ahead) and sleeps without a timeout
+while nothing does. Browsers start sound only after a tap on the page; until then chunks are
+credited and dropped. The page suspends its `AudioContext` when nothing has played for 2 s (no
+stream open, all paused, or none sending), which closes Android's audio output; the next chunk
+resumes it and is scheduled meanwhile, so nothing is lost at a stream's start. Formats other than
+s16/f32 are converted, more than two channels are folded to stereo, stream and sink volumes are
+applied in the server.
 
 Recording comes the other way: the source `android-mic` (the default) asks the program's page for
 the microphone; the page takes it with `getUserMedia` (the browser asks the user once), sends
@@ -358,8 +444,12 @@ and so can several instances of one app.
   two runs.
 - **Closing.** Closing a claimed run's window asks its windows to close (`xdg_toplevel.close`); it
   never ends the process, which is another instance's. Closing the first instance's window while
-  its process also shows a claimed window does the same for its own windows. A program of its own
-  ends as before (SIGTERM, SIGKILL 5 s later). VSCodium ignores `xdg_toplevel.close` (tested on
+  its process also shows a claimed window does the same for its own windows, and the process
+  stays: the first run's `lindroids run` counts the claimed windows as its own (`RunState`'s
+  `dependents`), and the server, when a run ends while runs that claimed windows of its process
+  are on, ends what it left only when the last of them ends (`end_deferred`). Before, the first
+  run ended 5 s after its window closed, and took the process, and the second run's window with
+  its unsaved work, with it. A program of its own ends as before (SIGTERM, SIGKILL 5 s later). VSCodium ignores `xdg_toplevel.close` (tested on
   b16): closing *VSCodium 2*'s window hides it, and the run stays (its notification, its icon or
   `lindroids show` bring it back); VSCodium's own ✕ or File > Close Window closes it for good.
 - **Lost runs.** Every 2 s the server looks for runs whose process is gone without `RunEnded`

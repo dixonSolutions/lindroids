@@ -150,7 +150,13 @@ pub fn page_origin(port: u16) -> String {
 
 /// The origin this server serves pages in.
 fn served_origin() -> String {
-    format!("http://{}.localhost:{}", web::origin_label(), proto::server_tcp_port(proto::real_uid()))
+    format!("http://{}.localhost:{}", web::origin_label(), tcp_port())
+}
+
+/// The loopback port pages are served on: this uid's (`LINDROIDS_TCP_PORT` overrides it, for a
+/// test server next to a real one).
+fn tcp_port() -> u16 {
+    std::env::var("LINDROIDS_TCP_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or_else(|| proto::server_tcp_port(proto::real_uid()))
 }
 
 /// Tickets handed to the CLI for page URLs: (ticket, the run it is for, good until).
@@ -161,6 +167,11 @@ fn live_tickets() -> std::sync::MutexGuard<'static, Vec<(String, Option<u32>, In
     let mut t = TICKETS.lock().unwrap();
     t.retain(|(_, r, until)| *until > Instant::now() && r.map_or(true, icons::run_alive));
     t
+}
+
+/// Whether `t` is the ticket of run `run`, and the run still runs (a run's ticket goes with it).
+pub(crate) fn run_ticket_valid(t: &str, run: u32) -> bool {
+    !t.is_empty() && live_tickets().iter().any(|(v, r, _)| *r == Some(run) && auth::same(v, t))
 }
 
 /// The run a process belongs to, for what it shows outside its window (an Android notification):
@@ -231,6 +242,11 @@ pub enum Inbox {
     WithPayload(ToApp, Vec<u8>),
     /// From a Linux process (its pid, when known: sound, the portal): to the page showing its run.
     From(Option<u32>, ToApp, Vec<u8>),
+    /// The window app says the window of this run is gone for good (`GET /run/<pid>/closed`).
+    RunClosed(u32),
+    /// The window app, asked (`background_over`), says this run's task is still in Recents
+    /// (`GET /run/<pid>/kept`).
+    RunKept(u32),
 }
 
 pub struct Shared {
@@ -320,6 +336,11 @@ pub struct Window {
     pub in_flight: bool,
     /// Surfaces drawn in frames the app has not shown yet: their frame callbacks wait for it.
     pub waiting: Vec<ObjectId>,
+    /// Buffers the window's frames are packed in, kept from one frame to the next.
+    pub packer: frames::Packer,
+    /// Told the client it is suspended (xdg_toplevel v6): no page shows it, or its page is out
+    /// of sight. GTK 4, Qt 6 and Chromium stop their animations and timers until it is over.
+    pub suspended: bool,
     /// Popups above this window, bottom to top (their wl_surface ids).
     pub popups: Vec<ObjectId>,
     pub fullscreen: bool,
@@ -372,6 +393,78 @@ pub fn claim_target(cands: &[ClaimCandidate], app_key: &str, claimer: u32, since
         .map(|c| c.win)
 }
 
+/// How long a window app has to answer whether a run's task is still in Recents.
+const ASK_WAIT: Duration = Duration::from_secs(15);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackgroundStep {
+    /// Its window app is asked.
+    Ask,
+    /// The run ends (its window is in a browser, the app says its task is gone, or nothing
+    /// answered).
+    End,
+    /// Its task is still in Recents: the run is kept.
+    Keep,
+    /// Nothing was asked about this run (an answer late, or not asked for).
+    Nothing,
+}
+
+/// Runs whose page was dropped in the background for the limit, and whose window app was asked
+/// whether their task is still in Recents: until when it may answer.
+#[derive(Default)]
+struct BackgroundAsks {
+    asked: Vec<(u32, Instant)>,
+}
+
+impl BackgroundAsks {
+    /// The limit is over for `run`, whose window is in a window app (`window_app`) or not.
+    fn limit_reached(&mut self, run: u32, window_app: bool, now: Instant) -> BackgroundStep {
+        self.forget(run);
+        if !window_app {
+            return BackgroundStep::End;
+        }
+        self.asked.push((run, now + ASK_WAIT));
+        BackgroundStep::Ask
+    }
+
+    /// The app's answer: whether a task shows `run` with its ticket.
+    fn answered(&mut self, run: u32, task: bool) -> BackgroundStep {
+        if !self.forget(run) {
+            return BackgroundStep::Nothing;
+        }
+        if task {
+            BackgroundStep::Keep
+        } else {
+            BackgroundStep::End
+        }
+    }
+
+    /// No longer asked (its page linked again, the run ended). Whether it was.
+    fn forget(&mut self, run: u32) -> bool {
+        let before = self.asked.len();
+        self.asked.retain(|(r, _)| *r != run);
+        self.asked.len() != before
+    }
+
+    /// Runs whose app did not answer in time: they end.
+    fn due(&mut self, now: Instant) -> Vec<u32> {
+        let over: Vec<u32> = self.asked.iter().filter(|(_, until)| *until <= now).map(|(r, _)| *r).collect();
+        self.asked.retain(|(_, until)| *until > now);
+        over
+    }
+
+    fn next_due(&self) -> Option<Instant> {
+        self.asked.iter().map(|(_, until)| *until).min()
+    }
+}
+
+/// An ended run whose processes (with their start times) wait for `dependents` to end.
+struct DeferredEnd {
+    run: u32,
+    dependents: Vec<u32>,
+    procs: Vec<(u32, u64)>,
+}
+
 struct CliConn {
     stream: UnixStream,
     buf: Vec<u8>,
@@ -415,11 +508,17 @@ pub struct State {
     pub popups: HashMap<ObjectId, shell::Popup>,
     /// Surfaces not shown anywhere whose frame callbacks are due.
     pub frame_due: Vec<ObjectId>,
+    /// Surfaces no page can show (their window has no page, a pointer's cursor): their frame
+    /// callbacks go about once a second (`PARKED_EVERY`), so a program drawing for nobody hardly
+    /// draws, yet one that waits for a callback never hangs.
+    pub parked: Vec<ObjectId>,
     pub running: bool,
     /// Pages that went away, by the run they showed (None: the page showing everything else):
-    /// what was started into them ends when the grace is over (None: never), unless a page for it
-    /// links again.
-    unlinked: Vec<(Option<u32>, Instant, Option<Duration>)>,
+    /// what was started into them ends when the grace is over, unless a page for it links again;
+    /// true: dropped in the background (its window app is asked first, `background_over`).
+    unlinked: Vec<(Option<u32>, Instant, Duration, bool)>,
+    /// Window apps asked whether a run's task is still in Recents.
+    background_asks: BackgroundAsks,
     clis: Vec<CliConn>,
     next_request: u32,
     clients: u32,
@@ -427,10 +526,14 @@ pub struct State {
     sound: HashMap<u32, (Option<u32>, Option<u64>)>,
     /// The streams in `sound` that record (the page captures the microphone for them).
     mic: HashSet<u32>,
-    /// The page each of the portal's requests went to: what follows it goes there too.
-    asked: HashMap<u32, u64>,
+    /// The page each of the portal's requests went to, and when: what follows it goes there too.
+    asked: HashMap<u32, (u64, Instant)>,
+    /// Lindroids' window apps that showed a page: package and template number.
+    app_templates: Vec<(String, u32)>,
     /// Runs waiting to claim a window (`CliRequest::Claim`), until when.
     claims: Vec<(u32, Instant)>,
+    /// Ended runs whose processes still show windows other runs claimed (`run_over`).
+    deferred_ends: Vec<DeferredEnd>,
     /// Exported programs whose own page asked for their launch (`Launch`): the page, and when.
     page_launches: HashMap<String, (u64, Instant)>,
     /// Exported programs whose own app, not paired yet, asked for their launch, and when.
@@ -456,7 +559,8 @@ impl State {
             return t.clone();
         }
         let t = auth::random_token(16);
-        let life = if run.is_some() { Duration::from_secs(24 * 3600) } else { Duration::from_secs(600) };
+        // A run's goes with its run (`live_tickets`), however long it runs.
+        let life = if run.is_some() { Duration::from_secs(10 * 365 * 24 * 3600) } else { Duration::from_secs(600) };
         tickets.push((t.clone(), run, Instant::now() + life));
         t
     }
@@ -531,11 +635,14 @@ impl State {
             }
             _ => match portal_request(msg) {
                 Some(r) => {
+                    // Requests nobody waits for any more, and not asked lately (a picked file is
+                    // fetched under its pick's number after the pick was answered), are done.
+                    self.asked.retain(|r, (_, at)| portal::waiting(*r) || at.elapsed() < Duration::from_secs(600));
                     let follow_up = matches!(msg, ToApp::FetchFile { .. } | ToApp::WriteFile { offset: 1.., .. });
-                    let to = self.asked.get(&r).copied().or_else(|| if follow_up { None } else { self.page_for(pid) });
+                    let to = self.asked.get(&r).map(|(id, _)| *id).or_else(|| if follow_up { None } else { self.page_for(pid) });
                     match to {
                         Some(id) => {
-                            self.asked.insert(r, id);
+                            self.asked.insert(r, (id, Instant::now()));
                         }
                         // No page to answer it: the asker gives up now rather than at its timeout.
                         None => portal::forget(r),
@@ -704,6 +811,7 @@ impl State {
         self.send_from(Some(run), &ToApp::RunEnded { code: 0, output: Vec::new() }, &[]);
         icons::set_claim(run, icons::Claim::None);
         icons::ended(run);
+        self.run_over(run);
     }
 
     /// Runs that show windows of `run`'s process (claimed from it) and are on.
@@ -718,7 +826,7 @@ impl State {
     /// (their process is another instance's). A run whose process also shows other instances'
     /// windows: only its own windows are asked to close. Otherwise what it started ends.
     fn page_gone(&mut self, run: Option<u32>) {
-        let Some(r) = run else { return end_launches(None) };
+        let Some(r) = run else { return self.end_launches(None) };
         let own: Vec<u32> = self.windows.keys().copied().filter(|w| self.run_of(*w) == Some(r)).collect();
         let claiming = icons::claim(r) != icons::Claim::None;
         let deps = self.dependents(r);
@@ -733,7 +841,147 @@ impl State {
             self.claims.retain(|(p, _)| *p != r);
             return;
         }
-        end_launches(Some(r));
+        self.end_launches(Some(r));
+    }
+
+    /// The window is gone, so are the programs `lindroids run` and `launch` started into it
+    /// (`run`: that run; None: those without a window of their own). Their windows are asked to
+    /// close first (a program saves its state then: Electron's SIGTERM handler does not wait for
+    /// that), then the roots of their trees get SIGTERM, then whatever is left SIGKILL.
+    fn end_launches(&mut self, run: Option<u32>) {
+        let pids: Vec<u32> = match run {
+            Some(r) => icons::launched_pids().into_iter().filter(|p| *p == r).collect(),
+            None => icons::launched_pids().into_iter().filter(|p| !icons::wants_own_window(*p)).collect(),
+        };
+        if pids.is_empty() {
+            return;
+        }
+        info!("the window is gone: ending {pids:?}");
+        self.close_windows_of(&pids);
+        std::thread::spawn(move || end_processes(&pids, END_CLOSE_WAIT, END_TERM_WAIT));
+    }
+
+    /// Ask every window of these runs to close (xdg_toplevel.close).
+    fn close_windows_of(&mut self, pids: &[u32]) {
+        let wins: Vec<u32> = self.windows.keys().copied().filter(|w| self.run_of(*w).is_some_and(|r| pids.contains(&r))).collect();
+        for win in wins {
+            if let Some(w) = self.windows.get(&win) {
+                w.toplevel.close();
+            }
+        }
+    }
+
+    /// The window app says the window of `run` is gone for good (its task was removed from
+    /// Recents, or finished): as a page that said `Closing`, the run ends after the grace,
+    /// unless a page links for it again.
+    fn run_closed(&mut self, run: u32) {
+        self.background_asks.forget(run);
+        let mut linked = false;
+        for l in self.links.iter_mut().filter(|l| l.run == Some(run)) {
+            l.closing = true;
+            linked = true;
+        }
+        info!("the window app says the window of run {run} is closed{}", if linked { "" } else { ": it ends in 5s unless it links again" });
+        if !linked {
+            self.unlinked.retain(|(r, ..)| *r != Some(run));
+            self.unlinked.push((Some(run), Instant::now(), CLOSED_GRACE, false));
+        }
+    }
+
+    /// The page of `run` was dropped in the background, and has not linked again for the limit
+    /// (`background_limit`). A window app may still have its task in Recents (Android killed the
+    /// app's process for memory; tapping the card loads the page, which links again): it is
+    /// asked (`lindroids window-ask`), and the run ends only if it says the task is gone or does
+    /// not answer. A window in a browser: the run ends.
+    fn background_over(&mut self, run: u32) {
+        let app = window_browser(&self.cfg.runtime_dir, run).filter(|a| a.starts_with("org.lindroids"));
+        if self.background_asks.limit_reached(run, app.is_some(), Instant::now()) == BackgroundStep::End {
+            return self.page_gone(Some(run));
+        }
+        let app = app.unwrap_or_default();
+        info!("run {run}: its page has been gone in the background for {}s: asking {app} whether its window is still in Recents", background_limit().as_secs());
+        let spawned = lindroids_proto::self_exe().and_then(|exe| {
+            let mut c = std::process::Command::new(exe);
+            c.args(["window-ask", &run.to_string()]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            c.spawn()
+        });
+        match spawned {
+            Ok(mut child) => {
+                std::thread::spawn(move || child.wait());
+            }
+            Err(e) => warn!("run {run}: cannot ask {app}: {e}"),
+        }
+    }
+
+    /// The window app says the task of `run` is still in Recents: the run is kept, and the app
+    /// asked again after the limit.
+    fn run_kept(&mut self, run: u32) {
+        if self.background_asks.answered(run, true) != BackgroundStep::Keep {
+            return;
+        }
+        info!("run {run}: its window is still in Recents: it keeps running, for {}s more unless its page links", background_limit().as_secs());
+        self.unlinked.retain(|(r, ..)| *r != Some(run));
+        self.unlinked.push((Some(run), Instant::now(), background_limit(), true));
+    }
+
+    /// A run ended: what it left running ends too (a GUI it detached, a helper), and its window
+    /// in a Lindroids app closes even when its page cannot (frozen, or gone with its process).
+    /// What it left running also shows other runs' windows (claimed from it): it ends when the
+    /// last of those runs does (`end_deferred`), not before: their unsaved work is in it.
+    fn run_over(&mut self, run: u32) {
+        self.background_asks.forget(run);
+        let left = icons::survivors(run);
+        if !left.is_empty() {
+            let deps = self.dependents(run);
+            if deps.is_empty() {
+                info!("run {run} ended: ending what it left running {left:?}");
+                condemn(&left);
+                std::thread::spawn(move || end_processes(&left, Duration::ZERO, END_TERM_WAIT));
+            } else {
+                info!("run {run} ended: what it left running {left:?} also shows runs {deps:?}: it ends when they do");
+                let procs = left.iter().filter_map(|p| icons::start_time(*p).map(|t| (*p, t))).collect();
+                self.deferred_ends.push(DeferredEnd { run, dependents: deps, procs });
+            }
+        }
+        self.end_deferred(Some(run));
+        if let Some(app) = window_browser(&self.cfg.runtime_dir, run).filter(|a| a.starts_with("org.lindroids")) {
+            let Ok(exe) = lindroids_proto::self_exe() else { return };
+            let mut c = std::process::Command::new(exe);
+            c.args(["window-end", &run.to_string()]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            match c.spawn() {
+                Ok(mut child) => {
+                    info!("run {run} ended: closing its window in {app}");
+                    std::thread::spawn(move || child.wait());
+                }
+                Err(e) => warn!("run {run}: cannot close its window in {app}: {e}"),
+            }
+        }
+    }
+
+    /// Ended runs whose processes waited for the runs that claimed their windows: those whose
+    /// last such run is over (`ended`, or no longer on) end now, with what they started since.
+    fn end_deferred(&mut self, ended: Option<u32>) {
+        if self.deferred_ends.is_empty() {
+            return;
+        }
+        let mut due = Vec::new();
+        self.deferred_ends.retain_mut(|d| {
+            d.dependents.retain(|r| Some(*r) != ended && icons::run_alive(*r));
+            if d.dependents.is_empty() {
+                due.push((d.run, std::mem::take(&mut d.procs)));
+            }
+            !d.dependents.is_empty()
+        });
+        for (run, procs) in due {
+            let mut left: Vec<u32> = procs.iter().filter(|(p, t)| icons::start_time(*p) == Some(*t)).flat_map(|(p, _)| icons::process_tree(*p)).collect();
+            left.sort_unstable();
+            left.dedup();
+            if !left.is_empty() {
+                info!("run {run}: the last run that showed its windows is over: ending what it left running {left:?}");
+                condemn(&left);
+                std::thread::spawn(move || end_processes(&left, Duration::ZERO, END_TERM_WAIT));
+            }
+        }
     }
 
     /// `lindroids launch <id>` for an exported program's own page (installed as an app, and opened
@@ -880,7 +1128,7 @@ impl State {
         self.page_launches.retain(|_, (l, _)| *l != id);
         portal::app_changed(self.primary_link().map_or(0, |l| l.version));
         // What the page was asked will not be answered (a file picker it showed, a file to open).
-        let unanswered: Vec<u32> = self.asked.iter().filter(|(_, l)| **l == id).map(|(r, _)| *r).collect();
+        let unanswered: Vec<u32> = self.asked.iter().filter(|(_, (l, _))| *l == id).map(|(r, _)| *r).collect();
         for r in unanswered {
             self.asked.remove(&r);
             portal::forget(r);
@@ -908,14 +1156,64 @@ impl State {
     }
 
     pub fn mark_dirty(&mut self, surface: &ObjectId) {
+        let cursor = self.surfaces.get(surface).is_some_and(|s| s.role == surface::Role::Cursor);
         let shown = self.window_of(surface).and_then(|win| self.windows.get_mut(&win)).map(|w| {
             w.dirty = true;
-            w.announced && w.phys.is_some()
+            if w.announced && w.phys.is_some() {
+                Some(true)
+            } else if w.mapped && w.link.is_none() {
+                // No page to show it (none linked, or Android killed it in the background).
+                None
+            } else {
+                Some(false)
+            }
         });
-        if shown != Some(true) {
-            // Not on screen: let the client carry on drawing.
-            self.frame_due.push(surface.clone());
+        match shown {
+            // On screen: the callbacks go when the page has shown the frame.
+            Some(Some(true)) => {}
+            // Never shown: about once a second.
+            Some(None) => self.parked.push(surface.clone()),
+            _ if cursor => self.parked.push(surface.clone()),
+            // About to be shown (not mapped yet, the page has not sized it): carry on drawing.
+            _ => self.frame_due.push(surface.clone()),
         }
+    }
+
+    /// Fire the frame callbacks of these surfaces.
+    fn frames_done(&mut self, due: Vec<ObjectId>) {
+        let t = self.now_ms();
+        for id in due {
+            if let Some(s) = self.surfaces.get_mut(&id) {
+                for cb in s.frame_cbs.drain(..) {
+                    cb.done(t);
+                }
+            }
+        }
+    }
+
+    /// Tell each window's client whether it is suspended (xdg_toplevel v6): while no page shows
+    /// it or its page is out of sight, it may stop drawing, animating and running timers. A
+    /// window not mapped yet is never suspended: it has its first frame to draw.
+    fn update_suspended(&mut self) {
+        use wayland_server::Resource as _;
+        let visible: Vec<u64> = self.links.iter().filter(|l| l.hidden_since.is_none()).map(|l| l.id).collect();
+        let changed: Vec<u32> = self
+            .windows
+            .iter_mut()
+            .filter(|(_, w)| w.toplevel.version() >= 6)
+            .filter_map(|(k, w)| {
+                let suspended = w.mapped && !w.link.is_some_and(|id| visible.contains(&id));
+                (suspended != w.suspended).then(|| {
+                    w.suspended = suspended;
+                    *k
+                })
+            })
+            .collect();
+        for win in changed {
+            log::debug!("window {win} suspended: {}", self.windows.get(&win).is_some_and(|w| w.suspended));
+            self.configure_window(win, true);
+        }
+        android::page_shown(!visible.is_empty());
     }
 
     pub fn new_window_id(&mut self) -> u32 {
@@ -958,6 +1256,9 @@ impl State {
             w.run = run;
             w.link = Some(to);
         }
+        // Its surfaces' callbacks now go when the page has shown it.
+        let parked = std::mem::take(&mut self.parked);
+        self.parked = parked.into_iter().filter(|s| self.window_of(s) != Some(win)).collect();
         self.send_win(win, &msg);
     }
 
@@ -1016,7 +1317,14 @@ impl State {
     /// Handshake on a new link. Returns the link back while it is still pending.
     fn handshake(&mut self, mut link: Link, msg: ToServer) -> Option<Link> {
         match (&link.phase, msg) {
-            (Phase::Hello, ToServer::Hello { version, build, density, nonce: app_nonce, screen, page }) => {
+            (Phase::Hello, ToServer::Hello { version, build, density, nonce: app_nonce, screen, page, app }) => {
+                if let Some((package, template)) = app.filter(|(p, _)| p.starts_with("org.lindroids") && p.len() < 128) {
+                    if template < proto::APP_TEMPLATE && !self.app_templates.iter().any(|(p, t)| *p == package && *t == template) {
+                        warn!("{package} was built from window app template {template}, older than this Lindroids' {}", proto::APP_TEMPLATE);
+                    }
+                    self.app_templates.retain(|(p, _)| *p != package);
+                    self.app_templates.push((package, template));
+                }
                 link.page = page.filter(|p| p.starts_with('/') && p.len() < 256);
                 link.run = link.page.as_deref().and_then(run_of_page);
                 link.app = if link.run.is_none() { link.page.as_deref().and_then(app_of_page) } else { None };
@@ -1149,6 +1457,9 @@ impl State {
                 self.primary = Some(id);
                 let before = self.unlinked.len();
                 self.unlinked.retain(|(r, ..)| *r != run);
+                if let Some(r) = run {
+                    self.background_asks.forget(r);
+                }
                 if self.unlinked.len() != before {
                     info!("a page linked again: what was started keeps running");
                 }
@@ -1210,16 +1521,21 @@ impl State {
                     audio::record_data(stream, payload);
                 }
             }
-            ToServer::Resize { win, width, height, .. } => {
+            ToServer::Resize { win, width, height, screen, .. } => {
                 if let Some(w) = self.windows.get_mut(&win) {
                     w.phys = Some((width, height));
                     w.dirty = true;
                     // The page sizes a window when it shows it or its canvas came back empty (a
-                    // lost GPU context): the next frame is a whole one, not only what changed.
+                    // lost GPU context): the next frame is a whole one, not only what changed. A
+                    // frame on its way still gets its acknowledgement (the page drops it if it is
+                    // the old size): the whole frame follows it, so a burst of sizes (a rotation)
+                    // never has more than one frame out.
                     w.shown_size = (0, 0);
-                    w.in_flight = false;
                 }
-                output::screen_size_hint(self, width, height);
+                match screen {
+                    Some(s) => output::set_screen(self, s, Some((width, height))),
+                    None => output::screen_size_hint(self, width, height),
+                }
                 self.configure_window(win, false);
             }
             ToServer::FrameDone { win } => {
@@ -1246,9 +1562,9 @@ impl State {
                 }
             }
             ToServer::Shown { shown } => {
-                // The page of the focused window hid: its key-ups may never come.
-                if !shown && seat::focus_on_link(self.seat.focus_win, |w| self.windows.get(&w).and_then(|w| w.link), from) {
-                    seat::release_keys(self);
+                // The page hid: its key-ups and button releases may never come.
+                if !shown {
+                    seat::release_page(self, from);
                 }
                 if let Some(l) = self.links.iter_mut().find(|l| l.id == from) {
                     l.hidden_since = if shown { None } else { l.hidden_since.or(Some(Instant::now())) };
@@ -1276,9 +1592,9 @@ impl State {
             }
             ToServer::Touch { win, action, id, x, y, time_ms } => seat::touch(self, win, action, id, x, y, time_ms),
             ToServer::Pointer { win, action, x, y, button, time_ms } => seat::pointer(self, win, action, x, y, button, time_ms),
-            ToServer::Scroll { win, dx, dy, time_ms } => seat::scroll(self, win, dx, dy, time_ms),
+            ToServer::Scroll { win, dx, dy, time_ms, pixels } => seat::scroll(self, win, dx, dy, pixels, time_ms),
             ToServer::Key { win, code, down, time_ms } => seat::key(self, win, code, down, time_ms),
-            ToServer::CapsLock { on } => seat::caps_lock(self, on),
+            ToServer::CapsLock { on, num } => seat::locks(self, on, num),
             ToServer::Text { win, text } => seat::text(self, win, &text),
             ToServer::Clipboard { text } => data::android_clipboard(self, text),
             ToServer::FolderPicked { request, path } => self.reply_cli(&Waiting::Folder(request), CliReply::Folder { path }),
@@ -1317,6 +1633,7 @@ impl State {
                     })
                     .collect(),
                 clients: self.clients,
+                apps: self.app_templates.clone(),
             }),
             CliRequest::Ticket { run } => Some(CliReply::Ticket { ticket: self.ticket(run), origin: self.origin() }),
             CliRequest::Displays => Some(CliReply::Displays { displays: load_displays() }),
@@ -1330,6 +1647,9 @@ impl State {
                 Some(CliReply::Ok { message: "stopping".into() })
             }
             CliRequest::Launch { pid, name, icon_png_b64, symbolic_png_b64, window, app_key, again, supervisor } => {
+                // Nothing of a run that ended may survive into this one (VS Code's single-instance
+                // socket would hand this launch to it).
+                kill_condemned();
                 let ordinal = icons::register(pid, icons::NewLaunch { name, icon: icon_png_b64, window, app_key: app_key.clone(), again, supervisor });
                 if !app_key.is_empty() {
                     info!("run {pid} is instance {ordinal} of {app_key}");
@@ -1350,9 +1670,11 @@ impl State {
                 Some(CliReply::Instances { instances, runs })
             }
             CliRequest::RunState { pid } => {
-                let windows = self.windows.iter().filter(|(win, w)| w.mapped && self.run_of(**win) == Some(pid))
+                // Its process's windows that other runs claimed count too: it still serves them.
+                let windows = self.windows.iter()
+                    .filter(|(win, w)| w.mapped && (self.run_of(**win) == Some(pid) || (w.claimed.is_some() && self.natural_run(**win) == Some(pid))))
                     .map(|(win, w)| proto::WindowInfo { win: *win, title: w.title.clone(), app_id: w.app_id.clone(), width: w.phys.map_or(0, |p| p.0), height: w.phys.map_or(0, |p| p.1) }).collect();
-                Some(CliReply::RunState { alive: icons::run_alive(pid), windows })
+                Some(CliReply::RunState { alive: icons::run_alive(pid), windows, dependents: self.dependents(pid) })
             }
             CliRequest::Claim { pid } => {
                 if icons::app_key(pid).is_empty() {
@@ -1374,6 +1696,7 @@ impl State {
                 if icons::wants_own_window(pid) {
                     self.send_from(Some(pid), &ToApp::RunEnded { code, output }, &[]);
                 }
+                self.run_over(pid);
                 Some(CliReply::Ok { message: "noted".into() })
             }
             CliRequest::Info => Some(CliReply::Info { system: portal::system() }),
@@ -1574,7 +1897,7 @@ pub fn run(cfg: Config) -> i32 {
             }
         }
     };
-    let port = proto::server_tcp_port(uid);
+    let port = tcp_port();
     let tcp_listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
         Ok(l) => {
             l.set_nonblocking(true).ok();
@@ -1625,7 +1948,9 @@ pub fn run(cfg: Config) -> i32 {
         extras: extras::ExtrasState::default(),
         popups: HashMap::new(),
         frame_due: Vec::new(),
+        parked: Vec::new(),
         unlinked: Vec::new(),
+        background_asks: BackgroundAsks::default(),
         running: true,
         clis: Vec::new(),
         next_request: 0,
@@ -1633,7 +1958,9 @@ pub fn run(cfg: Config) -> i32 {
         sound: HashMap::new(),
         mic: HashSet::new(),
         asked: HashMap::new(),
+        app_templates: Vec::new(),
         claims: Vec::new(),
+        deferred_ends: Vec::new(),
     };
     surface::register_globals(&dh);
     shell::register_globals(&dh);
@@ -1666,8 +1993,11 @@ pub fn run(cfg: Config) -> i32 {
     let _ = std::io::stdout().flush();
 
     let mut last_frame_flush = Instant::now();
+    let mut last_parked_flush = Instant::now();
     let mut last_socket_check = Instant::now();
-    let mut last_reap = Instant::now();
+    let mut next_reap = Instant::now() + REAP_IDLE;
+    // Runs come and go around what the CLI says: look for ended ones often until then.
+    let mut reap_fast_until = Instant::now();
     while state.running {
         let mut fds: Vec<libc::pollfd> = Vec::with_capacity(8 + state.clis.len() + state.pending.len());
         let pfd = |fd: RawFd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
@@ -1701,37 +2031,60 @@ pub fn run(cfg: Config) -> i32 {
         for fd in x11.as_ref().map(|x| x.poll_fds()).unwrap_or_default() {
             fds.push(pfd(fd));
         }
-        let over = |since: &Instant, grace: &Option<Duration>| grace.is_some_and(|g| since.elapsed() >= g);
-        let due: Vec<Option<u32>> = state.unlinked.iter().filter(|(_, since, grace)| over(since, grace)).map(|(r, ..)| *r).collect();
+        let over = |since: &Instant, grace: &Duration| since.elapsed() >= *grace;
+        let due: Vec<(Option<u32>, bool)> = state.unlinked.iter().filter(|(_, since, grace, _)| over(since, grace)).map(|(r, _, _, bg)| (*r, *bg)).collect();
         if !due.is_empty() {
-            state.unlinked.retain(|(_, since, grace)| !over(since, grace));
-            for run in due {
-                state.page_gone(run);
+            state.unlinked.retain(|(_, since, grace, _)| !over(since, grace));
+            for (run, background) in due {
+                match run {
+                    Some(r) if background => state.background_over(r),
+                    _ => state.page_gone(run),
+                }
             }
+        }
+        for run in state.background_asks.due(Instant::now()) {
+            info!("run {run}: its window app did not answer: its window is taken for gone");
+            state.page_gone(Some(run));
         }
         if !state.claims.is_empty() {
             state.expire_claims();
         }
-        if last_reap.elapsed() >= Duration::from_secs(2) {
-            last_reap = Instant::now();
+        if Instant::now() >= next_reap {
             let reaped = icons::reap();
+            if !reaped.lost.is_empty() || !reaped.forgotten.is_empty() {
+                reap_fast_until = Instant::now() + REAP_FAST_FOR;
+            }
+            next_reap = Instant::now() + if Instant::now() < reap_fast_until { REAP_FAST } else { REAP_IDLE };
             for pid in reaped.lost {
                 warn!("run {pid} is gone, and nothing said how it ended (its `lindroids run` was killed?)");
                 state.send_from(Some(pid), &ToApp::RunEnded { code: -1, output: vec!["Lindroids lost track of this program: it ended, but not through `lindroids run`.".into()] }, &[]);
+                state.run_over(pid);
             }
+            android::reap_running();
+            state.end_deferred(None);
         }
         seat::keyboard_due(&mut state);
-        let mut timeout = if state.frame_due.is_empty() { 1000 } else { 16 };
-        if let Some(at) = state.seat.kb_check {
-            timeout = timeout.min(at.saturating_duration_since(Instant::now()).as_millis() as i32 + 1);
+        // Sleep until the next thing that is due: nothing wakes the server on a timer of its own
+        // while it is idle but its own housekeeping (`SOCKET_CHECK`, `REAP_IDLE`).
+        let mut due = vec![last_socket_check + SOCKET_CHECK, next_reap];
+        if !state.frame_due.is_empty() {
+            due.push(last_frame_flush + FRAME_EVERY);
         }
+        if !state.parked.is_empty() {
+            due.push(last_parked_flush + PARKED_EVERY);
+        }
+        due.extend(state.seat.kb_check);
+        due.extend(state.seat.key_deadline());
         if let Some(t) = x11.as_ref().and_then(|x| x.wants_timeout()) {
-            timeout = timeout.min(t.as_millis() as i32);
+            due.push(Instant::now() + t);
         }
-        if let Some(until) = state.claims.iter().map(|(_, u)| *u).min() {
-            timeout = timeout.min(until.saturating_duration_since(Instant::now()).as_millis() as i32 + 1);
-        }
+        due.extend(state.claims.iter().map(|(_, u)| *u));
+        due.extend(state.unlinked.iter().map(|(_, since, grace, _)| *since + *grace));
+        due.extend(state.background_asks.next_due());
+        due.extend(state.pending.iter().map(|p| p.since + PENDING_FOR));
+        let timeout = poll_timeout(Instant::now(), due);
         unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
+        render::timing::wakeup(render::timing::Loop::Main);
 
         if STOP.load(std::sync::atomic::Ordering::SeqCst) {
             info!("stopping on a signal");
@@ -1739,7 +2092,7 @@ pub fn run(cfg: Config) -> i32 {
         }
         // Termux empties its tmp dir when it starts again: a server whose control socket went
         // with it can no longer be reached or stopped, and would hold the port for good.
-        if last_socket_check.elapsed() >= Duration::from_secs(2) {
+        if last_socket_check.elapsed() >= SOCKET_CHECK {
             last_socket_check = Instant::now();
             if !cli_path.exists() {
                 warn!("{} is gone (the runtime dir was emptied): stopping", cli_path.display());
@@ -1769,6 +2122,8 @@ pub fn run(cfg: Config) -> i32 {
                     Inbox::ToApp(m) => state.send_app(&m),
                     Inbox::WithPayload(m, p) => state.send_app_with(&m, &p),
                     Inbox::From(pid, m, p) => state.send_from(pid, &m, &p),
+                    Inbox::RunClosed(run) => state.run_closed(run),
+                    Inbox::RunKept(run) => state.run_kept(run),
                 }
             }
         }
@@ -1802,7 +2157,7 @@ pub fn run(cfg: Config) -> i32 {
             i -= 1;
             let ready = fds.get(pending_base + i).map_or(false, |p| p.revents != 0);
             if !ready {
-                if state.pending[i].since.elapsed() > Duration::from_secs(15) {
+                if state.pending[i].since.elapsed() > PENDING_FOR {
                     state.pending.remove(i);
                 }
                 continue;
@@ -1876,12 +2231,14 @@ pub fn run(cfg: Config) -> i32 {
                     continue;
                 }
                 let away = l.hidden_since.is_some_and(|t| t.elapsed() >= Duration::from_secs(3));
-                let grace = if l.closing || (!away && l.close_frame == Some(Some(1001))) {
-                    Some(Duration::from_secs(5))
-                } else if away {
-                    None
+                let closed = l.closing || (!away && l.close_frame == Some(Some(1001)));
+                let dropped = !closed && away;
+                let grace = if closed {
+                    CLOSED_GRACE
+                } else if dropped {
+                    background_limit()
                 } else {
-                    Some(linger())
+                    linger()
                 };
                 let run = l.run;
                 let how = match l.close_frame {
@@ -1892,16 +2249,25 @@ pub fn run(cfg: Config) -> i32 {
                 let said = if l.closing { ", said it was closing" } else { "" };
                 let hidden = l.hidden_since.map_or(String::new(), |t| format!(", out of sight {}s", t.elapsed().as_secs()));
                 let what = run.map_or("the rest".into(), |r| format!("run {r}"));
-                match grace {
-                    Some(g) => info!("page for {what} closed ({how}{said}{hidden}); what was started into it ends in {}s unless it links again", g.as_secs()),
-                    None => info!("page for {what} lost in the background ({how}{hidden}); what was started into it runs until a page links for it again"),
+                if dropped {
+                    info!("page for {what} lost in the background ({how}{hidden}); what was started into it runs until a page links for it again, for {}s (then its window app, if any, is asked whether its card is still in Recents)", grace.as_secs());
+                } else {
+                    info!("page for {what} closed ({how}{said}{hidden}); what was started into it ends in {}s unless it links again", grace.as_secs());
                 }
                 state.drop_link(id);
                 if !state.links.iter().any(|l| l.run == run && l.app.is_none()) {
-                    state.unlinked.push((run, Instant::now(), grace));
+                    state.unlinked.retain(|(r, ..)| *r != run);
+                    state.unlinked.push((run, Instant::now(), grace, dropped));
                 }
             }
         }
+        if fds[3].revents != 0 || fds.get(cli_base..).is_some_and(|c| c.iter().any(|p| p.revents != 0)) {
+            // A run started, ended or was asked about: look for runs that ended soon.
+            reap_fast_until = Instant::now() + REAP_FAST_FOR;
+            next_reap = next_reap.min(Instant::now() + REAP_FAST);
+        }
+        // Input reaches the programs now, not after a frame is composed and packed below.
+        let _ = display.flush_clients();
         let mut i = state.clis.len();
         while i > 0 {
             i -= 1;
@@ -1933,25 +2299,30 @@ pub fn run(cfg: Config) -> i32 {
         if let Err(e) = display.dispatch_clients(&mut state) {
             warn!("dispatch: {e}");
         }
+        state.update_suspended();
         render_dirty(&mut state);
-        if !state.frame_due.is_empty() && last_frame_flush.elapsed() >= Duration::from_millis(16) {
+        if !state.frame_due.is_empty() && last_frame_flush.elapsed() >= FRAME_EVERY {
             last_frame_flush = Instant::now();
             let due = std::mem::take(&mut state.frame_due);
-            let t = state.now_ms();
-            for id in due {
-                if let Some(s) = state.surfaces.get_mut(&id) {
-                    for cb in s.frame_cbs.drain(..) {
-                        cb.done(t);
-                    }
-                }
-            }
+            state.frames_done(due);
+        }
+        if !state.parked.is_empty() && last_parked_flush.elapsed() >= PARKED_EVERY {
+            last_parked_flush = Instant::now();
+            let due = std::mem::take(&mut state.parked);
+            state.frames_done(due);
         }
         let _ = display.flush_clients();
     }
     // The programs `run` and `launch` started end with the server: without it they have no
     // display, and a program under proot outlives it (seen on a Galaxy Tab: an orphaned VSCodium,
     // not responding, that kept the next launch's window out of VSCodium's app).
-    end_all_launches();
+    let pids = icons::launched_pids();
+    if !pids.is_empty() {
+        info!("stopping: ending {pids:?}");
+        state.close_windows_of(&pids);
+        let _ = display.flush_clients();
+        end_processes(&pids, Duration::from_secs(2), Duration::from_secs(3));
+    }
     let _ = std::fs::remove_file(&wl_path);
     let _ = std::fs::remove_file(&cli_path);
     let _ = std::fs::remove_file(cfg.runtime_dir.join("server.pid"));
@@ -1962,6 +2333,29 @@ pub fn run(cfg: Config) -> i32 {
         std::thread::sleep(Duration::from_secs(n.min(5) as u64));
     }
     0
+}
+
+/// Frame callbacks of surfaces not on screen but about to be: at most this often.
+const FRAME_EVERY: Duration = Duration::from_millis(16);
+/// Frame callbacks of surfaces no page shows (`State::parked`): this often.
+const PARKED_EVERY: Duration = Duration::from_secs(1);
+/// How often the runtime dir is checked for the control socket.
+const SOCKET_CHECK: Duration = Duration::from_secs(10);
+/// How often runs are looked for that ended without a word (their process is gone): while all
+/// is quiet, and for a while after the CLI said something or a run ended.
+const REAP_IDLE: Duration = Duration::from_secs(10);
+const REAP_FAST: Duration = Duration::from_secs(1);
+const REAP_FAST_FOR: Duration = Duration::from_secs(6);
+/// A link that has not finished its handshake in this long is dropped.
+const PENDING_FOR: Duration = Duration::from_secs(15);
+
+/// The poll timeout (ms) that wakes the loop for the earliest of `due`: none, never (-1).
+fn poll_timeout(now: Instant, due: impl IntoIterator<Item = Instant>) -> i32 {
+    match due.into_iter().min() {
+        // Rounded up: waking a little early would only find nothing due and sleep again.
+        Some(at) => at.saturating_duration_since(now).as_micros().div_ceil(1000).min(i32::MAX as u128) as i32,
+        None => -1,
+    }
 }
 
 /// What a run's page going for good does to the run.
@@ -2052,48 +2446,78 @@ fn linger() -> Duration {
     Duration::from_secs(std::env::var("LINDROIDS_LINGER").ok().and_then(|v| v.parse().ok()).unwrap_or(60))
 }
 
-/// The window is gone, so are the programs `lindroids run` and `launch` started into it (`run`:
-/// that run; None: those without a window of their own): SIGTERM, and SIGKILL for whatever is
-/// still there 5 s later.
-fn end_launches(run: Option<u32>) {
-    let pids: Vec<u32> = match run {
-        Some(r) => icons::launched_pids().into_iter().filter(|p| *p == r).collect(),
-        None => icons::launched_pids().into_iter().filter(|p| !icons::wants_own_window(*p)).collect(),
-    };
-    if pids.is_empty() {
-        return;
-    }
-    info!("the window is gone: ending {pids:?}");
-    // The whole tree under each, children first: a program under proot is proot's tracee, and
-    // outlives proot otherwise.
-    let tree: Vec<u32> = pids.iter().flat_map(|p| icons::process_tree(*p)).collect();
-    for &p in &tree {
-        unsafe { libc::kill(p as i32, libc::SIGTERM) };
-    }
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(5));
-        for p in pids.iter().flat_map(|p| icons::process_tree(*p)) {
-            unsafe { libc::kill(p as i32, libc::SIGKILL) };
-        }
-    });
+/// How long the programs of a window closed by the user outlive it (a reload links again sooner).
+const CLOSED_GRACE: Duration = Duration::from_secs(5);
+/// Windows asked to close first get this long to do it, before SIGTERM.
+const END_CLOSE_WAIT: Duration = Duration::from_secs(3);
+/// And SIGTERM this long, before SIGKILL.
+const END_TERM_WAIT: Duration = Duration::from_secs(5);
+
+/// How long programs outlive a page dropped in the background without a word
+/// (`LINDROIDS_BACKGROUND`, seconds; 10 minutes). Android kills a page's process for memory
+/// while it is out of sight, and loads it again when the user comes back to the window, which
+/// links again: the program is kept for that. But a window swiped from Recents after Android
+/// stopped its app's watcher (`CloseWatch`) says nothing either, and its program must not run on
+/// for good with no window anywhere (seen on a Galaxy Tab: VSCodium's whole tree, no task). A
+/// window app is asked then whether the card is still there (`background_over`): if so, the run
+/// is kept for this long again.
+fn background_limit() -> Duration {
+    Duration::from_secs(std::env::var("LINDROIDS_BACKGROUND").ok().and_then(|v| v.parse().ok()).unwrap_or(600))
 }
 
-/// Every launched program's process tree: SIGTERM, then SIGKILL for what is left after 3 s.
-fn end_all_launches() {
-    let pids = icons::launched_pids();
-    if pids.is_empty() {
-        return;
+/// Processes of runs that ended, still to go (pid, start time).
+static CONDEMNED: Mutex<Vec<(u32, u64)>> = Mutex::new(Vec::new());
+
+fn condemn(pids: &[u32]) {
+    let mut c = CONDEMNED.lock().unwrap();
+    c.retain(|(p, t)| icons::start_time(*p) == Some(*t));
+    c.extend(pids.iter().filter_map(|p| icons::start_time(*p).map(|t| (*p, t))));
+}
+
+/// SIGKILL what is left of runs that ended.
+fn kill_condemned() {
+    let c = std::mem::take(&mut *CONDEMNED.lock().unwrap());
+    for (p, t) in c {
+        if icons::start_time(p) == Some(t) {
+            warn!("process {p} of a run that ended still runs: killing it");
+            unsafe { libc::kill(p as i32, libc::SIGKILL) };
+        }
     }
-    info!("stopping: ending {pids:?}");
-    for p in pids.iter().flat_map(|p| icons::process_tree(*p)) {
+}
+
+/// End the process trees of `pids` (launches, or plain processes): wait `close_wait` for them
+/// to end by themselves (their windows were asked to close), then SIGTERM the roots of each tree
+/// (a program's main process ends its children itself: Electron saves its state then; a program
+/// under proot is proot's tracee, and proot passes it on), then SIGKILL every process left,
+/// `term_wait` later. Blocks until done.
+fn end_processes(pids: &[u32], close_wait: Duration, term_wait: Duration) {
+    let tree = |pids: &[u32]| -> Vec<u32> {
+        let mut t: Vec<u32> = pids.iter().flat_map(|p| icons::process_tree(*p)).collect();
+        t.sort_unstable();
+        t.dedup();
+        t
+    };
+    let wait = |d: Duration| {
+        let t0 = Instant::now();
+        while t0.elapsed() < d && !tree(pids).is_empty() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let mut seen: Vec<(u32, u64)> = Vec::new();
+    let mut note = |t: &[u32]| seen.extend(t.iter().filter_map(|p| icons::start_time(*p).map(|s| (*p, s))));
+    note(&tree(pids));
+    wait(close_wait);
+    let t = tree(pids);
+    note(&t);
+    for p in icons::roots(&t) {
         unsafe { libc::kill(p as i32, libc::SIGTERM) };
     }
-    let t0 = Instant::now();
-    while t0.elapsed() < Duration::from_secs(3) && pids.iter().any(|p| Path::new(&format!("/proc/{p}")).exists()) {
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    for p in pids.iter().flat_map(|p| icons::process_tree(*p)) {
-        unsafe { libc::kill(p as i32, libc::SIGKILL) };
+    wait(term_wait);
+    note(&tree(pids));
+    for (p, s) in seen {
+        if icons::start_time(p) == Some(s) {
+            unsafe { libc::kill(p as i32, libc::SIGKILL) };
+        }
     }
 }
 
@@ -2135,12 +2559,16 @@ fn render_dirty(state: &mut State) {
         let n = (pw * ph) as usize;
         let layout: Vec<(ObjectId, i32, i32, u32, u32)> =
             layers.rects.iter().zip(&layers.placed).map(|(r, p)| (r.0.clone(), p.x, p.y, p.w, p.h)).collect();
-        let whole = w.shown_size != (pw, ph) || w.shown.len() != n || w.canvas.len() != n || layout != w.layout;
+        // The page has no copy to change (a new size, a canvas that came back empty): all of it
+        // goes. Something moved (a menu, a tooltip): all of it is composed again, and what
+        // differs from what the page shows goes.
+        let whole = w.shown_size != (pw, ph) || w.shown.len() != n || w.canvas.len() != n;
+        let moved = whole || layout != w.layout;
         w.layout = layout;
         // Only what the surfaces damaged, when nothing moved: the union of their rectangles,
         // mapped to the window (and a margin for the 2x2 averaging of a scaled-down client).
-        let mut clip = if whole { Some([0, 0, pw, ph]) } else { None };
-        if !whole {
+        let mut clip = if moved { Some([0, 0, pw, ph]) } else { None };
+        if !moved {
             for (i, p) in layers.placed.iter().enumerate() {
                 let Some(s) = state.surfaces.get(&layers.rects[i].0) else { continue };
                 let Some(damaged) = &s.damaged else {
@@ -2191,8 +2619,6 @@ fn render_dirty(state: &mut State) {
             state.frame_due.extend(layers.surfaces);
             continue;
         }
-        let payload = render::timing::time(render::timing::Step::Pack, || frames::pack(&w.canvas, pw, &rects));
-        render::timing::frame(payload.len());
         // What the page will show: the changed rectangles, copied.
         for r in &rects {
             for y in r[1]..r[1] + r[3] {
@@ -2204,16 +2630,76 @@ fn render_dirty(state: &mut State) {
         w.shown_size = (pw, ph);
         w.in_flight = true;
         w.waiting.extend(layers.surfaces);
-        log::debug!("frame win {win}: {} rects, {} bytes", rects.len(), payload.len());
-        let msg = ToApp::Tiles { win, width: pw, height: ph, rects, len: payload.len() as u32 };
-        state.send_win_with(win, &msg, &payload);
+        let Some(link) = w.link else { continue };
+        let Some(l) = state.links.iter_mut().find(|l| l.id == link) else { continue };
+        // Content LZ4 hardly shrinks (dense text, photos) goes as it is, written straight into
+        // the link's buffer; the rest LZ4-compressed, in buffers the window keeps.
+        let raw = match frames::mode() {
+            frames::Mode::Auto => render::timing::time(render::timing::Step::Pack, || w.packer.raw(&w.canvas, pw, &rects)),
+            m => m == frames::Mode::Raw,
+        };
+        let len = if raw {
+            let len = frames::raw_len(&rects);
+            let msg = ToApp::Tiles { win, width: pw, height: ph, rects: rects.clone(), len: len as u32, raw };
+            render::timing::time(render::timing::Step::Pack, || l.send_filled(&msg, len, |out| frames::gather(&w.canvas, pw, &rects, out)));
+            len
+        } else {
+            let payload = render::timing::time(render::timing::Step::Pack, || w.packer.lz4(&w.canvas, pw, &rects));
+            let msg = ToApp::Tiles { win, width: pw, height: ph, rects: rects.clone(), len: payload.len() as u32, raw };
+            l.send_with(&msg, payload);
+            payload.len()
+        };
+        render::timing::frame(len, raw);
+        log::debug!("frame win {win}: {} rects, {len} bytes{}", rects.len(), if raw { " raw" } else { "" });
+        if l.broken {
+            warn!("app link write failed");
+            state.drop_link(link);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{claim_target, pick_page, run_of_page, via_of_page, when_page_gone, ClaimCandidate, PageGone};
+    use super::{claim_target, pick_page, run_of_page, via_of_page, when_page_gone, BackgroundAsks, BackgroundStep, ClaimCandidate, PageGone, ASK_WAIT};
+
+    #[test]
+    fn the_loop_sleeps_until_the_first_thing_due() {
+        use super::poll_timeout;
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        assert_eq!(poll_timeout(now, []), -1, "nothing due: asleep until something happens");
+        let due = [now + Duration::from_secs(10), now + Duration::from_micros(15_200), now + Duration::from_secs(1)];
+        assert_eq!(poll_timeout(now, due), 16, "rounded up, not woken early to find nothing due");
+        assert_eq!(poll_timeout(now, [now - Duration::from_secs(1)]), 0, "overdue: at once");
+    }
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_run_dropped_in_the_background_ends_only_when_its_window_app_says_its_task_is_gone() {
+        let t0 = Instant::now();
+        let mut a = BackgroundAsks::default();
+        // A window in a browser: the limit ends it, as before.
+        assert_eq!(a.limit_reached(1, false, t0), BackgroundStep::End);
+        assert_eq!(a.next_due(), None);
+        // A window app's task still in Recents: kept (and asked again after the next limit).
+        assert_eq!(a.limit_reached(2, true, t0), BackgroundStep::Ask);
+        assert_eq!(a.next_due(), Some(t0 + ASK_WAIT));
+        assert_eq!(a.answered(2, true), BackgroundStep::Keep);
+        assert_eq!(a.next_due(), None);
+        assert_eq!(a.answered(2, true), BackgroundStep::Nothing, "an answer no one asked for keeps nothing");
+        // Its task is gone: it ends.
+        assert_eq!(a.limit_reached(3, true, t0), BackgroundStep::Ask);
+        assert_eq!(a.answered(3, false), BackgroundStep::End);
+        // The app cannot be reached (not installed, disabled): it ends when the wait is over.
+        assert_eq!(a.limit_reached(4, true, t0), BackgroundStep::Ask);
+        assert!(a.due(t0 + ASK_WAIT - Duration::from_millis(1)).is_empty());
+        assert_eq!(a.due(t0 + ASK_WAIT), vec![4]);
+        assert_eq!(a.answered(4, true), BackgroundStep::Nothing, "too late");
+        // Its page linked again (or the run ended) while asked: no end for it.
+        assert_eq!(a.limit_reached(5, true, t0), BackgroundStep::Ask);
+        assert!(a.forget(5));
+        assert!(a.due(t0 + ASK_WAIT).is_empty());
+    }
 
     #[test]
     fn closing_a_claimed_window_never_ends_the_process_it_belongs_to() {
