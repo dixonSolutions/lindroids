@@ -204,10 +204,17 @@ blurs or hides, another window is activated), when its page hides, and when its 
 page cannot say anything then), it releases every key that window holds, and the mouse buttons
 held in the window or page the pointer is in (focused or not: a click needs no keyboard focus); the
 page only forgets what it held. Only a key going down moves the focus; a key-up for a window without it
-is dropped. Repeats have one source, the page's keyboard: clients are told not to repeat
-(`repeat_info` 0), and the browser's auto-repeat reaches them as the key released and pressed
-again, never a second press. Only the browser knows when a key is really up, so a lost or late
-key-up can never make a program type on by itself, and Android's own repeat settings apply.
+is dropped. The browser's auto-repeat goes to the server as the key down again, never a second
+press and never a release and a press (SDL, GLFW and Godot take that for a new key-down: a jump
+repeated while Space was held). The seat is `wl_seat` 10: a client with `wl_keyboard` 10 or later
+is told not to repeat (`repeat_info` 0) and gets each page repeat as `repeated`, so Android's own
+repeat settings apply and a lost key-up cannot make it type on. An older client is told to repeat
+on its own (`repeat_info` 20/s after 500 ms, Android's default), as on a desktop, and gets nothing
+for a page repeat. A lost key-up there is caught up with: the key it repeats (the last
+non-modifier pressed, while down) is let go when the page has said nothing of it for 2 s after
+its press or 1 s after its last repeat (`KeyState::stale_key`), so it repeats for a moment, never
+for good; a key held under another (W while Space jumps) is not watched, since a client repeats
+only the last key pressed. Wheel steps go as `axis_value120` to `wl_pointer` 8 and later.
 A key-up in a composition (keyCode 229) still releases the key it names. Shift, Ctrl, Alt and
 Meta follow each key event's flags both ways (a modifier whose key-up was lost goes up, one whose
 flag is on with no key held goes down; a mouse press or wheel only lets go, and not Meta). Caps

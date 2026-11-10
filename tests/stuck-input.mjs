@@ -171,8 +171,12 @@ async function reconnect(page) {
 // held on the Linux side, the focus, the locks, the last size. The server lets go of everything
 // when the focused window loses the focus, its page hides or its link drops (a new socket) (the
 // buttons with the window the pointer is in, focused or not), and only a key going down takes the
-// focus. A page that presses a key or button already down is a
-// mistake (`errors`): a repeat must come as a release and a press.
+// focus. A key going down while down is a repeat (the server sends it as `repeated`, or nothing to
+// programs that repeat on their own), never for a modifier; a page that presses a button already
+// down, or repeats a modifier, makes a mistake (`errors`).
+// Android key codes of the modifiers and locks: Alt, Shift, Ctrl, Meta (left and right), Caps
+// Lock, Num Lock.
+const ANDROID_MODIFIERS = new Set([57, 58, 59, 60, 113, 114, 117, 118, 115, 143]);
 class SeatModel {
   constructor() {
     this.socket = -1; this.focus = null; this.keys = new Set(); this.buttons = new Set();
@@ -200,7 +204,7 @@ class SeatModel {
           this.keys.clear();
           this.focus = m.win;
         }
-        if (m.down && this.keys.has(m.code)) this.errors.push(`key ${m.code} down while down`);
+        if (m.down && this.keys.has(m.code) && ANDROID_MODIFIERS.has(m.code)) this.errors.push(`modifier ${m.code} repeated`);
         if (m.down) this.keys.add(m.code); else this.keys.delete(m.code);
         break;
       case 'pointer':
@@ -499,8 +503,8 @@ async function caseMeta(browser, server) {
   await context.close();
 }
 
-// Key repeat: the browser's auto-repeat goes as the key released and pressed again, never a
-// second press; modifiers do not repeat.
+// Key repeat: the browser's auto-repeat goes as the key down again, never a release and a press
+// (a game takes that for a new key-down); modifiers do not repeat.
 async function caseRepeat(browser, server) {
   const { context, page } = await openPage(browser, server);
   const from = await mark(page);
@@ -515,7 +519,7 @@ async function caseRepeat(browser, server) {
   const msgs = await since(page, from);
   const got = keyEvents(msgs);
   const model = await modelOf(page);
-  record('12 auto-repeat: up and down again, no second press; Shift does not repeat', got === '29↓ 29↑ 29↓ 29↑ 29↓ 29↑ 59↓ 59↑' && !model.errors.length,
+  record('12 auto-repeat: down again, no release in between; Shift does not repeat', got === '29↓ 29↓ 29↓ 29↑ 59↓ 59↑' && !model.errors.length,
     `sent ${got}${model.errors.length ? `; ${model.errors}` : ''}`, msgs);
   await context.close();
 }
@@ -690,7 +694,7 @@ const BUTTONS = { left: 1, right: 2, middle: 4 };
 // closing and coming back. Then everything is let go, the page is shown and focused, a key is
 // typed, and the page and the server's side are checked:
 // - nothing held: the page's own keys and buttons, and the server's (from the messages);
-// - no press for a key or button already down (a repeat is a release and a press);
+// - no press for a button already down, no repeat of a modifier (a key down again is a repeat);
 // - the last size sent is the stage's, with the screen the viewport's;
 // - the last lock state sent is the keyboard's.
 async function storm(browser, server, seed, iterations) {

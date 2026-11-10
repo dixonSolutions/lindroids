@@ -61,7 +61,32 @@ pub struct KeyState {
     pressed: BTreeSet<u32>,
     buttons: BTreeSet<u32>,
     locked: u32,
+    /// The key a client that repeats on its own repeats (the last non-modifier key pressed, while
+    /// it is down), and until when the page's repeats say it is still held (`stale_key`).
+    watch: Option<(u32, std::time::Instant)>,
 }
+
+/// What a client is told of a key message from the page (`KeyState::key`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyStep {
+    Nothing,
+    Press,
+    /// The page's auto-repeat: `repeated` to a wl_keyboard of version 10 or later (told not to
+    /// repeat), nothing to older ones (they repeat on their own).
+    Repeat,
+    Release,
+}
+
+/// The repeat older clients are told to do on their own (wl_keyboard.repeat_info), Android's
+/// default: 20 per second, after 500 ms.
+pub const CLIENT_REPEAT_RATE: i32 = 20;
+pub const CLIENT_REPEAT_DELAY: i32 = 500;
+/// How long a key that a client repeats on its own stays down with no word from the page: from
+/// its press until the page's first repeat (Android's repeat delay, 500 ms by default, can be set
+/// longer), then between two repeats. Past that its key-up was lost, and it is let go, so that
+/// it cannot repeat for good.
+pub const FIRST_REPEAT_WAIT: std::time::Duration = std::time::Duration::from_millis(2000);
+pub const NEXT_REPEAT_WAIT: std::time::Duration = std::time::Duration::from_millis(1000);
 
 impl KeyState {
     /// The modifiers held down: from the keys pressed, so releasing one Shift keeps the other.
@@ -73,24 +98,60 @@ impl KeyState {
         self.locked
     }
 
-    /// A key message from the page: what the client is sent for it, in order (true: pressed).
+    /// A key message from the page: what the client is told of it.
     /// - A key going down again while down (the browser's auto-repeat, or a key-up that never
-    ///   came): released and pressed again. A client never gets a press for a key it has down,
-    ///   and repeats come from one place, the page's keyboard (clients are told not to repeat).
+    ///   came): a repeat, never a second press, nor a release and a press (a game takes that for
+    ///   the key pressed again: a jump repeats while Space is held). Modifiers do not repeat.
     /// - A key-up for a key not down (the focus moved mid-hold, or it was let go already): nothing.
-    pub fn key(&mut self, code: u32, down: bool) -> &'static [bool] {
+    pub fn key(&mut self, code: u32, down: bool) -> KeyStep {
+        self.key_at(code, down, std::time::Instant::now())
+    }
+
+    pub fn key_at(&mut self, code: u32, down: bool, now: std::time::Instant) -> KeyStep {
         match (down, self.pressed.contains(&code)) {
             (true, false) => {
                 self.pressed.insert(code);
-                &[true]
+                if !Self::is_modifier_key(code) {
+                    self.watch = Some((code, now + FIRST_REPEAT_WAIT));
+                }
+                KeyStep::Press
             }
-            (true, true) => &[false, true],
+            (true, true) if Self::is_modifier_key(code) => KeyStep::Nothing,
+            (true, true) => {
+                if let Some((c, until)) = &mut self.watch {
+                    if *c == code {
+                        *until = now + NEXT_REPEAT_WAIT;
+                    }
+                }
+                KeyStep::Repeat
+            }
             (false, true) => {
                 self.pressed.remove(&code);
-                &[false]
+                if self.watch.is_some_and(|(c, _)| c == code) {
+                    self.watch = None;
+                }
+                KeyStep::Release
             }
-            (false, false) => &[],
+            (false, false) => KeyStep::Nothing,
         }
+    }
+
+    /// When the key a client may repeat on its own is due to be let go, if no word comes.
+    pub fn watch_deadline(&self) -> Option<std::time::Instant> {
+        self.watch.map(|(_, until)| until)
+    }
+
+    /// The key a client may repeat on its own, once the page has said nothing of it for too long
+    /// (`FIRST_REPEAT_WAIT`, `NEXT_REPEAT_WAIT`): its key-up was lost. With `release`, it is let go
+    /// and returned (the client is told); without (the client does not repeat), only no longer
+    /// watched.
+    pub fn stale_key(&mut self, now: std::time::Instant, release: bool) -> Option<u32> {
+        let (code, until) = self.watch?;
+        if now < until {
+            return None;
+        }
+        self.watch = None;
+        (release && self.pressed.remove(&code)).then_some(code)
     }
 
     /// A pointer button went down or up: whether the client is told (a press of a button that is
@@ -127,6 +188,7 @@ impl KeyState {
 
     /// Lets go of every key: the codes that were down, in order. The locks stay.
     pub fn release_keys(&mut self) -> Vec<u32> {
+        self.watch = None;
         std::mem::take(&mut self.pressed).into_iter().collect()
     }
 
@@ -174,8 +236,10 @@ fn tapped(state: &mut State) {
     }
 }
 
-/// Called from the server's loop: a tap nothing answered hides the keyboard.
+/// Called from the server's loop: a tap nothing answered hides the keyboard; a key whose key-up
+/// was lost stops repeating.
 pub fn keyboard_due(state: &mut State) {
+    key_due(state);
     let Some(at) = state.seat.kb_check else { return };
     if std::time::Instant::now() < at {
         return;
@@ -188,8 +252,32 @@ pub fn keyboard_due(state: &mut State) {
     }
 }
 
+/// The key a client repeats on its own, held with no word from the page for too long: let go.
+fn key_due(state: &mut State) {
+    let now = std::time::Instant::now();
+    if state.seat.keys.watch_deadline().is_none_or(|at| now < at) {
+        return;
+    }
+    let surface = state.seat.kb_focus.clone();
+    let repeats = surface.as_ref().is_some_and(|s| state.seat.keyboards.iter().any(|k| same_client(k, s) && k.version() < 10));
+    let Some(code) = state.seat.keys.stale_key(now, repeats) else { return };
+    let Some(surface) = surface else { return };
+    let (serial, time) = (state.next_serial(), state.now_ms());
+    for k in state.seat.keyboards.iter().filter(|k| same_client(*k, &surface)) {
+        k.key(serial, time, code, wl_keyboard::KeyState::Released);
+    }
+}
+
+impl Seat {
+    /// When `keyboard_due` has something to do about the keys.
+    pub(crate) fn key_deadline(&self) -> Option<std::time::Instant> {
+        self.keys.watch_deadline()
+    }
+}
+
 pub fn register_globals(dh: &DisplayHandle) {
-    dh.create_global::<State, wl_seat::WlSeat, ()>(7, ());
+    // Version 10: wl_keyboard's `repeated` key state.
+    dh.create_global::<State, wl_seat::WlSeat, ()>(10, ());
     dh.create_global::<State, zwp_text_input_manager_v3::ZwpTextInputManagerV3, ()>(1, ());
 }
 
@@ -255,13 +343,15 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
                 if let Some((fd, size)) = keymap_fd() {
                     k.keymap(wl_keyboard::KeymapFormat::XkbV1, fd.as_fd(), size);
                 }
-                // No repeating in the client: the page's keyboard repeats (the browser's auto-repeat
-                // comes as the key released and pressed again, see `KeyState::key`). One source,
-                // the one that knows when the key is really up: a key-up lost or held back on a
-                // busy link can never make a client repeat on its own, and Android's own repeat
-                // settings (delay, rate, off) apply.
-                if k.version() >= 4 {
+                // Version 10 and later: no repeating in the client, the page's keyboard repeats
+                // (`repeated`): the one source that knows when the key is really up, with
+                // Android's own repeat settings. Older clients repeat on their own, as on a
+                // desktop: a repeat sent as a release and a press is a new key-down to a game
+                // (SDL, GLFW, Godot). A key-up lost there is caught up with (`key_due`).
+                if k.version() >= 10 {
                     k.repeat_info(0, 0);
+                } else if k.version() >= 4 {
+                    k.repeat_info(CLIENT_REPEAT_RATE, CLIENT_REPEAT_DELAY);
                 }
                 // A keyboard bound by the focused client must learn about the focus.
                 if let Some(s) = state.seat.kb_focus.clone() {
@@ -671,7 +761,9 @@ pub fn scroll(state: &mut State, win: u32, dx: f32, dy: f32, pixels: bool, time:
                 continue;
             }
             let steps = v.round() as i32;
-            if !pixels && steps != 0 && p.version() >= 5 {
+            if !pixels && steps != 0 && p.version() >= 8 {
+                p.axis_value120(axis, steps * 120);
+            } else if !pixels && steps != 0 && p.version() >= 5 {
                 p.axis_discrete(axis, steps);
             }
             p.axis(time, axis, v as f64 * k);
@@ -784,21 +876,24 @@ pub fn touch(state: &mut State, win: u32, action: TouchAction, id: i32, x: f32, 
 
 fn send_key(state: &mut State, code: u32, down: bool, time: u32) {
     let Some(surface) = state.seat.kb_focus.clone() else { return };
-    let steps = state.seat.keys.key(code, down);
-    if steps.is_empty() {
+    let step = state.seat.keys.key(code, down);
+    if step == KeyStep::Nothing {
         return;
     }
     // The locks come from the page (`locks`); a lock key alone does not toggle them. The modifiers
     // are still sent so a client's own toggle on the key is put back to the page's state.
     let mods_changed = KeyState::is_modifier_key(code);
-    for &pressed in steps {
-        let serial = state.next_serial();
-        let st = if pressed { wl_keyboard::KeyState::Pressed } else { wl_keyboard::KeyState::Released };
-        for k in state.seat.keyboards.iter().filter(|k| same_client(*k, &surface)) {
-            k.key(serial, time, code, st);
-        }
+    let serial = state.next_serial();
+    for k in state.seat.keyboards.iter().filter(|k| same_client(*k, &surface)) {
+        let st = match step {
+            KeyStep::Press => wl_keyboard::KeyState::Pressed,
+            KeyStep::Release => wl_keyboard::KeyState::Released,
+            KeyStep::Repeat if k.version() >= 10 => wl_keyboard::KeyState::Repeated,
+            _ => continue,
+        };
+        k.key(serial, time, code, st);
     }
-    if mods_changed {
+    if mods_changed && step != KeyStep::Repeat {
         let serial = state.next_serial();
         let (depressed, locked) = (state.seat.keys.depressed(), state.seat.keys.locked());
         for k in state.seat.keyboards.iter().filter(|k| same_client(*k, &surface)) {
@@ -887,15 +982,59 @@ mod tests {
     const KEY_A: u32 = 30;
 
     #[test]
-    fn a_key_down_again_is_released_and_pressed_never_pressed_twice() {
+    fn a_key_down_again_is_a_repeat_never_a_second_press() {
         let mut k = KeyState::default();
-        assert_eq!(k.key(KEY_A, false), &[] as &[bool]);
-        assert_eq!(k.key(KEY_A, true), &[true]);
+        assert_eq!(k.key(KEY_A, false), KeyStep::Nothing);
+        assert_eq!(k.key(KEY_A, true), KeyStep::Press);
         // The browser's auto-repeat (or a lost key-up, then the key again).
-        assert_eq!(k.key(KEY_A, true), &[false, true]);
-        assert_eq!(k.key(KEY_A, false), &[false]);
-        assert_eq!(k.key(KEY_A, false), &[] as &[bool]);
+        assert_eq!(k.key(KEY_A, true), KeyStep::Repeat);
+        assert_eq!(k.key(KEY_A, false), KeyStep::Release);
+        assert_eq!(k.key(KEY_A, false), KeyStep::Nothing);
+        // Modifiers do not repeat.
+        assert_eq!(k.key(keys::KEY_LEFTSHIFT, true), KeyStep::Press);
+        assert_eq!(k.key(keys::KEY_LEFTSHIFT, true), KeyStep::Nothing);
+        assert_eq!(k.key(keys::KEY_LEFTSHIFT, false), KeyStep::Release);
         assert_eq!(k.depressed(), 0);
+    }
+
+    #[test]
+    fn a_key_whose_key_up_was_lost_is_let_go_when_the_page_stops_repeating_it() {
+        let t0 = std::time::Instant::now();
+        let ms = |n: u64| t0 + std::time::Duration::from_millis(n);
+        let mut k = KeyState::default();
+        // A tap whose key-up was lost: let go once the page's first repeat is overdue.
+        k.key_at(KEY_A, true, t0);
+        assert_eq!(k.stale_key(ms(1999), true), None);
+        assert_eq!(k.watch_deadline(), Some(t0 + FIRST_REPEAT_WAIT));
+        assert_eq!(k.stale_key(ms(2000), true), Some(KEY_A));
+        assert_eq!(k.key(KEY_A, false), KeyStep::Nothing);
+        assert_eq!(k.watch_deadline(), None);
+        // Held, the page repeating it: kept; its repeats stop with the key-up lost: let go.
+        k.key_at(KEY_A, true, t0);
+        for n in 0..40 {
+            assert_eq!(k.key_at(KEY_A, true, ms(500 + n * 50)), KeyStep::Repeat);
+            assert_eq!(k.stale_key(ms(500 + n * 50 + 999), true), None);
+        }
+        assert_eq!(k.stale_key(ms(500 + 39 * 50 + 1000), true), Some(KEY_A));
+        // W held, Space tapped (a jump): the client repeats nothing then, and W stays down
+        // although the page no longer repeats it.
+        k.key_at(KEY_A, true, t0);
+        k.key_at(57, true, ms(100));
+        k.key_at(57, false, ms(200));
+        assert_eq!(k.watch_deadline(), None);
+        assert_eq!(k.stale_key(ms(60_000), true), None);
+        assert_eq!(k.key(KEY_A, false), KeyStep::Release);
+        // A client that does not repeat on its own: the key stays down, only unwatched.
+        k.key_at(KEY_A, true, t0);
+        assert_eq!(k.stale_key(ms(5000), false), None);
+        assert_eq!(k.watch_deadline(), None);
+        assert_eq!(k.key(KEY_A, false), KeyStep::Release);
+        // A modifier is never watched (clients do not repeat it); a release lets go of all.
+        k.key_at(keys::KEY_LEFTCTRL, true, t0);
+        assert_eq!(k.watch_deadline(), None);
+        k.key_at(KEY_A, true, t0);
+        k.release_keys();
+        assert_eq!(k.watch_deadline(), None);
     }
 
     #[test]
@@ -1023,6 +1162,11 @@ mod tests {
         depressed: u32,
         locked: u32,
         focused: bool,
+        /// Its wl_keyboard is version 10 or later: told `repeated`, never repeats on its own.
+        v10: bool,
+        /// An older client: the key it repeats on its own (the last non-modifier key pressed,
+        /// while down), and when the page last said that key was down.
+        repeating: Option<(u32, std::time::Instant)>,
     }
 
     /// The seat's routing, as seat.rs does it (`key`, `window_focus`, `set_keyboard_focus`,
@@ -1037,21 +1181,29 @@ mod tests {
         link_of: BTreeMap<u32, u64>,
         last_locks: (bool, Option<bool>),
         log: Vec<String>,
+        clock: std::time::Instant,
     }
 
     impl Model {
         fn new() -> Model {
             let link_of: BTreeMap<u32, u64> = [(1, 10), (2, 10), (3, 20)].into();
-            let clients = link_of.keys().map(|w| (*w, Client::default())).collect();
-            Model { keys: KeyState::default(), focus_win: None, kb_focus: None, ptr_focus: None, clients, link_of, last_locks: (false, None), log: Vec::new() }
+            // Window 1's program binds wl_keyboard 10; the others an older one.
+            let clients = link_of.keys().map(|w| (*w, Client { v10: *w == 1, ..Client::default() })).collect();
+            Model { keys: KeyState::default(), focus_win: None, kb_focus: None, ptr_focus: None, clients, link_of, last_locks: (false, None), log: Vec::new(), clock: std::time::Instant::now() }
         }
         fn fail(&self, what: String) -> ! {
             let tail: Vec<&String> = self.log.iter().rev().take(30).collect();
             panic!("{what}\nlast messages (newest first): {tail:#?}");
         }
         fn tell_key(&mut self, win: u32, code: u32, pressed: bool) {
+            let now = self.clock;
             let c = self.clients.get_mut(&win).unwrap();
             let fresh = if pressed { c.keys.insert(code) } else { c.keys.remove(&code) };
+            if !c.v10 && pressed && !KeyState::is_modifier_key(code) {
+                c.repeating = Some((code, now));
+            } else if !pressed && c.repeating.is_some_and(|(r, _)| r == code) {
+                c.repeating = None;
+            }
             if !fresh {
                 let what = format!("win {win}: key {code} {} while it {} down", if pressed { "pressed" } else { "released" }, if pressed { "was" } else { "was not" });
                 self.fail(what);
@@ -1123,8 +1275,23 @@ mod tests {
                 Some(false) => {}
             }
             let Some(target) = self.kb_focus else { return };
-            for &pressed in self.keys.key(code, down) {
-                self.tell_key(target, code, pressed);
+            match self.keys.key_at(code, down, self.clock) {
+                KeyStep::Nothing => return,
+                KeyStep::Press => self.tell_key(target, code, true),
+                KeyStep::Release => self.tell_key(target, code, false),
+                KeyStep::Repeat => {
+                    let now = self.clock;
+                    let c = self.clients.get_mut(&target).unwrap();
+                    if c.v10 && !c.keys.contains(&code) {
+                        self.fail(format!("win {target}: key {code} repeated while it was not down"));
+                    }
+                    if let Some((r, at)) = &mut c.repeating {
+                        if *r == code {
+                            *at = now;
+                        }
+                    }
+                    return;
+                }
             }
             if KeyState::is_modifier_key(code) {
                 self.tell_mods(target);
@@ -1190,6 +1357,29 @@ mod tests {
                 }
             }
         }
+        /// The server's loop (`key_due`): a key an older client repeats, with no word from the
+        /// page for too long, is let go there.
+        fn due(&mut self) {
+            if self.keys.watch_deadline().is_none_or(|at| self.clock < at) {
+                return;
+            }
+            let repeats = self.kb_focus.is_some_and(|w| !self.clients[&w].v10);
+            if let Some(code) = self.keys.stale_key(self.clock, repeats) {
+                let Some(win) = self.kb_focus else { return };
+                self.tell_key(win, code, false);
+            }
+        }
+        /// No client repeats on its own a key the page has said nothing of for longer than its
+        /// first repeat may take: a lost key-up repeats for a moment, never for good.
+        fn check_repeats(&self) {
+            for (win, c) in &self.clients {
+                if let Some((code, at)) = c.repeating {
+                    if self.clock.duration_since(at) > FIRST_REPEAT_WAIT {
+                        self.fail(format!("win {win} repeats key {code}, last said down {:?} ago", self.clock.duration_since(at)));
+                    }
+                }
+            }
+        }
         fn check_mods(&self) {
             if let Some(win) = self.kb_focus {
                 let c = &self.clients[&win];
@@ -1202,9 +1392,11 @@ mod tests {
     }
 
     /// Seeded random input as the pages send it (keys with repeats and lost key-ups, modifier
-    /// chords, buttons, focus moves, hidden pages, dropped links, lock changes): every client is
-    /// told a press only for what it does not have down, and nothing is held once the focus, the
-    /// page or the link that held it is gone. LINDROIDS_SEAT_SEED and LINDROIDS_SEAT_STEPS pick
+    /// chords, buttons, focus moves, hidden pages, dropped links, lock changes, time passing):
+    /// every client is told a press only for what it does not have down and a repeat only for
+    /// what it has down (a client of wl_keyboard 10; older ones repeat on their own), nothing is
+    /// held once the focus, the page or the link that held it is gone, and no client repeats a
+    /// key for good that the page stopped saying is held. LINDROIDS_SEAT_SEED and LINDROIDS_SEAT_STEPS pick
     /// another storm.
     #[test]
     fn seeded_input_storm_leaves_nothing_held() {
@@ -1267,14 +1459,22 @@ mod tests {
                             m.fail("link dropped: buttons still held".into());
                         }
                     }
+                    88..=93 => {
+                        let ms = rng.below(2500);
+                        m.log.push(format!("{ms} ms pass"));
+                        m.clock += std::time::Duration::from_millis(ms);
+                    }
                     _ => {
                         let (caps, num) = (rng.below(2) == 0, [None, Some(false), Some(true)][rng.below(3) as usize]);
                         m.log.push(format!("locks caps {caps} num {num:?}"));
                         m.locks(caps, num);
                     }
                 }
+                m.clock += std::time::Duration::from_millis(rng.below(60));
+                m.due();
                 m.check_mods();
                 m.check_locks();
+                m.check_repeats();
             }
             // The storm ends with the page hidden: nothing may stay held anywhere.
             for link in [10, 20] {

@@ -1160,11 +1160,12 @@ function onKey(e, down) {
   e.preventDefault();
   if (!down) return release(code);
   if (held.has(code)) {
-    // The browser's auto-repeat (or a key-up that never came): the key goes up and down again.
-    // The page's keyboard is the one source of repeats (clients are told not to repeat): only it
-    // knows when the key is really up. Modifiers and locks do not repeat.
+    // The browser's auto-repeat (or a key-up that never came): the key goes down again, which
+    // the server sends as a repeat (`repeated`) to programs that let it repeat for them, and
+    // takes as word that the key is still held for those that repeat on their own. Never a
+    // release and a press: a game takes that for the key pressed again. Modifiers and locks do
+    // not repeat.
     if (isModifier(code)) return;
-    key(code, false);
   }
   held.add(code);
   key(code, true);

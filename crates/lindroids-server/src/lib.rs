@@ -1954,6 +1954,7 @@ pub fn run(cfg: Config) -> i32 {
             due.push(last_parked_flush + PARKED_EVERY);
         }
         due.extend(state.seat.kb_check);
+        due.extend(state.seat.key_deadline());
         if let Some(t) = x11.as_ref().and_then(|x| x.wants_timeout()) {
             due.push(Instant::now() + t);
         }
