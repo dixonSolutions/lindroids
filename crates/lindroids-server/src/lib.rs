@@ -320,6 +320,11 @@ pub struct Window {
     pub in_flight: bool,
     /// Surfaces drawn in frames the app has not shown yet: their frame callbacks wait for it.
     pub waiting: Vec<ObjectId>,
+    /// Buffers the window's frames are packed in, kept from one frame to the next.
+    pub packer: frames::Packer,
+    /// Told the client it is suspended (xdg_toplevel v6): no page shows it, or its page is out
+    /// of sight. GTK 4, Qt 6 and Chromium stop their animations and timers until it is over.
+    pub suspended: bool,
     /// Popups above this window, bottom to top (their wl_surface ids).
     pub popups: Vec<ObjectId>,
     pub fullscreen: bool,
@@ -2135,12 +2140,16 @@ fn render_dirty(state: &mut State) {
         let n = (pw * ph) as usize;
         let layout: Vec<(ObjectId, i32, i32, u32, u32)> =
             layers.rects.iter().zip(&layers.placed).map(|(r, p)| (r.0.clone(), p.x, p.y, p.w, p.h)).collect();
-        let whole = w.shown_size != (pw, ph) || w.shown.len() != n || w.canvas.len() != n || layout != w.layout;
+        // The page has no copy to change (a new size, a canvas that came back empty): all of it
+        // goes. Something moved (a menu, a tooltip): all of it is composed again, and what
+        // differs from what the page shows goes.
+        let whole = w.shown_size != (pw, ph) || w.shown.len() != n || w.canvas.len() != n;
+        let moved = whole || layout != w.layout;
         w.layout = layout;
         // Only what the surfaces damaged, when nothing moved: the union of their rectangles,
         // mapped to the window (and a margin for the 2x2 averaging of a scaled-down client).
-        let mut clip = if whole { Some([0, 0, pw, ph]) } else { None };
-        if !whole {
+        let mut clip = if moved { Some([0, 0, pw, ph]) } else { None };
+        if !moved {
             for (i, p) in layers.placed.iter().enumerate() {
                 let Some(s) = state.surfaces.get(&layers.rects[i].0) else { continue };
                 let Some(damaged) = &s.damaged else {
@@ -2191,8 +2200,6 @@ fn render_dirty(state: &mut State) {
             state.frame_due.extend(layers.surfaces);
             continue;
         }
-        let payload = render::timing::time(render::timing::Step::Pack, || frames::pack(&w.canvas, pw, &rects));
-        render::timing::frame(payload.len());
         // What the page will show: the changed rectangles, copied.
         for r in &rects {
             for y in r[1]..r[1] + r[3] {
@@ -2204,9 +2211,31 @@ fn render_dirty(state: &mut State) {
         w.shown_size = (pw, ph);
         w.in_flight = true;
         w.waiting.extend(layers.surfaces);
-        log::debug!("frame win {win}: {} rects, {} bytes", rects.len(), payload.len());
-        let msg = ToApp::Tiles { win, width: pw, height: ph, rects, len: payload.len() as u32 };
-        state.send_win_with(win, &msg, &payload);
+        let Some(link) = w.link else { continue };
+        let Some(l) = state.links.iter_mut().find(|l| l.id == link) else { continue };
+        // Content LZ4 hardly shrinks (dense text, photos) goes as it is, written straight into
+        // the link's buffer; the rest LZ4-compressed, in buffers the window keeps.
+        let raw = match frames::mode() {
+            frames::Mode::Auto => render::timing::time(render::timing::Step::Pack, || w.packer.raw(&w.canvas, pw, &rects)),
+            m => m == frames::Mode::Raw,
+        };
+        let len = if raw {
+            let len = frames::raw_len(&rects);
+            let msg = ToApp::Tiles { win, width: pw, height: ph, rects: rects.clone(), len: len as u32, raw };
+            render::timing::time(render::timing::Step::Pack, || l.send_filled(&msg, len, |out| frames::gather(&w.canvas, pw, &rects, out)));
+            len
+        } else {
+            let payload = render::timing::time(render::timing::Step::Pack, || w.packer.lz4(&w.canvas, pw, &rects));
+            let msg = ToApp::Tiles { win, width: pw, height: ph, rects: rects.clone(), len: payload.len() as u32, raw };
+            l.send_with(&msg, payload);
+            payload.len()
+        };
+        render::timing::frame(len, raw);
+        log::debug!("frame win {win}: {} rects, {len} bytes{}", rects.len(), if raw { " raw" } else { "" });
+        if l.broken {
+            warn!("app link write failed");
+            state.drop_link(link);
+        }
     }
 }
 

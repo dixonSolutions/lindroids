@@ -11,7 +11,7 @@
 
 const BUILD = '@BUILD@';
 const PICKER_TOKEN = '@PICKER_TOKEN@';
-const PROTOCOL_VERSION = 7;
+const PROTOCOL_VERSION = 8;
 // What pages kept before keys (protocol 4): gone, it no longer proves anything.
 try { localStorage.removeItem('lindroids.secret'); } catch (e) { /* storage off */ }
 
@@ -762,13 +762,13 @@ document.addEventListener('fullscreenchange', resizeAgain);
 let STATS = null;
 function enableStats() {
   if (STATS) return;
-  STATS = { frames: 0, bytes: 0, pixels: 0, ms: 0, decode: 0, el: null };
+  STATS = { frames: 0, raw: 0, bytes: 0, pixels: 0, ms: 0, decode: 0, el: null };
   STATS.el = document.createElement('div');
   STATS.el.style.cssText = 'position:fixed;left:4px;bottom:4px;z-index:9;font:12px monospace;color:#0f0;background:#000a;padding:2px 6px;pointer-events:none';
   document.body.appendChild(STATS.el);
   setInterval(() => {
-    STATS.el.textContent = `${STATS.frames} fps  ${(STATS.bytes / 1024).toFixed(0)} KiB/s  ${(STATS.pixels / 1e6).toFixed(2)} Mpx/s  draw ${STATS.frames ? (STATS.ms / STATS.frames).toFixed(1) : 0} ms (LZ4 ${STATS.frames ? (STATS.decode / STATS.frames).toFixed(1) : 0})  ${drawMode}`;
-    STATS.frames = STATS.bytes = STATS.pixels = STATS.ms = STATS.decode = 0;
+    STATS.el.textContent = `${STATS.frames} fps  ${(STATS.bytes / 1024).toFixed(0)} KiB/s  ${(STATS.pixels / 1e6).toFixed(2)} Mpx/s  draw ${STATS.frames ? (STATS.ms / STATS.frames).toFixed(1) : 0} ms (LZ4 ${STATS.frames ? (STATS.decode / STATS.frames).toFixed(1) : 0}, ${STATS.raw} raw)  ${drawMode}`;
+    STATS.frames = STATS.raw = STATS.bytes = STATS.pixels = STATS.ms = STATS.decode = 0;
   }, 1000);
 }
 
@@ -783,7 +783,7 @@ const drawer = (() => {
     const w = windows.get(a.win);
     switch (a.t) {
       case 'drawn':
-        if (STATS) { STATS.frames++; STATS.bytes += a.bytes || 0; STATS.pixels += a.pixels || 0; STATS.ms += a.ms; STATS.decode += a.decode || 0; }
+        if (STATS) { STATS.frames++; STATS.raw += a.raw ? 1 : 0; STATS.bytes += a.bytes || 0; STATS.pixels += a.pixels || 0; STATS.ms += a.ms; STATS.decode += a.decode || 0; }
         if (!w) return send({ t: 'frame_done', win: a.win });
         w.pendingAck = true;
         return ackLater(w);
@@ -832,8 +832,8 @@ function tiles(m, payload) {
   if (!w) return send({ t: 'frame_done', win: m.win });
   w.phys = [m.width, m.height];
   // The message's own buffer goes to the drawer (moved, not copied); the page is done with it.
-  drawer.post({ t: 'tiles', win: m.win, width: m.width, height: m.height, rects: m.rects, data: payload.buffer, off: payload.byteOffset },
-    [payload.buffer]);
+  drawer.post({ t: 'tiles', win: m.win, width: m.width, height: m.height, rects: m.rects, raw: !!m.raw,
+    data: payload.buffer, off: payload.byteOffset, len: payload.byteLength }, [payload.buffer]);
 }
 
 /// Acknowledge a frame as soon as it is drawn, so the program starts the next one while this one

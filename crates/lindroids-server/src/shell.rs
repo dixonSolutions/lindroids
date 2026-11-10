@@ -123,51 +123,61 @@ pub struct Layers {
     pub rects: Vec<(ObjectId, i32, i32, i32, i32)>,
 }
 
-fn push_tree(state: &State, sid: &ObjectId, x: i32, y: i32, root: bool, out: &mut Layers) {
+/// `out` gets the surface tree under `sid` at (x, y); with `draw` false only what hit testing
+/// needs (no images, no surface list).
+fn push_tree(state: &State, sid: &ObjectId, x: i32, y: i32, root: bool, draw: bool, out: &mut Layers) {
     let Some(s) = state.surfaces.get(sid) else { return };
     let scale = state.scale as i32;
     let child_pos = |c: &ObjectId| state.surfaces.get(c).and_then(|cs| cs.sub.as_ref().map(|sub| (sub.x, sub.y)));
     for (c, below) in &s.children {
         if *below {
             if let Some((cx, cy)) = child_pos(c) {
-                push_tree(state, c, x + cx, y + cy, false, out);
+                push_tree(state, c, x + cx, y + cy, false, draw, out);
             }
         }
     }
     if let Some(img) = &s.image {
         let (lw, lh) = s.logical_size();
-        out.placed.push(Placed {
-            image: img.clone(),
-            x: x * scale,
-            y: y * scale,
-            w: (lw * scale).max(0) as u32,
-            h: (lh * scale).max(0) as u32,
-            root,
-        });
+        if draw {
+            out.placed.push(Placed {
+                image: img.clone(),
+                x: x * scale,
+                y: y * scale,
+                w: (lw * scale).max(0) as u32,
+                h: (lh * scale).max(0) as u32,
+                root,
+            });
+        }
         out.rects.push((sid.clone(), x, y, lw, lh));
     }
-    out.surfaces.push(sid.clone());
+    if draw {
+        out.surfaces.push(sid.clone());
+    }
     for (c, below) in &s.children {
         if !*below {
             if let Some((cx, cy)) = child_pos(c) {
-                push_tree(state, c, x + cx, y + cy, false, out);
+                push_tree(state, c, x + cx, y + cy, false, draw, out);
             }
         }
     }
 }
 
 pub fn layers_for_window(state: &State, win: u32) -> Layers {
+    layers(state, win, true)
+}
+
+fn layers(state: &State, win: u32, draw: bool) -> Layers {
     let mut out = Layers { placed: Vec::new(), surfaces: Vec::new(), rects: Vec::new() };
     let Some(w) = state.windows.get(&win) else { return out };
     let g = xdg_geometry(state, &w.surface);
-    push_tree(state, &w.surface, -g.x, -g.y, true, &mut out);
+    push_tree(state, &w.surface, -g.x, -g.y, true, draw, &mut out);
     for p in &w.popups {
         if !state.popups.get(p).map_or(false, |p| p.mapped) {
             continue;
         }
         let (ox, oy) = geometry_origin(state, p);
         let pg = xdg_geometry(state, p);
-        push_tree(state, p, ox - pg.x, oy - pg.y, false, &mut out);
+        push_tree(state, p, ox - pg.x, oy - pg.y, false, draw, &mut out);
     }
     out
 }
@@ -182,7 +192,8 @@ pub fn content_size(state: &State, win: u32) -> (i32, i32) {
 
 /// Topmost surface under a logical point of a window, with surface-local coordinates.
 pub fn surface_at(state: &State, win: u32, x: f64, y: f64) -> Option<(ObjectId, f64, f64)> {
-    let layers = layers_for_window(state, win);
+    // Every pointer move asks: the rectangles only, not the images and lists a frame needs.
+    let layers = layers(state, win, false);
     for (sid, sx, sy, w, h) in layers.rects.iter().rev() {
         let (lx, ly) = (x - *sx as f64, y - *sy as f64);
         if lx >= 0.0 && ly >= 0.0 && lx < *w as f64 && ly < *h as f64 {
@@ -496,6 +507,8 @@ impl Dispatch<xdg_surface::XdgSurface, ObjectId> for State {
                         layout: Vec::new(),
                         in_flight: false,
                         waiting: Vec::new(),
+                        packer: Default::default(),
+                        suspended: false,
                         popups: Vec::new(),
                         fullscreen: false,
                         fit: 1.0,
