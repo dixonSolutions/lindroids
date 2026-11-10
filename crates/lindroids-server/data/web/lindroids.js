@@ -39,7 +39,7 @@ const order = []; // most recently active last
 // address bar, history and bookmarks at once. It stays with this window's history entry
 // (history.state, which no other page can read), so the page the browser loads again after it
 // dropped this one in the background, or a reload, still attaches to its run.
-let ticket = null, ticketRestored = false;
+let ticket = null;
 function takeTicketFromUrl() {
   const m = /[#&]t=([^&]+)/.exec(location.hash);
   if (!m) return false;
@@ -49,7 +49,6 @@ function takeTicketFromUrl() {
 }
 if (!takeTicketFromUrl() && history.state && typeof history.state.t === 'string') {
   ticket = history.state.t;
-  ticketRestored = true;
 }
 
 // `lindroids run` opens the page again to bring it to the front; the browser reuses this tab and
@@ -142,6 +141,7 @@ function connect() {
       t: 'hello', version: PROTOCOL_VERSION, build: BUILD, density: dpr, nonce: myNonce,
       screen: [Math.round(screen.width * dpr), Math.round(screen.height * dpr)],
       page: location.pathname + location.search,
+      ...(NATIVE && NATIVE.packageName ? { app: [String(NATIVE.packageName()), NATIVE.template ? Number(NATIVE.template()) : 0] } : {}),
     });
   };
   ws.onmessage = (ev) => {
@@ -299,17 +299,19 @@ async function handle(m, payload) {
     case 'auth_failed':
       if (m.reason === 'this window was not opened by lindroids run') {
         replaced = true;
-        // Its ticket worked before (on this page, or the one before a reload): its run is over
-        // (the server forgets a run's ticket with it).
-        if (OWN_WINDOW && RUN && (relinking || everLinked || ticketRestored)) {
-          // A program's own app (or its WebAPK) is the program: brought back to a run that is
-          // over (it ended, or the server stopped it, while the app was out of sight), it starts
-          // the program again from its start page instead of showing the end and closing.
+        // A run's window whose ticket is refused: its run is over (the server forgets a run's
+        // ticket with it). Seen when the window comes back (Android rebuilt its task from Recents,
+        // a reload) after the program ended or the server stopped it while out of sight. Never a
+        // dead panel: a program's own app (or its WebAPK) is the program, and starts it again from
+        // its start page; any other window says the program closed, and closes.
+        if (OWN_WINDOW && RUN) {
           if (APP) {
             trace('its run is over: back to the start page');
+            leaving = true;
             return location.replace(location.pathname);
           }
           relinking = 0;
+          runOver = true;
           if (ended === null) ended = program ? program.name : (history.state && history.state.name) || 'The program';
           return showEnded();
         }
@@ -340,8 +342,12 @@ async function handle(m, payload) {
       }
       if (m.stats) enableStats();
       ready = true;
-      everLinked = true;
       if (document.hidden) send({ t: 'shown', shown: false });
+      // The window app learns which run this window shows, and its ticket: when its task is
+      // removed from Recents it tells the server (the page may be gone by then), and the server
+      // can close this window when the run ends even with the page frozen.
+      if (OWN_WINDOW && RUN && ticket && NATIVE && NATIVE.attached) NATIVE.attached(String(RUN), ticket);
+      staleApp();
       for (const l of traced.splice(0)) plog(`trace: ${l} (while unlinked)`);
       if (relinking) {
         plog(`linked again after the browser dropped the link (${lostLink})`);
@@ -356,6 +362,7 @@ async function handle(m, payload) {
       const to = new URL(m.url, location.href);
       if (!APP || to.origin !== location.origin || !to.pathname.startsWith(`/app/${APP}/`)) return;
       replaced = true;
+      leaving = true;
       return location.replace(to.href);
     }
     case 'bye':
@@ -474,9 +481,27 @@ let ended = null, endedIcon = null, endTimer = null, endedNote = '', endedOutput
 let program = null; // { name, icon } of this window's run, from the server
 // The server said the program ended; this page linked to its run before; tries at linking again
 // after a lost link (0: none under way), and how that link was lost (for the server's log).
-let runOver = false, everLinked = false, relinking = 0, lostLink = '';
+let runOver = false, relinking = 0, lostLink = '';
+// This page goes to another of its program's pages in the same window (not closed): no `closing`.
+let leaving = false;
 
 // ------------------------------------------------------------------ an exported program's app
+
+// The window app's code is in its APK, built from the template of the Lindroids that built it:
+// an app built by an older Lindroids lacks what was fixed since (closing with its program, file
+// pickers...). Said once per page, with what rebuilds it.
+const APP_TEMPLATE = Number('@APP_TEMPLATE@') || 0;
+let staleSaid = false;
+function staleApp() {
+  if (staleSaid || !NATIVE || !APP_TEMPLATE) return;
+  const have = NATIVE.template ? Number(NATIVE.template()) : 0;
+  if (have >= APP_TEMPLATE) return;
+  staleSaid = true;
+  const pkg = NATIVE.packageName ? String(NATIVE.packageName()) : 'the window app';
+  const how = APP ? `lindroids export ${APP}` : 'lindroids app install';
+  plog(`window app ${pkg} is from template ${have}, older than ${APP_TEMPLATE}: ${how}`);
+  toast({ title: 'This app is out of date', body: `It was built by an older Lindroids. In Termux, run: ${how}` }, 10000);
+}
 
 const appIcon = () => `/app/${APP}/icon.png`;
 let installPrompt = null, installed = false;
@@ -591,6 +616,7 @@ $('tools').addEventListener('click', () => showTools(true));
 
 function showEnded() {
   trace(`shows the end (${runOver ? 'the program ended' : 'the program is gone'})`);
+  if (NATIVE && NATIVE.detached) NATIVE.detached();
   const icon = endedIcon || (program && program.icon);
   const out = endedOutput.length ? `<pre class="output">${esc(endedOutput.join('\n'))}</pre>` : '';
   const how = NATIVE ? 'The window closes with the program.' : 'Close this window with the ✕ at the top.';
@@ -1681,11 +1707,14 @@ window.__lindroidsPicked = (request, result) => {
   if (!result || result.cancel) return send({ t: 'files_picked', request: id, files: [] });
   if (result.error) {
     plog(`picker: ${result.error}`);
+    toast({ title: 'Android\'s picker', body: String(result.error) }, 8000);
     return send({ t: 'files_picked', request: id, files: [] });
   }
+  // `path`: where the document is in shared storage (a folder of /storage/emulated/0), which the
+  // Linux side uses as it is when it can read it, instead of a copy.
   const files = (result.entries || []).map((e) => {
     nativeKeys.set(e.uri, e.key);
-    return { uri: e.uri, name: e.name, size: e.size || 0, mime: e.mime, rel: e.rel, writable: !!e.writable };
+    return { uri: e.uri, name: e.name, size: e.size || 0, mime: e.mime, rel: e.rel, writable: !!e.writable, ...(e.path ? { path: e.path } : {}) };
   });
   send({ t: 'files_picked', request: id, files });
 };
@@ -2182,7 +2211,7 @@ document.addEventListener('fullscreenchange', () => trace(document.fullscreenEle
 // (persisted) is not going away.
 addEventListener('pagehide', e => {
   trace(`pagehide${e.persisted ? ' (kept in the back/forward cache)' : ''}`);
-  if (!e.persisted && ready) send({ t: 'closing' });
+  if (!e.persisted && ready && !leaving) send({ t: 'closing' });
   // Out now, not after this handler: the page is going.
   sendLines();
 });
