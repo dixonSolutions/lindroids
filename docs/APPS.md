@@ -302,7 +302,7 @@ the start still goes through Termux, which must come forward to start it.
 Not checked: the tablet (not attached), Android 13+ (the receiver is registered with
 `RECEIVER_EXPORTED` there), a Chrome WebAPK.
 
-## A window and its program go together (seventh round, not yet on a device)
+## A window and its program go together (seventh round)
 
 Seen on the tablet: VSCodium's whole process tree running under Termux, with no Lindroids task in
 Recents. A window swiped away after Android had dropped its page said nothing, and the server kept
@@ -327,6 +327,34 @@ together; a test checks), which the app's bridge reports (`template()`; none bef
 A page in an app older than its server says so once ("This app is out of date", with `lindroids
 export <id>` or `lindroids app install`); `lindroids run` (when its window opens), `lindroids
 export` and `lindroids doctor` list the apps the server has seen that are older.
+
+### On the tablet (2026-11-10)
+
+Galaxy Tab SM-X306B, Android 16, Termux from Google Play, a dev build of this round
+(`0.1.178~dev`), VSCodium (Flatpak) in its own app and GNOME Calculator as a single run in the
+shared windows app; both apps rebuilt from template 1 and installed over adb.
+
+| What | Result |
+|---|---|
+| VSCodium's old app (29 Oct, template 0) with the new Lindroids | opens and works; Termux prints "was built by an older Lindroids (template 0, now 1) ... run `lindroids export com.vscodium.codium`" |
+| VSCodium's card swiped away in Recents | "the window app says the window of run ... is closed"; every VSCodium process gone 9 s later |
+| Calculator's card (shared windows app) swiped away | its process gone 7 s later |
+| VSCodium closed with its own X | its window and card gone in under 3 s |
+| Calculator closed with its own X | back in Termux 2 s later |
+| Home for 5 s, back to VSCodium | the same window, typing goes on |
+| Rotation: landscape, then portrait and landscape twice within 3 s | the window ends at 1920x1200, sharp, nothing stuck |
+| Typing in VSCodium's terminal (`input text`, a long press of X) | every character once; the long press gives two, and nothing repeats after it |
+| Drawing | WebGL 2 in a worker on the Mali-G68; page draw 0.8 ms a frame; server per frame: convert 4-5 ms, compose 2-3, diff 5-8, pack 0.1-1.9 |
+| Server wakeups (`LINDROIDS_STATS=1`), VSCodium in its window and in use | 8-14 a second |
+| Server wakeups, VSCodium hidden behind Home | 2.4 a second |
+
+Not tested there: a hardware keyboard's Caps Lock and held keys (adb's key events carry no lock
+state and no real hold), a mouse, the folder picker, and a card swiped away more than a minute
+after its app left the screen (Android has stopped `CloseWatch` by then: the 10 minute limit
+applies). A program that ignores Ctrl+C in Termux (VSCodium under proot does) used to keep
+`lindroids run` waiting; when the signal reaches `lindroids` itself the program is now ended 5 s
+later, but a Ctrl+C typed in the terminal goes to the program's own group, so close its window.
+A single run's card in the shared windows app still shows the app's own icon, not the program's.
 
 ## What Android allows, and what we assume
 
