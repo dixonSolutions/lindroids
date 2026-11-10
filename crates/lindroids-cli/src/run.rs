@@ -744,7 +744,7 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
     }
     let waited = match early {
         Some(st) => Ok(st),
-        None => child.wait(),
+        None => wait_or_end(&mut child),
     };
     let mut code = match waited {
         // Killed (its window closed, Ctrl+C): 128 + the signal, as a shell reports it.
@@ -835,6 +835,24 @@ pub fn cmd_run_launched(args: &[String], launched: Option<&str>) -> i32 {
             128 + sig
         }
         None => code,
+    }
+}
+
+/// Wait for the program. Once this run was told to end (Ctrl+C passed on, SIGTERM, the terminal
+/// closed) a program that ignores the signal gets a few seconds, then is ended like anything
+/// else a run leaves behind: `lindroids run` never hangs on a program that will not go.
+fn wait_or_end(child: &mut std::process::Child) -> std::io::Result<std::process::ExitStatus> {
+    const PATIENCE: Duration = Duration::from_secs(5);
+    let mut told: Option<std::time::Instant> = None;
+    loop {
+        if let Some(st) = child.try_wait()? {
+            return Ok(st);
+        }
+        if RUN_SIGNAL.load(std::sync::atomic::Ordering::Relaxed) != 0 && told.get_or_insert_with(std::time::Instant::now).elapsed() >= PATIENCE {
+            end_left_behind();
+            return child.wait();
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 

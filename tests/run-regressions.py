@@ -341,6 +341,14 @@ def check_suite(binary):
             sleeper.send_signal(signal.SIGTERM)
             assert sleeper.wait(timeout=5) == 143
             print('PASS termination signal forwarded to launch group')
+            stubborn = subprocess.Popen([str(binary), 'run', 'sh', '-c', "trap '' INT TERM HUP; while :; do sleep 1; done"],
+                                        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            children.append(stubborn)
+            until('stubborn program registered', lambda: request(t='instances', app_key='')['instances'])
+            stubborn.send_signal(signal.SIGTERM)
+            code = stubborn.wait(timeout=15)
+            assert code in (137, 143), f'a program that ignores SIGTERM: exit code {code}'
+            print('PASS a program that ignores the stop signal is ended a few seconds later')
             tty_pid, tty_fd = pty.fork()
             if tty_pid == 0:
                 os.execve(str(binary), [str(binary), 'run', 'sh', '-c',
