@@ -16,9 +16,11 @@ import java.nio.charset.StandardCharsets;
  * Which run each of the app's tasks shows, and its ticket: kept by the page's bridge
  * ({@code attached}) so that the app can still speak for a window whose page is gone (its task
  * swiped from Recents: {@link CloseWatch}; the run ended: {@link End}; a card left over from an
- * earlier launch). A task is known by its base intent: a run's window by its URL, a program's own
- * app's single task ({@link Launch}) as "launch". A window's URL carries its run and ticket too
- * ({@code ?window&run=<pid>#t=<ticket>}), which is what is used when nothing was kept.
+ * earlier launch). A task is known by its base intent: a run's window by the run and ticket in its
+ * URL ({@code ?window&run=<pid>#t=<ticket>}), which is also what is used when nothing was kept; a
+ * program's own app's single task ({@link Launch}) as "launch". Not by the URL without its ticket:
+ * a card left by an ended run whose pid a new run got would share the new run's entry, and,
+ * swiped away, say the new run's window closed.
  */
 final class Runs {
     private Runs() {}
@@ -33,6 +35,8 @@ final class Runs {
         String u = base.getDataString();
         if (u == null) u = base.getStringExtra(WindowActivity.EXTRA_URL);
         if (u == null) return "";
+        String[] r = ofUrl(u);
+        if (r != null) return "run " + r[0] + " " + r[1];
         int hash = u.indexOf('#');
         return hash < 0 ? u : u.substring(0, hash);
     }

@@ -301,6 +301,8 @@ public class WindowActivity extends Activity {
         Uri u = Uri.parse(originalUrl);
         attached = new String[]{run, ticket, u.getHost() + ":" + (u.getPort() > 0 ? u.getPort() : 80)};
         Runs.remember(this, taskKey, run, ticket, attached[2]);
+        // Shown again (brought back, its page linked again): its window going later is said again.
+        told.remove(run + " " + ticket);
     }
 
     /** The server is told that run {@code r}'s window is gone for good (once). Blocks. */
