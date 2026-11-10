@@ -390,7 +390,7 @@ async function handle(m, payload) {
     case 'audio_open': return audioOpen(m);
     case 'audio_data': return audioData(m, payload);
     case 'audio_cork': return;
-    case 'audio_close': return streams.delete(m.stream);
+    case 'audio_close': return audioClose(m.stream);
     case 'record_open': return recordOpen(m);
     case 'record_close': return recordClose(m.stream);
     case 'open_uri': return openUri(m);
@@ -1356,10 +1356,40 @@ $('paste').onclick = async () => {
 
 let audio = null;
 const streams = new Map();
+// Sound scheduled and not played out yet (each source's credit is sent when it ends).
+const queued = new Set();
+// The page put the context to sleep itself (nothing played for a while): unlike a context the
+// browser holds until the user touches the page, it is woken by the next sound.
+let audioNapping = false, audioNap = 0;
+const AUDIO_NAP_MS = 2000;
 
 function resumeAudio() {
   if (audio && audio.state === 'suspended') audio.resume();
   for (const r of mics.values()) if (r.ctx && r.ctx.state === 'suspended') r.ctx.resume();
+}
+
+// A running AudioContext keeps the audio output open and its thread rendering silence: on a
+// phone, that is battery spent on nothing. Asleep once nothing has played for a while (no stream
+// open, all paused, or none sending).
+function audioIdleLater() {
+  clearTimeout(audioNap);
+  audioNap = setTimeout(() => {
+    if (!audio || queued.size || audio.state !== 'running') return;
+    audioNapping = true;
+    audio.suspend().catch(() => { audioNapping = false; });
+  }, AUDIO_NAP_MS);
+}
+
+function audioWake() {
+  audioNapping = false;
+  audio.resume().catch(() => {});
+  // Sound is scheduled meanwhile and plays once the context runs. Should the browser not let it
+  // run again (it wants a touch first), what was scheduled is credited, as if played, so the
+  // program is not held up.
+  setTimeout(() => {
+    if (audio.state === 'running') return;
+    for (const q of [...queued]) { try { q.src.onended = null; q.src.stop(); } catch (e) { /* not started */ } q.done(); }
+  }, 1000);
 }
 
 function audioOpen(m) {
@@ -1371,10 +1401,17 @@ function audioOpen(m) {
   streams.set(m.stream, { rate: m.rate, channels: m.channels, format: m.format, next: 0 });
 }
 
+function audioClose(stream) {
+  streams.delete(stream);
+  audioIdleLater();
+}
+
 function audioData(m, payload) {
   const s = streams.get(m.stream);
   const credit = () => send({ t: 'audio_credit', stream: m.stream, bytes: m.len });
-  if (!s || !audio || audio.state !== 'running') return credit();
+  if (!s || !audio) return credit();
+  if (audioNapping) audioWake();
+  else if (audio.state !== 'running') return credit();
   const bytes = payload.slice().buffer; // aligned copy
   const samples = s.format === 'f32le' ? new Float32Array(bytes) : new Int16Array(bytes);
   const scale = s.format === 'f32le' ? 1 : 1 / 32768;
@@ -1391,7 +1428,9 @@ function audioData(m, payload) {
   const at = Math.max(s.next, audio.currentTime + 0.03);
   src.start(at);
   s.next = at + buf.duration;
-  src.onended = credit;
+  const q = { src, done: () => { if (queued.delete(q)) { credit(); if (!queued.size) audioIdleLater(); } } };
+  queued.add(q);
+  src.onended = q.done;
 }
 
 // ------------------------------------------------------------------ microphone
