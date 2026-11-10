@@ -1405,9 +1405,9 @@ impl State {
                 }
             }
             ToServer::Shown { shown } => {
-                // The page of the focused window hid: its key-ups and button releases may never come.
-                if !shown && seat::focus_on_link(self.seat.focus_win, |w| self.windows.get(&w).and_then(|w| w.link), from) {
-                    seat::release_input(self);
+                // The page hid: its key-ups and button releases may never come.
+                if !shown {
+                    seat::release_page(self, from);
                 }
                 if let Some(l) = self.links.iter_mut().find(|l| l.id == from) {
                     l.hidden_since = if shown { None } else { l.hidden_since.or(Some(Instant::now())) };

@@ -201,8 +201,9 @@ the Linux side has the clipboard before the keys arrive.
 
 Nothing stays held. The server owns letting go: when the focused window loses the focus (the page
 blurs or hides, another window is activated), when its page hides, and when its link drops (the
-page cannot say anything then), it releases every key and mouse button that window holds; the page
-only forgets what it held. Only a key going down moves the focus; a key-up for a window without it
+page cannot say anything then), it releases every key that window holds, and the mouse buttons
+held in the window or page the pointer is in (focused or not: a click needs no keyboard focus); the
+page only forgets what it held. Only a key going down moves the focus; a key-up for a window without it
 is dropped. Repeats have one source, the page's keyboard: clients are told not to repeat
 (`repeat_info` 0), and the browser's auto-repeat reaches them as the key released and pressed
 again, never a second press. Only the browser knows when a key is really up, so a lost or late

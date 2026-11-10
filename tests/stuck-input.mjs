@@ -169,8 +169,9 @@ async function reconnect(page) {
 
 // The server's seat as seat.rs keeps it, fed the page's messages in order: the keys and buttons
 // held on the Linux side, the focus, the locks, the last size. The server lets go of everything
-// when the focused window loses the focus, its page hides or its link drops (a new socket), and
-// only a key going down takes the focus. A page that presses a key or button already down is a
+// when the focused window loses the focus, its page hides or its link drops (a new socket) (the
+// buttons with the window the pointer is in, focused or not), and only a key going down takes the
+// focus. A page that presses a key or button already down is a
 // mistake (`errors`): a repeat must come as a release and a press.
 class SeatModel {
   constructor() {
@@ -184,10 +185,14 @@ class SeatModel {
     switch (m.t) {
       case 'focus':
         if (m.focused) { if (this.focus !== m.win) this.keys.clear(); this.focus = m.win; }
-        else if (this.focus === m.win) { this.focus = null; this.releaseAll(); }
+        else {
+          // Buttons go with the window the pointer is in, focused or not; keys with the focus.
+          if (this.focus === m.win || this.pointer === m.win) this.buttons.clear();
+          if (this.focus === m.win) { this.focus = null; this.keys.clear(); }
+        }
         break;
       case 'shown':
-        if (!m.shown && this.focus !== null) this.releaseAll();
+        if (!m.shown) { this.buttons.clear(); if (this.focus !== null) this.keys.clear(); }
         break;
       case 'key':
         if (this.focus !== m.win) {
@@ -199,6 +204,7 @@ class SeatModel {
         if (m.down) this.keys.add(m.code); else this.keys.delete(m.code);
         break;
       case 'pointer':
+        if (!this.buttons.size) this.pointer = m.win;
         if (m.action === 'press' && this.buttons.has(m.button)) this.errors.push(`button ${m.button} pressed while down`);
         if (m.action === 'press') this.buttons.add(m.button);
         if (m.action === 'release') this.buttons.delete(m.button);
