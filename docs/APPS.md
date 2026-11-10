@@ -49,7 +49,7 @@ code, and a signature. Building one normally takes the Android SDK (aapt2, d8, z
 apksigner) and Java: hundreds of megabytes that Termux users should not need. So the project
 builds **one template** and the phone only fills it in:
 
-1. **The template** (`crates/lindroids-apk/template/window-app.apk`, unsigned, 148 KB) is built by
+1. **The template** (`crates/lindroids-apk/template/window-app.apk`, unsigned, about 160 KB) is built by
    `packaging/build-app-template.sh` with the SDK, from `packaging/webview-app` and
    `AndroidManifest.program.xml`, whose package, label and meta-data are placeholder strings. It is
    committed, like the helper's `shortcut.dex`, and carried inside the `lindroids` binary.
@@ -301,6 +301,32 @@ the start still goes through Termux, which must come forward to start it.
 
 Not checked: the tablet (not attached), Android 13+ (the receiver is registered with
 `RECEIVER_EXPORTED` there), a Chrome WebAPK.
+
+## A window and its program go together (seventh round, not yet on a device)
+
+Seen on the tablet: VSCodium's whole process tree running under Termux, with no Lindroids task in
+Recents. A window swiped away after Android had dropped its page said nothing, and the server kept
+programs lost in the background with no limit; a detached GUI also outlived its run, and a window
+brought back after its run ended sat on a dead panel. Now (docs/DISPLAY.md, "Lifecycles"):
+
+| | Before | Now |
+|---|---|---|
+| Task removed from Recents | nothing told the server once the page was gone | the app says so (`CloseWatch.onTaskRemoved`, or `onDestroy` when finishing): the program is asked to close, and ends 5 s later |
+| Page lost in the background without a word | the program ran for good | it runs until its page links again, 10 minutes at most |
+| The program ends while its page is frozen | the card stayed (only the page could close it) | the server sends the app `org.lindroids.END` with the run's ticket (`End` receiver), and the app removes that task; cards of runs that ended go when the next run's window opens |
+| Task rebuilt from Recents after its run ended | "This window was not opened by `lindroids run`" | the end, then the window closes; a program's own app starts the program again |
+| "New window" in a program's own app while a run is shown | the new run's page replaced the shown one, which then ended 5 s later | the new run gets a task of its own |
+| Android's folder picker | listed on the main thread (Android's "not responding" on big folders), cut silently at 20,000 entries, and the folder itself left out of what the program got | listed on a thread; more than 20,000 entries is an error, unless the folder is in shared storage (`primary:…`), whose path (`/storage/emulated/0/…`) the program gets as it is when Termux can read it (storage access), with no copy; picked files there are used in place too |
+| A big picked file | opened again and skipped to each 512 KB chunk (quadratic) | one stream, read on |
+| A second picker while one is open | ignored: the program waited an hour | answered at once with an error |
+
+**Out-of-date apps.** The app's code is in each APK, built from the template of the Lindroids that
+built it: an app built before these fixes lacks them all, whatever Lindroids is installed now.
+The template has a number (`WindowActivity.TEMPLATE`, `lindroids_proto::APP_TEMPLATE`, bumped
+together; a test checks), which the app's bridge reports (`template()`; none before this round).
+A page in an app older than its server says so once ("This app is out of date", with `lindroids
+export <id>` or `lindroids app install`); `lindroids run` (when its window opens), `lindroids
+export` and `lindroids doctor` list the apps the server has seen that are older.
 
 ## What Android allows, and what we assume
 
