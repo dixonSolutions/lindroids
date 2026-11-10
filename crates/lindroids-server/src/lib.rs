@@ -1909,7 +1909,7 @@ pub fn run(cfg: Config) -> i32 {
             due.push(Instant::now() + t);
         }
         due.extend(state.claims.iter().map(|(_, u)| *u));
-        due.extend(state.unlinked.iter().filter_map(|(_, since, grace)| grace.map(|g| *since + g)));
+        due.extend(state.unlinked.iter().map(|(_, since, grace)| *since + *grace));
         due.extend(state.pending.iter().map(|p| p.since + PENDING_FOR));
         let timeout = poll_timeout(Instant::now(), due);
         unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
