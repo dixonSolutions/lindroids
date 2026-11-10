@@ -464,11 +464,15 @@ fn release_buttons(state: &mut State) {
     }
 }
 
-/// The page stops getting input (the focused window lost the focus, its page hid): every key and
-/// button it held goes up.
-pub fn release_input(state: &mut State) {
-    release_keys(state);
-    release_buttons(state);
+/// A page stops getting input (it hid, or its link dropped): the keys go up when it has the focus,
+/// the buttons when the pointer is in one of its windows (a click needs no keyboard focus).
+pub fn release_page(state: &mut State, link: u64) {
+    if focus_on_link(state.seat.focus_win, |w| state.windows.get(&w).and_then(|w| w.link), link) {
+        release_keys(state);
+    }
+    if state.seat.ptr_focus.as_ref().is_some_and(|s| surface_link(state, s) == Some(link)) {
+        release_buttons(state);
+    }
 }
 
 /// Whether the focused window is one of `link`'s windows. `link_of` maps a window to its page.
@@ -486,12 +490,7 @@ fn surface_link(state: &State, surface: &wl_surface::WlSurface) -> Option<u64> {
 /// has the focus (its key-ups will not come); the buttons and the touches go only when they are in
 /// its windows, so a background page leaving does not cancel a live touch elsewhere.
 pub fn release_link(state: &mut State, link: u64) {
-    if focus_on_link(state.seat.focus_win, |w| state.windows.get(&w).and_then(|w| w.link), link) {
-        release_keys(state);
-    }
-    if state.seat.ptr_focus.as_ref().is_some_and(|s| surface_link(state, s) == Some(link)) {
-        release_buttons(state);
-    }
+    release_page(state, link);
     let gone: Vec<i32> = state.seat.touch_targets.iter().filter(|(_, (s, _, _))| surface_link(state, s) == Some(link)).map(|(id, _)| *id).collect();
     if state.seat.emulating.is_some_and(|id| gone.contains(&id)) {
         // The touch driving the emulated pointer went with its window: let go of the button.
@@ -545,10 +544,16 @@ pub fn window_focus(state: &mut State, win: u32, focused: bool) {
         state.seat.focus_win = Some(win);
         let surface = state.windows.get(&win).and_then(|w| state.surfaces.get(&w.surface)).map(|s| s.res.clone());
         set_keyboard_focus(state, surface);
-    } else if state.seat.focus_win == Some(win) {
-        state.seat.focus_win = None;
-        release_buttons(state);
-        set_keyboard_focus(state, None);
+    } else {
+        // The window's buttons go with the focus, whether or not it had the keyboard's.
+        let pointer_win = state.seat.ptr_focus.as_ref().and_then(|s| state.window_of(&s.id()));
+        if state.seat.focus_win == Some(win) || pointer_win == Some(win) {
+            release_buttons(state);
+        }
+        if state.seat.focus_win == Some(win) {
+            state.seat.focus_win = None;
+            set_keyboard_focus(state, None);
+        }
     }
     if let Some(w) = state.windows.get_mut(&win) {
         if w.activated != focused {
@@ -1083,10 +1088,6 @@ mod tests {
                 self.tell_button(win, code, false);
             }
         }
-        fn release_input(&mut self) {
-            self.release_keys();
-            self.release_buttons();
-        }
         fn set_keyboard_focus(&mut self, win: Option<u32>) {
             if self.kb_focus == win {
                 return;
@@ -1105,10 +1106,14 @@ mod tests {
             if focused {
                 self.focus_win = Some(win);
                 self.set_keyboard_focus(Some(win));
-            } else if self.focus_win == Some(win) {
-                self.focus_win = None;
-                self.release_buttons();
-                self.set_keyboard_focus(None);
+            } else {
+                if self.focus_win == Some(win) || self.ptr_focus == Some(win) {
+                    self.release_buttons();
+                }
+                if self.focus_win == Some(win) {
+                    self.focus_win = None;
+                    self.set_keyboard_focus(None);
+                }
             }
         }
         fn key(&mut self, win: u32, code: u32, down: bool) {
@@ -1144,9 +1149,8 @@ mod tests {
             }
         }
         fn shown(&mut self, link: u64, shown: bool) {
-            let focused_here = focus_on_link(self.focus_win, |w| self.link_of.get(&w).copied(), link);
-            if !shown && focused_here {
-                self.release_input();
+            if !shown {
+                self.drop_link(link);
             }
         }
         fn drop_link(&mut self, link: u64) {
@@ -1231,16 +1235,20 @@ mod tests {
                         m.log.push(format!("focus win {win} {focused}"));
                         let had = m.focus_win == Some(win);
                         m.window_focus(win, focused);
-                        if !focused && had {
-                            m.check_released(link, "focus lost");
+                        if !focused && (had || m.ptr_focus == Some(win)) {
+                            if m.ptr_focus == Some(win) && m.keys.any_button() {
+                                m.fail(format!("focus lost: win {win} still has buttons down"));
+                            }
+                            if had {
+                                m.check_released(link, "focus lost");
+                            }
                         }
                     }
                     75..=82 => {
                         let shown = rng.below(2) == 0;
                         m.log.push(format!("shown link {link} {shown}"));
-                        let had = m.focus_win.is_some_and(|w| m.link_of[&w] == link);
                         m.shown(link, shown);
-                        if !shown && had {
+                        if !shown {
                             m.check_released(link, "page hidden");
                         }
                     }

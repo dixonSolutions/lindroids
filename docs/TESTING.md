@@ -68,7 +68,7 @@ everything is let go and the page comes back: nothing may be held by the page or
 viewport's screen, the last lock state the keyboard's. A failure prints its seed and last steps.
 
 The server's side of the same: `cargo test -p lindroids-server seeded_input_storm` feeds the
-seat's routing (`KeyState`, `key_route`, focus, `release_input`, `release_link`) seeded random
+seat's routing (`KeyState`, `key_route`, focus, `release_page`, `release_link`) seeded random
 key, button, focus, shown, link-drop and lock messages, checking each client is never pressed a
 key or button it has down, holds nothing (keys, buttons, depressed modifiers) once the focus, the
 page or the link that held it is gone, and has the locks the page said last
