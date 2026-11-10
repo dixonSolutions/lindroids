@@ -156,6 +156,19 @@ pub fn answer(req: &Request, port: u16) -> Answer {
         };
         return Answer::Close(response(status, "application/json", body.as_bytes()));
     }
+    // The window app, about a run's window: gone for good (its task was removed from Recents,
+    // or finished: `closed`), or whether its run still runs (a card left in Recents: `alive`).
+    // With the run's ticket, which only its window has; 410 when it is not good (the run is over).
+    if let Some((run, what)) = run_request(&req.path) {
+        let ticket = req.header("X-Lindroids-Ticket").unwrap_or_default();
+        if !crate::run_ticket_valid(ticket, run) {
+            return Answer::Close(response(410, "text/plain", b"over\n"));
+        }
+        if what == "closed" {
+            crate::shared().post(crate::Inbox::RunClosed(run));
+        }
+        return Answer::Close(response(200, "text/plain", b"running\n"));
+    }
     if req.path == LINK_PATH {
         if !req.has_token("Upgrade", "websocket") || !req.has_token("Connection", "upgrade") {
             return Answer::Close(response(426, "text/plain", b"WebSocket only\n"));
@@ -185,7 +198,12 @@ pub fn answer(req: &Request, port: u16) -> Answer {
         "/" | "/index.html" => ("text/html; charset=utf-8", index_html(&req.query).into_bytes().into()),
         "/lindroids.js" => (
             "text/javascript; charset=utf-8",
-            CLIENT_JS.replace("@BUILD@", page_build()).replace("@PICKER_TOKEN@", &picker_token()).into_bytes().into(),
+            CLIENT_JS
+                .replace("@BUILD@", page_build())
+                .replace("@PICKER_TOKEN@", &picker_token())
+                .replace("@APP_TEMPLATE@", &lindroids_proto::APP_TEMPLATE.to_string())
+                .into_bytes()
+                .into(),
         ),
         "/icon.svg" => ("image/svg+xml", ICON_SVG.as_bytes().into()),
         "/mic-worklet.js" => ("text/javascript; charset=utf-8", MIC_WORKLET_JS.as_bytes().into()),
@@ -201,6 +219,13 @@ pub fn answer(req: &Request, port: u16) -> Answer {
         _ => return Answer::Close(response(404, "text/plain", b"not found\n")),
     };
     Answer::Close(response(200, ctype, &body))
+}
+
+/// `/run/<pid>/closed` or `/run/<pid>/alive`.
+fn run_request(path: &str) -> Option<(u32, &str)> {
+    let (pid, what) = path.strip_prefix("/run/")?.split_once('/')?;
+    matches!(what, "closed" | "alive").then_some(())?;
+    Some((pid.parse().ok()?, what))
 }
 
 /// A secret only the page this server served knows: `/ls` lists directories for its picker. It
@@ -603,6 +628,15 @@ mod tests {
     }
 
     #[test]
+    fn run_requests() {
+        assert_eq!(run_request("/run/42/closed"), Some((42, "closed")));
+        assert_eq!(run_request("/run/42/alive"), Some((42, "alive")));
+        assert_eq!(run_request("/run/42/other"), None);
+        assert_eq!(run_request("/run/x/closed"), None);
+        assert_eq!(run_request("/run-icon/42.png"), None);
+    }
+
+    #[test]
     fn accept_key_matches_rfc6455() {
         assert_eq!(accept_key("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
     }
@@ -612,7 +646,7 @@ mod tests {
         let _s = crate::icons::tests::serial();
         // A live pid: launches whose process is gone are forgotten.
         let pid = std::process::id();
-        crate::icons::register_launch(pid, "A <b>".into(), Some(base64::engine::general_purpose::STANDARD.encode(b"png")), true);
+        crate::icons::register(pid, crate::icons::NewLaunch { name: "A <b>".into(), icon: Some(base64::engine::general_purpose::STANDARD.encode(b"png")), window: true, ..Default::default() });
         let html = index_html(&format!("window&run={pid}"));
         assert!(html.contains("<title>A &lt;b&gt;</title>"), "{html}");
         assert!(html.contains(&format!(r#"href="/run-icon/{pid}.png""#)));

@@ -14,7 +14,12 @@
 //!   theme <dark|light>       report Android's night mode (the portal's color-scheme)
 //!   memory <50|100|255>      a low-memory warning
 //!   action <id> <action>     tap a notification ("default") or one of its buttons
+//!   hidden | shown           the page left the screen, or came back
+//!   closing                  the page is going for good (pagehide)
+//!   quit                     drop the link, as a page that went does
 //!
+//! `--run <pid> --ticket <ticket>` makes it the window of run `<pid>` (`/?window&run=<pid>`), as
+//! the page `lindroids run` opens on Android.
 //! Integration requests are answered as an Android device would: OpenUri/OpenFile are printed
 //! (opened files land in `<dir>/opened-<name>`), notifications are printed, and the file picker
 //! picks the paths in LINDROIDS_DEBUG_PICK (colon-separated; with LINDROIDS_DEBUG_PICK_COPY set
@@ -71,6 +76,7 @@ pub fn cmd_debug_app(args: &[String]) -> i32 {
     let mut size = (800u32, 600u32);
     let mut force_tcp = false;
     let mut socket_name: Option<String> = None;
+    let (mut run, mut ticket) = (None, None);
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -88,6 +94,14 @@ pub fn cmd_debug_app(args: &[String]) -> i32 {
                 i += 1;
                 socket_name = args.get(i).cloned();
             }
+            "--run" => {
+                i += 1;
+                run = args.get(i).cloned();
+            }
+            "--ticket" => {
+                i += 1;
+                ticket = args.get(i).cloned();
+            }
             _ => {}
         }
         i += 1;
@@ -100,7 +114,7 @@ pub fn cmd_debug_app(args: &[String]) -> i32 {
     let mut id = applink::Identity::load(&id_file);
     let code = if id.display.is_none() { std::fs::read_to_string(rt.join("pairing-code")).ok() } else { None };
     let socket = if force_tcp { Some("lindroids.nothing-listens-here") } else { socket_name.as_deref() };
-    let (conn, mut framer, backlog) = match applink::connect(uid, socket, &id, code.as_deref().map(str::trim), applink::Display { density: 1.0, screen: Some(size) }, "debug-app") {
+    let (conn, mut framer, backlog) = match applink::connect(uid, socket, &id, code.as_deref().map(str::trim), applink::Display { density: 1.0, screen: Some(size), page: run.map(|r| format!("/?window&run={r}")), ticket }, "debug-app") {
         Outcome::Linked { conn, framer, paired, sandbox, backlog } => {
             if let Some((display, relay_key)) = paired {
                 id.display = Some(display);
@@ -158,6 +172,9 @@ pub fn cmd_debug_app(args: &[String]) -> i32 {
                     Some("clip") => send(&w, &ToServer::Clipboard { text: p[1..].join(" ") }),
                     Some("theme") => send(&w, &system(p.get(1) == Some(&"dark"))),
                     Some("memory") => send(&w, &ToServer::MemoryWarning { level: n(1) as u8 }),
+                    Some("hidden") | Some("shown") => send(&w, &ToServer::Shown { shown: p[0] == "shown" }),
+                    Some("closing") => send(&w, &ToServer::Closing),
+                    Some("quit") => std::process::exit(0),
                     Some("action") => send(&w, &ToServer::NotificationAction { id: p.get(1).unwrap_or(&"").to_string(), action: p.get(2).unwrap_or(&"default").to_string() }),
                     _ => eprintln!("debug-app: unknown command {line:?}"),
                 }

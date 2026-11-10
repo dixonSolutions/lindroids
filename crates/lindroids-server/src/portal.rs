@@ -115,6 +115,11 @@ fn listen(r: u32) -> mpsc::Receiver<Answer> {
     rx
 }
 
+/// Whether someone waits for answers to `r`.
+pub(crate) fn waiting(r: u32) -> bool {
+    shared().waiting.lock().unwrap().contains_key(&r)
+}
+
 /// Done with `r`; or nobody will answer it (its page went away), and whoever waits gives up now.
 pub(crate) fn forget(r: u32) {
     shared().waiting.lock().unwrap().remove(&r);
@@ -734,6 +739,11 @@ fn safe_rel(rel: &str) -> Option<PathBuf> {
     (!rel.is_empty() && parts.iter().all(|p| !p.is_empty() && *p != "." && *p != ".." && !p.contains('\0'))).then(|| parts.iter().collect())
 }
 
+/// A picked folder that this side can read where it is (its path), so it needs no copy.
+fn folder_here(f: &PickedFile) -> Option<PathBuf> {
+    f.path.as_ref().map(PathBuf::from).filter(|p| std::fs::read_dir(p).is_ok())
+}
+
 /// Copy a picked folder (`files[0]`, everything in it after) to this side; its root.
 fn copy_folder(request: u32, files: &[PickedFile]) -> Result<PathBuf, String> {
     let total: u64 = files.iter().map(|f| f.size).sum();
@@ -906,15 +916,14 @@ impl FileChooser {
                 };
                 uris.push(file_uri(&path));
             } else if files[0].mime.as_deref() == Some(DIRECTORY) {
-                // A folder the picker browsed on this side is already here: no copy (and no
-                // write-back). Android's picker sends everything in the folder, so more than the
-                // folder itself means a copy.
-                let local = (files.len() == 1)
-                    .then(|| files[0].path.as_ref().map(PathBuf::from))
-                    .flatten()
-                    .filter(|p| p.is_dir());
-                if let Some(root) = local {
+                // A folder that is here already: browsed on this side, or a folder of Android's
+                // shared storage (`/storage/emulated/0/...`) that this side can read (Termux with
+                // storage access). The program gets the folder itself: no copy, no write-back.
+                // Otherwise Android's picker sent everything in it, and that is copied.
+                if let Some(root) = folder_here(&files[0]) {
                     uris.push(file_uri(&root));
+                } else if files.len() == 1 && files[0].path.is_some() {
+                    warn!("FileChooser: {} cannot be read here, and the picker sent no copy of it: give Termux storage access (termux-setup-storage)", files[0].path.as_deref().unwrap_or_default());
                 } else {
                     match copy_folder(request, &files) {
                         Ok(root) => {
@@ -1394,6 +1403,11 @@ mod tests {
         folder_files(&root, Path::new(""), &mut found);
         found.sort();
         assert_eq!(found, ["a.txt", "sub/b.txt", "sub/deeper/c"].map(PathBuf::from));
+        // A folder of shared storage this side can read is used where it is; one it cannot is copied.
+        let picked = |path: &Path| PickedFile { name: "f".into(), path: Some(path.display().to_string()), mime: Some(DIRECTORY.into()), ..Default::default() };
+        assert_eq!(folder_here(&picked(&root)), Some(root.clone()));
+        assert_eq!(folder_here(&picked(&root.join("missing"))), None);
+        assert_eq!(folder_here(&PickedFile::default()), None);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

@@ -128,11 +128,14 @@ fn read_one(conn: &mut Conn, framer: &mut Framer, deadline: Instant) -> Result<(
 }
 
 /// What the app tells a server about itself.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Default)]
 pub struct Display {
     pub density: f32,
     /// Physical pixels.
     pub screen: Option<(u32, u32)>,
+    /// A run's window: its page (`/?window&run=<pid>`) and the run's ticket.
+    pub page: Option<String>,
+    pub ticket: Option<String>,
 }
 
 /// Who the app is to the relay: its key pair and, once paired, its display id and the relay key
@@ -192,7 +195,8 @@ pub fn connect(uid: u32, socket_name: Option<&str>, id: &Identity, code: Option<
         density: display.density,
         nonce: nonce.clone(),
         screen: display.screen,
-        page: None,
+        page: display.page.clone(),
+        app: None,
     };
     if let Err(e) = conn.write_all(&proto::encode(&hello)) {
         return Outcome::Absent(e.to_string());
@@ -210,13 +214,13 @@ pub fn connect(uid: u32, socket_name: Option<&str>, id: &Identity, code: Option<
     let my_proof = Some(id.key.sign(&auth::display_transcript("", &server_nonce, &nonce)));
     let auth_msg = match (&id.display, code) {
         (Some(d), _) if id.relay_key.is_some() => {
-            ToServer::Auth { display: Some(d.clone()), proof: my_proof, public_key: None, ticket: None, code: None, name: None }
+            ToServer::Auth { display: Some(d.clone()), proof: my_proof, public_key: None, ticket: display.ticket.clone(), code: None, name: None }
         }
         (_, Some(c)) => ToServer::Auth {
             display: None,
             proof: my_proof,
             public_key: Some(id.key.public()),
-            ticket: None,
+            ticket: display.ticket.clone(),
             code: Some(c.into()),
             name: Some(build.into()),
         },

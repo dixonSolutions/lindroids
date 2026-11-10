@@ -22,9 +22,11 @@ import tempfile
 import time
 
 
-def window_child(close):
+def window_child(close, closed=None, polite=False):
     # A tiny Wayland client, directly on the wire: a real, mapped xdg_toplevel with a
     # shared-memory buffer. Delayed until after its launcher has exited and been reaped.
+    # `closed`: a file it writes when asked to close (xdg_toplevel.close), which it ignores
+    # unless `polite`.
     time.sleep(0.5)
     sock = socket.socket(socket.AF_UNIX)
     sock.settimeout(3)
@@ -99,9 +101,143 @@ def window_child(close):
             obj, op, body = event()
             if obj == 6 and op == 0:
                 send(6, 3, body)
+            if obj == 9 and op == 1 and closed is not None:
+                closed.write_text('asked to close\n')
+                if polite:
+                    break
         except socket.timeout:
             pass
     sock.close()
+
+
+def alive(pid):
+    try:
+        with open(f'/proc/{pid}/stat') as f:
+            return f.read().rsplit(')', 1)[1].split()[0] not in 'ZX'
+    except OSError:
+        return False
+
+
+def lifecycle_checks(binary, script, work, env, request, until, children):
+    """A single run and its window go together (docs/DISPLAY.md, "Lifecycles")."""
+    def started(log, *args):
+        out = open(work / log, 'w+')
+        p = subprocess.Popen([str(binary), 'run', sys.executable, str(script), *args], env=env, stdout=out, stderr=out)
+        children.append(p)
+        return p
+
+    seen = set()
+
+    def run_pid(gui):
+        pid = until('run registered', lambda: next((i['pid'] for i in request(t='instances', app_key='')['instances']
+                                                     if i['pid'] not in seen), None))
+        seen.add(pid)
+        return pid
+
+    def page_for(pid, name):
+        ticket = request(t='ticket', run=pid)['ticket']
+        page = subprocess.Popen([str(binary), 'debug-app', '--socket-name', 'lindroids.regression.' + str(os.getpid()),
+                                 '--dir', str(work / 'frames'), '--run', str(pid), '--ticket', ticket],
+                                env=env, stdin=subprocess.PIPE, stdout=open(work / name, 'w+'), stderr=subprocess.STDOUT, text=True)
+        children.append(page)
+        until('run page linked', lambda: pid in request(t='status')['shown_runs'])
+        return page, ticket
+
+    # The program ends: `run` ends, and nothing it started is left (a helper in the background).
+    left = work / 'left.pid'
+    result = subprocess.run([str(binary), 'run', 'sh', '-c', f'sleep 60 & echo $! > {left}; exit 3'], env=env,
+                            capture_output=True, text=True, timeout=20)
+    assert result.returncode == 3, result
+    helper = int(left.read_text())
+    until('helper ended with its run', lambda: not alive(helper), seconds=5)
+    assert 'ended (exit code 3)' in (work / 'server.log').read_text()
+    print('PASS program exit: RunEnded, and the process tree it left is gone')
+
+    # Its window closed (the page said `closing`, then went): the program is asked to close its
+    # windows, and, as it ignores that, its tree ends (SIGTERM, then SIGKILL) within the grace.
+    asked = work / 'asked-to-close'
+    gui = started('closed-window.log', '--window', str(work / 'never'), str(asked))
+    pid = run_pid(gui)
+    until('window shown', lambda: request(t='run_state', pid=pid)['windows'])
+    page, _ = page_for(pid, 'page-closing.log')
+    t0 = time.monotonic()
+    page.stdin.write('closing\nquit\n')
+    page.stdin.flush()
+    code = gui.wait(timeout=20)
+    took = time.monotonic() - t0
+    assert asked.exists(), 'the window was not asked to close first'
+    assert code == 143, code
+    assert 5 <= took < 16, took
+    assert not alive(pid)
+    print(f'PASS window closed: program asked to close, then ended with SIGTERM {took:.1f}s later')
+
+    # The window app says the window is gone (its task removed from Recents), the page being
+    # gone or frozen: the same, by the run's ticket over loopback.
+    gui = started('removed-task.log', '--window-polite', str(work / 'never'), str(work / 'removal-asked'))
+    pid = run_pid(gui)
+    until('window shown', lambda: request(t='run_state', pid=pid)['windows'])
+    ticket = request(t='ticket', run=pid)['ticket']
+    origin = request(t='status')['origin']
+    host = origin.split('://', 1)[1]
+    port = int(host.rsplit(':', 1)[1])
+
+    def http(path, ticket):
+        with socket.create_connection(('127.0.0.1', port), timeout=3) as c:
+            c.sendall(f'GET {path} HTTP/1.1\r\nHost: {host}\r\nX-Lindroids-Ticket: {ticket}\r\nConnection: close\r\n\r\n'.encode())
+            return int(c.makefile('rb').readline().split()[1])
+
+    assert http(f'/run/{pid}/alive', 'wrong') == 410
+    assert http(f'/run/{pid}/closed', 'wrong') == 410
+    assert gui.poll() is None
+    assert http(f'/run/{pid}/alive', ticket) == 200
+    t0 = time.monotonic()
+    assert http(f'/run/{pid}/closed', ticket) == 200
+    assert gui.wait(timeout=20) == 0  # it closes when asked, as most programs do
+    took = time.monotonic() - t0
+    assert (work / 'removal-asked').exists() and 4 <= took < 12, took
+    assert http(f'/run/{pid}/alive', ticket) == 410
+    print('PASS window app reports a removed task: the run ends, and its ticket is spent')
+
+    # A launcher that detaches its GUI and exits: the run follows the GUI, which closes its last
+    # window but stays (no window at all): its run ends after a few seconds, and so does it.
+    close = work / 'linger-close'
+    gui_pid_file = work / 'linger.pid'
+    gui = started('linger.log', '--launcher-linger', str(close), str(gui_pid_file))
+    until('lingering GUI adopted', lambda: 'attached window' in (work / 'linger.log').read_text())
+    child = int(gui_pid_file.read_text())
+    close.touch()
+    assert gui.wait(timeout=20) in (0, 143)
+    until('windowless GUI ended', lambda: not alive(child), seconds=5)
+    print('PASS detached GUI without a window: its run ends and nothing is orphaned')
+
+    # The supervisor itself is killed (Android's phantom process killer): the server finds the
+    # run lost and ends what it had adopted.
+    close = work / 'lost-close'
+    gui_pid_file = work / 'lost.pid'
+    gui = started('lost.log', '--launcher-linger', str(close), str(gui_pid_file))
+    until('lost GUI adopted', lambda: 'attached window' in (work / 'lost.log').read_text())
+    child = int(gui_pid_file.read_text())
+    time.sleep(2.5)  # the server notes the run's processes as it goes
+    gui.kill()
+    gui.wait()
+    until('orphan of a lost run ended', lambda: not alive(child), seconds=15)
+    assert f'ending what it left running [{child}]' in (work / 'server.log').read_text()
+    print('PASS supervisor killed: the server ends the orphaned GUI')
+
+    # Launched again after it ended: a new run, a new window, the old run's ticket spent.
+    first = None
+    for n in range(2):
+        gui = started(f'again-{n}.log', '--window', str(work / f'again-close-{n}'))
+        pid = run_pid(gui)
+        wins = until('fresh window', lambda: request(t='run_state', pid=pid)['windows'])
+        if first is not None:
+            assert pid != first[0] and wins[0]['win'] != first[1], (pid, wins, first)
+            assert http(f'/run/{first[0]}/alive', first[2]) == 410
+            assert [i['pid'] for i in request(t='instances', app_key='')['instances']] == [pid]
+        first = (pid, wins[0]['win'], request(t='ticket', run=pid)['ticket'])
+        (work / f'again-close-{n}').touch()
+        assert gui.wait(timeout=10) == 0
+    print('PASS relaunch after the end: a fresh run and window, nothing of the old one')
 
 
 def check_suite(binary):
@@ -111,8 +247,11 @@ def check_suite(binary):
         work = Path(work)
         rt = work / 'rt'
         rt.mkdir()
+        with socket.socket() as free:
+            free.bind(('127.0.0.1', 0))
+            port = free.getsockname()[1]
         env = dict(os.environ, LINDROIDS_RUNTIME_DIR=str(rt), LINDROIDS_STATE_DIR=str(work / 'state'),
-                   LINDROIDS_X11='off', LINDROIDS_BROWSER='off')
+                   LINDROIDS_X11='off', LINDROIDS_BROWSER='off', LINDROIDS_TCP_PORT=str(port))
         # Keep the test independent of the desktop/session bus and any developer preload.
         env.pop('LD_PRELOAD', None)
         env.pop('SSL_CERT_DIR', None)
@@ -289,6 +428,7 @@ def check_suite(binary):
                 else:
                     assert high_version.returncode == 2 and 'picker timed out' in high_version.stderr, high_version
                     print('PASS Electron rejects portal 4 when required version is 999')
+            lifecycle_checks(binary, script, work, env, request, until, children)
             # Also exercise ensure_server: infrastructure is a child of this CLI, but must
             # never become part of the application or be killed when that application ends.
             request(t='stop')
@@ -342,7 +482,17 @@ def check_suite(binary):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1 and sys.argv[1] == '--launcher':
+    if len(sys.argv) > 1 and sys.argv[1] in ('--window', '--window-polite'):
+        window_child(Path(sys.argv[2]), Path(sys.argv[3]) if len(sys.argv) > 3 else None, sys.argv[1] == '--window-polite')
+    elif len(sys.argv) > 1 and sys.argv[1] == '--launcher-linger':
+        if os.fork():
+            os._exit(0)
+        os.setsid()
+        Path(sys.argv[3]).write_text(str(os.getpid()))
+        window_child(Path(sys.argv[2]))
+        time.sleep(60)  # no window, still running
+        os._exit(0)
+    elif len(sys.argv) > 1 and sys.argv[1] == '--launcher':
         if os.fork():
             os._exit(0)
         os.setsid()

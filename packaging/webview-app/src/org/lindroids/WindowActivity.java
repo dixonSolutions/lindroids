@@ -30,7 +30,6 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
-import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -48,10 +47,12 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * A program's window, shown without a browser: Android's own WebView, a page from the Lindroids
@@ -62,8 +63,20 @@ import java.util.Map;
  * exposes {@code window.lindroids} only to pages on {@code *.localhost}: Android's own file
  * pickers (open, save, folder) and downloads, the clipboard both ways, and sharing. Any other
  * address is handed to the user's browser, so the app can never be pointed at a website.</p>
+ *
+ * <p>A run's window and its run go together: the page tells the app which run it shows
+ * ({@code attached}); the app tells the server when the window is gone for good, even with the page
+ * gone ({@link CloseWatch}, {@link #onDestroy}); and the server has the app close the window when
+ * the run ends ({@link End}). A card left in Recents by a run that is over goes when another run's
+ * window opens.</p>
  */
 public class WindowActivity extends Activity {
+    /**
+     * This code's number (lindroids_proto::APP_TEMPLATE): bumped with every change to the app,
+     * whose code is in each APK built from it, so the page can tell an app that is out of date.
+     */
+    static final int TEMPLATE = 1;
+
     static final String EXTRA_URL = "org.lindroids.URL";
     static final String EXTRA_NAME = "org.lindroids.NAME";
     static final String EXTRA_ICON = "org.lindroids.ICON";
@@ -72,8 +85,11 @@ public class WindowActivity extends Activity {
     static final String EXTRA_DEBUG = "org.lindroids.DEBUG";
 
     private static final int REQ_PICK = 4101;
-    private static final int REQ_FILE_CHOOSER = 4102;
     private static final int REQ_DOWNLOAD = 4103;
+    /** Most entries a picked folder is listed with; more is an error, never a part of it. */
+    private static final int MAX_ENTRIES = 20000;
+    private static final int MAX_DEPTH = 32;
+    private static final int CHUNK = 512 * 1024;
 
     private WebView webView;
     private String originalUrl;
@@ -90,17 +106,24 @@ public class WindowActivity extends Activity {
     private boolean pickerOpen = false;
     /** A program's own app: run windows handed over by broadcast (see {@link #takeWindows}). */
     private BroadcastReceiver windows;
+    /** This task's key ({@link Runs#key}), and the run its page shows: {run, ticket, host:port}. */
+    private String taskKey = "";
+    private String[] attached;
+    /** Runs whose window this process told the server is closed. */
+    private static final Set<String> told = Collections.synchronizedSet(new HashSet<>());
 
     private final Bridge bridge = new Bridge();
     private String pickRequest;
     private String pickKind;
-    private ValueCallback<Uri[]> fileChooserCallback;
-    private final Map<String, Uri> pickedUris = new HashMap<>();
-    private final Map<String, OutputStream> pickedWrites = new HashMap<>();
-    private long nextToken = 1;
-    private final Map<String, OutputStream> downloads = new HashMap<>();
-    private final Map<String, String> downloadNames = new HashMap<>();
-    private final Map<String, File> downloadFiles = new HashMap<>();
+    // Used from the bridge's thread and the folder lister's as well as the main thread.
+    private final Map<String, Uri> pickedUris = new ConcurrentHashMap<>();
+    private final Map<String, OutputStream> pickedWrites = new ConcurrentHashMap<>();
+    /** A picked document being read: its stream, open, and where in it the next chunk starts. */
+    private final Map<String, Object[]> pickedReads = new ConcurrentHashMap<>();
+    private final AtomicLong nextToken = new AtomicLong(1);
+    private final Map<String, OutputStream> downloads = new ConcurrentHashMap<>();
+    private final Map<String, String> downloadNames = new ConcurrentHashMap<>();
+    private final Map<String, File> downloadFiles = new ConcurrentHashMap<>();
     private String downloadToken;
 
     @Override
@@ -126,9 +149,15 @@ public class WindowActivity extends Activity {
             return;
         }
         originalUrl = url;
+        taskKey = Runs.key(intent);
         readIntent(intent);
         setTaskFromIntent(intent);
-        if (url.contains("run=")) closeLauncherTasks();
+        if (isRun(url)) {
+            closeLauncherTasks();
+            closeEndedTasks();
+        }
+        // A program's own app opened at its start page: the run it showed before is not this one's.
+        if (this instanceof Launch && !isRun(url)) Runs.forget(this, taskKey);
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -178,7 +207,7 @@ public class WindowActivity extends Activity {
 
         webView.addJavascriptInterface(bridge, "lindroids");
         webView.setWebViewClient(new Client());
-        webView.setWebChromeClient(new Chrome());
+        webView.setWebChromeClient(new WebChromeClient());
         webView.setDownloadListener(new Downloads());
         load(url);
         if (startUrl != null && this instanceof Launch) takeWindows();
@@ -230,11 +259,62 @@ public class WindowActivity extends Activity {
             ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
             for (ActivityManager.AppTask t : am.getAppTasks()) {
                 Intent base = t.getTaskInfo().baseIntent;
-                if (base != null && base.getData() == null && base.getStringExtra(EXTRA_URL) == null && t.getTaskInfo().taskId != getTaskId()) {
+                // Not one that shows a run (a program's own app shows its runs in that task).
+                if (base != null && base.getData() == null && base.getStringExtra(EXTRA_URL) == null && t.getTaskInfo().taskId != getTaskId()
+                        && Runs.of(this, base) == null) {
                     t.finishAndRemoveTask();
                 }
             }
         } catch (Throwable ignored) { }
+    }
+
+    /**
+     * Cards in Recents whose run is over (it ended while their page was frozen or gone, or the
+     * server stopped): tapping one would only show that it closed. They go when a new run's
+     * window opens; the server says which runs still run, by their tickets.
+     */
+    private void closeEndedTasks() {
+        final ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        final int me = getTaskId();
+        new Thread(() -> {
+            try {
+                for (ActivityManager.AppTask t : am.getAppTasks()) {
+                    if (t.getTaskInfo().taskId == me) continue;
+                    Intent base = t.getTaskInfo().baseIntent;
+                    String[] r = Runs.of(this, base);
+                    if (r != null && Runs.tell(r, "alive") == 410) {
+                        Runs.forget(this, Runs.key(base));
+                        t.finishAndRemoveTask();
+                    }
+                }
+            } catch (Throwable ignored) { }
+        }).start();
+    }
+
+    /** The page says which run it shows (null: none, or it ended). */
+    private void attach(String run, String ticket) {
+        if (run == null || run.isEmpty() || ticket == null || ticket.isEmpty()) {
+            attached = null;
+            Runs.forget(this, taskKey);
+            return;
+        }
+        Uri u = Uri.parse(originalUrl);
+        attached = new String[]{run, ticket, u.getHost() + ":" + (u.getPort() > 0 ? u.getPort() : 80)};
+        Runs.remember(this, taskKey, run, ticket, attached[2]);
+    }
+
+    /** The server is told that run {@code r}'s window is gone for good (once). Blocks. */
+    static void tellClosed(String[] r) {
+        if (told.add(r[0] + " " + r[1])) Runs.tell(r, "closed");
+    }
+
+    /** The watcher of removed tasks runs while a window is in front ({@link CloseWatch}). */
+    private void watchCloses() {
+        try {
+            startService(new Intent(this, CloseWatch.class));
+        } catch (Throwable ignored) {
+            // In the background (not allowed to start a service): the next onResume does.
+        }
     }
 
     private void readIntent(Intent intent) {
@@ -383,6 +463,7 @@ public class WindowActivity extends Activity {
         resumed = true;
         if (webView != null) webView.onResume();
         makeImmersive();
+        watchCloses();
     }
 
     @Override
@@ -404,9 +485,10 @@ public class WindowActivity extends Activity {
             public void onReceive(Context c, Intent i) {
                 String url = i.getStringExtra(EXTRA_URL);
                 if (url == null || !ownPage(url) || webView == null) return;
+                if (url.equals(originalUrl)) return;
+                if (elsewhere(url, i)) return;
                 readIntent(i);
                 setTaskFromIntent(i);
-                if (url.equals(originalUrl)) return;
                 originalUrl = url;
                 load(url);
             }
@@ -430,8 +512,41 @@ public class WindowActivity extends Activity {
                 && u.getPath() != null && s.getPath() != null && u.getPath().startsWith(s.getPath());
     }
 
+    /**
+     * A program's own app shows its runs in one task: a window of another run while the run it
+     * shows still runs (another instance: "New window") gets a task of its own, since loading it
+     * in place would close the running one's window, and with it that run. True if so.
+     */
+    private boolean elsewhere(String url, Intent from) {
+        if (!(this instanceof Launch) || attached == null || !isRun(url)) return false;
+        String[] r = Runs.ofUrl(url);
+        if (r == null || r[0].equals(attached[0])) return false;
+        Intent i = new Intent(this, WindowActivity.class);
+        if (from != null && from.getExtras() != null) i.putExtras(from.getExtras());
+        i.setData(Uri.parse(url));
+        i.removeExtra(EXTRA_URL);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        try {
+            startActivity(i);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     @Override
     protected void onDestroy() {
+        // Closed for good, not rebuilt (a rotation is not handled by a rebuild here anyway): the
+        // run it showed ends after the server's grace, unless a window links for it again. Also
+        // said by CloseWatch for a task swiped away; whichever comes first.
+        if (isFinishing() && !isChangingConfigurations() && attached != null) {
+            final String[] r = attached;
+            new Thread(() -> tellClosed(r)).start();
+        }
+        for (Object[] read : pickedReads.values()) {
+            try { ((InputStream) read[0]).close(); } catch (Throwable ignored) { }
+        }
+        pickedReads.clear();
         if (windows != null) {
             try { unregisterReceiver(windows); } catch (Throwable ignored) { }
             windows = null;
@@ -453,7 +568,7 @@ public class WindowActivity extends Activity {
         readIntent(intent);
         setTaskFromIntent(intent);
         String url = urlOf(intent);
-        if (url != null && local(Uri.parse(url)) && !url.equals(originalUrl)) {
+        if (url != null && local(Uri.parse(url)) && !url.equals(originalUrl) && !elsewhere(url, intent)) {
             originalUrl = url;
             load(url);
         }
@@ -572,28 +687,6 @@ public class WindowActivity extends Activity {
         }
     }
 
-    private final class Chrome extends WebChromeClient {
-        @Override
-        public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
-            if (fileChooserCallback != null) fileChooserCallback.onReceiveValue(null);
-            fileChooserCallback = callback;
-            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            i.addCategory(Intent.CATEGORY_OPENABLE);
-            i.setType("*/*");
-            i.addFlags(grantFlags());
-            if (params != null && params.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE) {
-                i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-            }
-            try {
-                startActivityForResult(i, REQ_FILE_CHOOSER);
-                return true;
-            } catch (ActivityNotFoundException e) {
-                fileChooserCallback = null;
-                return false;
-            }
-        }
-    }
-
     private final class Downloads implements DownloadListener {
         @Override
         public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimeType, long contentLength) {
@@ -623,7 +716,7 @@ public class WindowActivity extends Activity {
     }
 
     private String newToken() {
-        return "n" + (nextToken++);
+        return "n" + nextToken.getAndIncrement();
     }
 
     private void startPicker(String request, String kind, boolean multiple, JSONArray mimes, String suggested) {
@@ -662,13 +755,6 @@ public class WindowActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQ_FILE_CHOOSER) {
-            ValueCallback<Uri[]> cb = fileChooserCallback;
-            fileChooserCallback = null;
-            if (cb == null) return;
-            cb.onReceiveValue(resultCode == RESULT_OK ? urisOf(data) : null);
-            return;
-        }
         if (requestCode == REQ_DOWNLOAD) {
             finishDownload(resultCode == RESULT_OK ? data : null);
             return;
@@ -682,31 +768,71 @@ public class WindowActivity extends Activity {
             deliver(request, "{\"cancel\":true}");
             return;
         }
-        try {
-            JSONObject out = new JSONObject();
-            JSONArray entries = new JSONArray();
-            if ("dir".equals(pickKind)) {
-                Uri tree = data.getData();
-                if (tree == null) throw new IllegalArgumentException("no folder");
-                take(tree, data.getFlags());
-                String root = DocumentsContract.getTreeDocumentId(tree);
-                listTree(tree, root, "", entries, 0);
-            } else if ("save".equals(pickKind)) {
-                Uri uri = data.getData();
-                if (uri == null) throw new IllegalArgumentException("no document");
-                take(uri, data.getFlags());
-                entries.put(entry(uri, "this", false));
-            } else {
-                for (Uri uri : urisOf(data)) {
+        final String kind = pickKind;
+        // Off the main thread: listing a folder through its provider takes a query per folder in
+        // it, which on a big one is seconds (Android would say the app is not responding).
+        new Thread(() -> {
+            try {
+                JSONObject out = new JSONObject();
+                JSONArray entries = new JSONArray();
+                if ("dir".equals(kind)) {
+                    Uri tree = data.getData();
+                    if (tree == null) throw new IllegalArgumentException("no folder");
+                    take(tree, data.getFlags());
+                    String root = DocumentsContract.getTreeDocumentId(tree);
+                    Uri rootDoc = DocumentsContract.buildDocumentUriUsingTree(tree, root);
+                    String path = sharedPath(tree.getAuthority(), root);
+                    JSONObject top = entry(rootDoc, "", true);
+                    if (path != null) top.put("path", path);
+                    entries.put(top);
+                    if (!listTree(tree, root, "", entries, 0)) {
+                        // Too big to list: the folder itself, which the Linux side reads where it
+                        // is when it can (Termux with storage access), and nothing else.
+                        if (path == null) {
+                            throw new IllegalStateException("The folder holds more than " + MAX_ENTRIES + " files and folders (or is nested deeper than "
+                                    + MAX_DEPTH + "): pick a smaller one");
+                        }
+                        JSONArray only = new JSONArray();
+                        only.put(top);
+                        entries = only;
+                    }
+                } else if ("save".equals(kind)) {
+                    Uri uri = data.getData();
+                    if (uri == null) throw new IllegalArgumentException("no document");
                     take(uri, data.getFlags());
-                    entries.put(entry(uri, "", false));
+                    entries.put(entry(uri, "this", false));
+                } else {
+                    for (Uri uri : urisOf(data)) {
+                        take(uri, data.getFlags());
+                        entries.put(entry(uri, "", false));
+                    }
                 }
+                out.put("entries", entries);
+                deliver(request, out.toString());
+            } catch (Throwable t) {
+                deliver(request, "{\"error\":" + JSONObject.quote(String.valueOf(t.getMessage())) + "}");
             }
-            out.put("entries", entries);
-            deliver(request, out.toString());
-        } catch (Throwable t) {
-            deliver(request, "{\"error\":" + JSONObject.quote(String.valueOf(t.getMessage())) + "}");
+        }).start();
+    }
+
+    /**
+     * Where a document of Android's shared storage is as a path, from its provider's id
+     * ("primary:Download/a.pdf" is /storage/emulated/0/Download/a.pdf; the Downloads provider's
+     * "raw:/storage/..."): the Linux side then uses the document itself when it can read it,
+     * rather than a copy. Null for any other provider.
+     */
+    static String sharedPath(String authority, String docId) {
+        if (docId == null) return null;
+        if ("com.android.externalstorage.documents".equals(authority) && docId.startsWith("primary:")) {
+            String rel = docId.substring("primary:".length());
+            if (rel.contains("..")) return null;
+            return rel.isEmpty() ? "/storage/emulated/0" : "/storage/emulated/0/" + rel;
         }
+        if ("com.android.providers.downloads.documents".equals(authority) && docId.startsWith("raw:/storage/")) {
+            String p = docId.substring("raw:".length());
+            return p.contains("..") ? null : p;
+        }
+        return null;
     }
 
     private Uri[] urisOf(Intent data) {
@@ -745,6 +871,12 @@ public class WindowActivity extends Activity {
         o.put("mime", directory ? "inode/directory" : nameSize[2]);
         o.put("writable", true);
         if (!rel.isEmpty() || directory) o.put("rel", rel);
+        if (!directory) {
+            try {
+                String path = sharedPath(uri.getAuthority(), DocumentsContract.getDocumentId(uri));
+                if (path != null) o.put("path", path);
+            } catch (Throwable ignored) { }
+        }
         return o;
     }
 
@@ -768,16 +900,18 @@ public class WindowActivity extends Activity {
         return new String[]{name, Long.toString(size), mime};
     }
 
-    private void listTree(Uri tree, String docId, String prefix, JSONArray out, int depth) throws Exception {
-        if (depth > 32 || out.length() > 20000) return;
+    /** Everything in a picked folder, into {@code out}; false when it is too big to list. */
+    private boolean listTree(Uri tree, String docId, String prefix, JSONArray out, int depth) throws Exception {
+        if (depth > MAX_DEPTH) return false;
         Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, docId);
         try (android.database.Cursor c = getContentResolver().query(children, new String[]{
                 DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                 DocumentsContract.Document.COLUMN_DISPLAY_NAME,
                 DocumentsContract.Document.COLUMN_MIME_TYPE,
                 DocumentsContract.Document.COLUMN_SIZE}, null, null, null)) {
-            if (c == null) return;
-            while (c.moveToNext() && out.length() <= 20000) {
+            if (c == null) return true;
+            while (c.moveToNext()) {
+                if (out.length() > MAX_ENTRIES) return false;
                 String id = c.getString(0);
                 String name = c.getString(1);
                 String mime = c.getString(2);
@@ -796,7 +930,7 @@ public class WindowActivity extends Activity {
                     d.put("rel", rel);
                     d.put("writable", true);
                     out.put(d);
-                    listTree(tree, id, rel, out, depth + 1);
+                    if (!listTree(tree, id, rel, out, depth + 1)) return false;
                 } else {
                     String token = newToken();
                     pickedUris.put(token, uri);
@@ -812,6 +946,7 @@ public class WindowActivity extends Activity {
                 }
             }
         }
+        return true;
     }
 
     private void finishDownload(Intent data) {
@@ -847,6 +982,24 @@ public class WindowActivity extends Activity {
         @JavascriptInterface
         public void close() {
             runOnUiThread(WindowActivity.this::finishAndRemoveTask);
+        }
+
+        /** This app's code ({@link #TEMPLATE}): the page says when it is older than its server's. */
+        @JavascriptInterface
+        public int template() {
+            return TEMPLATE;
+        }
+
+        /** The page linked to its run ({@code run}, by its ticket). */
+        @JavascriptInterface
+        public void attached(String run, String ticket) {
+            runOnUiThread(() -> attach(run, ticket));
+        }
+
+        /** The run the page showed is over. */
+        @JavascriptInterface
+        public void detached() {
+            runOnUiThread(() -> attach(null, null));
         }
 
         @JavascriptInterface
@@ -885,7 +1038,12 @@ public class WindowActivity extends Activity {
 
         @JavascriptInterface
         public void pickFiles(String request, String kind, boolean multiple, String mimeJson, String suggested) {
-            if (pickerOpen || request == null) return;
+            if (request == null) return;
+            if (pickerOpen) {
+                // Android shows one picker at a time; the program hears at once, not after an hour.
+                deliver(request, "{\"error\":\"Android's file picker is open already: finish with it first\"}");
+                return;
+            }
             JSONArray mimes = new JSONArray();
             try { if (mimeJson != null && !mimeJson.isEmpty()) mimes = new JSONArray(mimeJson); } catch (Throwable ignored) { }
             startPicker(request, kind == null ? "open" : kind, multiple, mimes, suggested);
@@ -893,23 +1051,47 @@ public class WindowActivity extends Activity {
 
         @JavascriptInterface
         public String readPicked(String key, int offset) {
-            Uri uri = pickedUris.get(key);
+            Uri uri = key == null ? null : pickedUris.get(key);
             if (uri == null) return null;
-            try (InputStream in = getContentResolver().openInputStream(uri)) {
-                if (in == null) return null;
-                skip(in, offset);
-                byte[] buf = new byte[512 * 1024];
-                int n = in.read(buf);
-                if (n <= 0) return "";
-                return Base64.encodeToString(buf, 0, n, Base64.NO_WRAP);
+            // One stream per document, read on from where the last chunk ended: opening it again
+            // and skipping to each chunk made a big file's reading quadratic.
+            Object[] read = pickedReads.remove(key);
+            try {
+                if (read != null && (Long) read[1] != offset) {
+                    try { ((InputStream) read[0]).close(); } catch (Throwable ignored) { }
+                    read = null;
+                }
+                if (read == null) {
+                    InputStream in = getContentResolver().openInputStream(uri);
+                    if (in == null) return null;
+                    skip(in, offset);
+                    read = new Object[]{in, (long) offset};
+                }
+                InputStream in = (InputStream) read[0];
+                // A whole chunk unless at the end: a shorter one is the last (the page stops there).
+                byte[] buf = new byte[CHUNK];
+                int n = 0;
+                while (n < CHUNK) {
+                    int k = in.read(buf, n, CHUNK - n);
+                    if (k < 0) break;
+                    n += k;
+                }
+                if (n < CHUNK) {
+                    in.close();
+                } else {
+                    read[1] = (long) offset + n;
+                    pickedReads.put(key, read);
+                }
+                return n == 0 ? "" : Base64.encodeToString(buf, 0, n, Base64.NO_WRAP);
             } catch (Throwable t) {
+                if (read != null) try { ((InputStream) read[0]).close(); } catch (Throwable ignored) { }
                 return null;
             }
         }
 
         @JavascriptInterface
         public String writePicked(String key, String b64, int offset, boolean last) {
-            Uri uri = pickedUris.get(key);
+            Uri uri = key == null ? null : pickedUris.get(key);
             if (uri == null) return "error: not a picked file";
             try {
                 byte[] data = Base64.decode(b64 == null ? "" : b64, Base64.NO_WRAP);
