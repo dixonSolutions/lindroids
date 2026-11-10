@@ -390,6 +390,13 @@ pub fn claim_target(cands: &[ClaimCandidate], app_key: &str, claimer: u32, since
         .map(|c| c.win)
 }
 
+/// An ended run whose processes (with their start times) wait for `dependents` to end.
+struct DeferredEnd {
+    run: u32,
+    dependents: Vec<u32>,
+    procs: Vec<(u32, u64)>,
+}
+
 struct CliConn {
     stream: UnixStream,
     buf: Vec<u8>,
@@ -454,6 +461,8 @@ pub struct State {
     app_templates: Vec<(String, u32)>,
     /// Runs waiting to claim a window (`CliRequest::Claim`), until when.
     claims: Vec<(u32, Instant)>,
+    /// Ended runs whose processes still show windows other runs claimed (`run_over`).
+    deferred_ends: Vec<DeferredEnd>,
     /// Exported programs whose own page asked for their launch (`Launch`): the page, and when.
     page_launches: HashMap<String, (u64, Instant)>,
     /// Exported programs whose own app, not paired yet, asked for their launch, and when.
@@ -809,13 +818,23 @@ impl State {
 
     /// A run ended: what it left running ends too (a GUI it detached, a helper), and its window
     /// in a Lindroids app closes even when its page cannot (frozen, or gone with its process).
+    /// What it left running also shows other runs' windows (claimed from it): it ends when the
+    /// last of those runs does (`end_deferred`), not before: their unsaved work is in it.
     fn run_over(&mut self, run: u32) {
         let left = icons::survivors(run);
         if !left.is_empty() {
-            info!("run {run} ended: ending what it left running {left:?}");
-            condemn(&left);
-            std::thread::spawn(move || end_processes(&left, Duration::ZERO, END_TERM_WAIT));
+            let deps = self.dependents(run);
+            if deps.is_empty() {
+                info!("run {run} ended: ending what it left running {left:?}");
+                condemn(&left);
+                std::thread::spawn(move || end_processes(&left, Duration::ZERO, END_TERM_WAIT));
+            } else {
+                info!("run {run} ended: what it left running {left:?} also shows runs {deps:?}: it ends when they do");
+                let procs = left.iter().filter_map(|p| icons::start_time(*p).map(|t| (*p, t))).collect();
+                self.deferred_ends.push(DeferredEnd { run, dependents: deps, procs });
+            }
         }
+        self.end_deferred(Some(run));
         if let Some(app) = window_browser(&self.cfg.runtime_dir, run).filter(|a| a.starts_with("org.lindroids")) {
             let Ok(exe) = lindroids_proto::self_exe() else { return };
             let mut c = std::process::Command::new(exe);
@@ -826,6 +845,32 @@ impl State {
                     std::thread::spawn(move || child.wait());
                 }
                 Err(e) => warn!("run {run}: cannot close its window in {app}: {e}"),
+            }
+        }
+    }
+
+    /// Ended runs whose processes waited for the runs that claimed their windows: those whose
+    /// last such run is over (`ended`, or no longer on) end now, with what they started since.
+    fn end_deferred(&mut self, ended: Option<u32>) {
+        if self.deferred_ends.is_empty() {
+            return;
+        }
+        let mut due = Vec::new();
+        self.deferred_ends.retain_mut(|d| {
+            d.dependents.retain(|r| Some(*r) != ended && icons::run_alive(*r));
+            if d.dependents.is_empty() {
+                due.push((d.run, std::mem::take(&mut d.procs)));
+            }
+            !d.dependents.is_empty()
+        });
+        for (run, procs) in due {
+            let mut left: Vec<u32> = procs.iter().filter(|(p, t)| icons::start_time(*p) == Some(*t)).flat_map(|(p, _)| icons::process_tree(*p)).collect();
+            left.sort_unstable();
+            left.dedup();
+            if !left.is_empty() {
+                info!("run {run}: the last run that showed its windows is over: ending what it left running {left:?}");
+                condemn(&left);
+                std::thread::spawn(move || end_processes(&left, Duration::ZERO, END_TERM_WAIT));
             }
         }
     }
@@ -1513,9 +1558,11 @@ impl State {
                 Some(CliReply::Instances { instances, runs })
             }
             CliRequest::RunState { pid } => {
-                let windows = self.windows.iter().filter(|(win, w)| w.mapped && self.run_of(**win) == Some(pid))
+                // Its process's windows that other runs claimed count too: it still serves them.
+                let windows = self.windows.iter()
+                    .filter(|(win, w)| w.mapped && (self.run_of(**win) == Some(pid) || (w.claimed.is_some() && self.natural_run(**win) == Some(pid))))
                     .map(|(win, w)| proto::WindowInfo { win: *win, title: w.title.clone(), app_id: w.app_id.clone(), width: w.phys.map_or(0, |p| p.0), height: w.phys.map_or(0, |p| p.1) }).collect();
-                Some(CliReply::RunState { alive: icons::run_alive(pid), windows })
+                Some(CliReply::RunState { alive: icons::run_alive(pid), windows, dependents: self.dependents(pid) })
             }
             CliRequest::Claim { pid } => {
                 if icons::app_key(pid).is_empty() {
@@ -1800,6 +1847,7 @@ pub fn run(cfg: Config) -> i32 {
         asked: HashMap::new(),
         app_templates: Vec::new(),
         claims: Vec::new(),
+        deferred_ends: Vec::new(),
     };
     surface::register_globals(&dh);
     shell::register_globals(&dh);
@@ -1893,6 +1941,7 @@ pub fn run(cfg: Config) -> i32 {
                 state.run_over(pid);
             }
             android::reap_running();
+            state.end_deferred(None);
         }
         seat::keyboard_due(&mut state);
         // Sleep until the next thing that is due: nothing wakes the server on a timer of its own

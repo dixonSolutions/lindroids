@@ -691,7 +691,14 @@ pub enum CliReply {
     Error { message: String },
     /// Answer to Launch: the instance's number among its app's.
     Launched { ordinal: u32 },
-    RunState { alive: bool, windows: Vec<WindowInfo> },
+    /// Answer to RunState: whether it runs, and the windows it shows, with those of its process
+    /// that other runs claimed (`dependents`: those runs, still on).
+    RunState {
+        alive: bool,
+        windows: Vec<WindowInfo>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        dependents: Vec<u32>,
+    },
     /// Answer to Instances: the app's, most recently used first, and how many runs (processes)
     /// are running in all.
     Instances {

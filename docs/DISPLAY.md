@@ -450,7 +450,9 @@ its place or a window it hides, still runs, and its window says so):
    the program left behind: SIGTERM to the roots of what is left below it, SIGKILL 3 s later.
    Left running, a detached GUI held on to what the next launch needed: VS Code's single-instance
    socket handed that launch to it, and its window went to another run's page *(seen on the
-   tablet: VSCodium's whole tree running, no window anywhere)*.
+   tablet: VSCodium's whole tree running, no window anywhere)*. Not while another run shows a
+   window of it (a second VSCodium handed its work to it, and claimed the window it opened):
+   those windows count as the run's, and what it left ends with the last such run.
 2. The supervisor tells the server (`RunEnded`) and exits with its status. A launcher that
    detached its GUI and exited (VS Code's CLI) is followed to the GUI's end: its processes end, or
    it has had no window at all for 5 seconds (a window it closes to open another is not its end).

@@ -22,7 +22,7 @@ import tempfile
 import time
 
 
-def window_child(close, closed=None, polite=False):
+def window_child(close, closed=None, polite=False, lifetime=30):
     # A tiny Wayland client, directly on the wire: a real, mapped xdg_toplevel with a
     # shared-memory buffer. Delayed until after its launcher has exited and been reaped.
     # `closed`: a file it writes when asked to close (xdg_toplevel.close), which it ignores
@@ -95,7 +95,7 @@ def window_child(close, closed=None, polite=False):
     send(7, 6)
     os.close(fd)
     sock.settimeout(0.1)
-    until = time.monotonic() + 30
+    until = time.monotonic() + lifetime
     while not close.exists() and time.monotonic() < until:
         try:
             obj, op, body = event()
@@ -223,6 +223,47 @@ def lifecycle_checks(binary, script, work, env, request, until, children):
     until('orphan of a lost run ended', lambda: not alive(child), seconds=15)
     assert f'ending what it left running [{child}]' in (work / 'server.log').read_text()
     print('PASS supervisor killed: the server ends the orphaned GUI')
+
+    # Two runs share one process (VS Code's single instance: the second run hands its work to
+    # the first one's process, and claims the window it opens). Closing the first run's window
+    # leaves the second's window and the process; ending the second leaves nothing.
+    single, gui_pid_file = work / 'single.sock', work / 'single.pid'
+    first = started('single-a.log', '--single', str(single), str(gui_pid_file))
+    a_pid = run_pid(first)
+    until('single instance adopted', lambda: 'attached window' in (work / 'single-a.log').read_text())
+    shared = int(gui_pid_file.read_text())
+    time.sleep(1)  # its window is not a new one for the next run to claim
+    # The second run, as `lindroids run` does it on Android (a window of its own: elsewhere runs
+    # share one page and do not hand over): registered, its program asks the first for a window
+    # and exits, and the run claims that window.
+    key = 'linux.' + ''.join(c if c.isascii() and (c.isalnum() or c == '-') else '_' for c in Path(sys.executable).name)
+    second = subprocess.Popen(['sleep', '60'])
+    children.append(second)
+    b_pid = second.pid
+    request(t='launch', pid=b_pid, name='Python3', window=True, app_key=key)
+    with socket.socket(socket.AF_UNIX) as s:
+        s.connect(str(single))
+        s.sendall(b'w')
+    assert request(t='claim', pid=b_pid)['t'] == 'claimed'
+    second.terminate()
+    second.wait()
+    until('claimed window', lambda: request(t='run_state', pid=b_pid)['windows'])
+    page_a, _ = page_for(a_pid, 'page-single-a.log')
+    page_b, _ = page_for(b_pid, 'page-single-b.log')
+    assert request(t='run_state', pid=a_pid)['dependents'] == [b_pid]
+    page_a.stdin.write('closing\nquit\n')
+    page_a.stdin.flush()
+    until("first run's window closed", lambda: len(request(t='run_state', pid=a_pid)['windows']) == 1, seconds=15)
+    time.sleep(8)  # more than a windowless run is given
+    assert alive(shared), 'the process the second run shows was ended with the first run'
+    assert first.poll() is None
+    assert request(t='run_state', pid=b_pid)['windows']
+    page_b.stdin.write('closing\nquit\n')
+    page_b.stdin.flush()
+    assert first.wait(timeout=25) == 0
+    until('shared process ended with the last run', lambda: not alive(shared), seconds=5)
+    assert not request(t='instances', app_key='')['instances']
+    print('PASS two runs share one process: it outlives the first run, and ends with the last')
 
     # Launched again after it ended: a new run, a new window, the old run's ticket spent.
     first = None
@@ -469,8 +510,9 @@ def check_suite(binary):
         except BaseException:
             print('SERVER LOG:', (work / 'server.log').read_text(), file=sys.stderr)
             print('APP LOG:', (work / 'app.log').read_text(), file=sys.stderr)
-            if (work / 'run.log').exists():
-                print('RUN LOG:', (work / 'run.log').read_text(), file=sys.stderr)
+            for name in ['run.log', 'single-a.log']:
+                if (work / name).exists():
+                    print(name.upper() + ':', (work / name).read_text(), file=sys.stderr)
             raise
         finally:
             try:
@@ -492,6 +534,31 @@ def check_suite(binary):
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] in ('--window', '--window-polite'):
         window_child(Path(sys.argv[2]), Path(sys.argv[3]) if len(sys.argv) > 3 else None, sys.argv[1] == '--window-polite')
+    elif len(sys.argv) > 1 and sys.argv[1] == '--single':
+        # A single-instance GUI: the first launch detaches it; later ones ask it for a window.
+        import threading
+        try:
+            with socket.socket(socket.AF_UNIX) as s:
+                s.connect(sys.argv[2])
+                s.sendall(b'w')
+            os._exit(0)
+        except OSError:
+            pass
+        if os.fork():
+            os._exit(0)
+        os.setsid()
+        server = socket.socket(socket.AF_UNIX)
+        server.bind(sys.argv[2])
+        server.listen()
+        Path(sys.argv[3]).write_text(str(os.getpid()))
+        never = Path(sys.argv[2] + '.never')
+
+        def window():
+            threading.Thread(target=window_child, args=(never, Path(sys.argv[2] + '.closed'), True, 120), daemon=True).start()
+        window()
+        while True:  # windowless or not, it runs until it is ended
+            server.accept()[0].close()
+            window()
     elif len(sys.argv) > 1 and sys.argv[1] == '--launcher-linger':
         if os.fork():
             os._exit(0)

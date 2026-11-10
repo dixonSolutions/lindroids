@@ -437,8 +437,12 @@ and so can several instances of one app.
   two runs.
 - **Closing.** Closing a claimed run's window asks its windows to close (`xdg_toplevel.close`); it
   never ends the process, which is another instance's. Closing the first instance's window while
-  its process also shows a claimed window does the same for its own windows. A program of its own
-  ends as before (SIGTERM, SIGKILL 5 s later). VSCodium ignores `xdg_toplevel.close` (tested on
+  its process also shows a claimed window does the same for its own windows, and the process
+  stays: the first run's `lindroids run` counts the claimed windows as its own (`RunState`'s
+  `dependents`), and the server, when a run ends while runs that claimed windows of its process
+  are on, ends what it left only when the last of them ends (`end_deferred`). Before, the first
+  run ended 5 s after its window closed, and took the process, and the second run's window with
+  its unsaved work, with it. A program of its own ends as before (SIGTERM, SIGKILL 5 s later). VSCodium ignores `xdg_toplevel.close` (tested on
   b16): closing *VSCodium 2*'s window hides it, and the run stays (its notification, its icon or
   `lindroids show` bring it back); VSCodium's own ✕ or File > Close Window closes it for good.
 - **Lost runs.** Every 2 s the server looks for runs whose process is gone without `RunEnded`
