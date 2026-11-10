@@ -150,7 +150,13 @@ pub fn page_origin(port: u16) -> String {
 
 /// The origin this server serves pages in.
 fn served_origin() -> String {
-    format!("http://{}.localhost:{}", web::origin_label(), proto::server_tcp_port(proto::real_uid()))
+    format!("http://{}.localhost:{}", web::origin_label(), tcp_port())
+}
+
+/// The loopback port pages are served on: this uid's (`LINDROIDS_TCP_PORT` overrides it, for a
+/// test server next to a real one).
+fn tcp_port() -> u16 {
+    std::env::var("LINDROIDS_TCP_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or_else(|| proto::server_tcp_port(proto::real_uid()))
 }
 
 /// Tickets handed to the CLI for page URLs: (ticket, the run it is for, good until).
@@ -161,6 +167,11 @@ fn live_tickets() -> std::sync::MutexGuard<'static, Vec<(String, Option<u32>, In
     let mut t = TICKETS.lock().unwrap();
     t.retain(|(_, r, until)| *until > Instant::now() && r.map_or(true, icons::run_alive));
     t
+}
+
+/// Whether `t` is the ticket of run `run`, and the run still runs (a run's ticket goes with it).
+pub(crate) fn run_ticket_valid(t: &str, run: u32) -> bool {
+    !t.is_empty() && live_tickets().iter().any(|(v, r, _)| *r == Some(run) && auth::same(v, t))
 }
 
 /// The run a process belongs to, for what it shows outside its window (an Android notification):
@@ -231,6 +242,8 @@ pub enum Inbox {
     WithPayload(ToApp, Vec<u8>),
     /// From a Linux process (its pid, when known: sound, the portal): to the page showing its run.
     From(Option<u32>, ToApp, Vec<u8>),
+    /// The window app says the window of this run is gone for good (`GET /run/<pid>/closed`).
+    RunClosed(u32),
 }
 
 pub struct Shared {
@@ -426,9 +439,8 @@ pub struct State {
     pub parked: Vec<ObjectId>,
     pub running: bool,
     /// Pages that went away, by the run they showed (None: the page showing everything else):
-    /// what was started into them ends when the grace is over (None: never), unless a page for it
-    /// links again.
-    unlinked: Vec<(Option<u32>, Instant, Option<Duration>)>,
+    /// what was started into them ends when the grace is over, unless a page for it links again.
+    unlinked: Vec<(Option<u32>, Instant, Duration)>,
     clis: Vec<CliConn>,
     next_request: u32,
     clients: u32,
@@ -436,8 +448,10 @@ pub struct State {
     sound: HashMap<u32, (Option<u32>, Option<u64>)>,
     /// The streams in `sound` that record (the page captures the microphone for them).
     mic: HashSet<u32>,
-    /// The page each of the portal's requests went to: what follows it goes there too.
-    asked: HashMap<u32, u64>,
+    /// The page each of the portal's requests went to, and when: what follows it goes there too.
+    asked: HashMap<u32, (u64, Instant)>,
+    /// Lindroids' window apps that showed a page: package and template number.
+    app_templates: Vec<(String, u32)>,
     /// Runs waiting to claim a window (`CliRequest::Claim`), until when.
     claims: Vec<(u32, Instant)>,
     /// Exported programs whose own page asked for their launch (`Launch`): the page, and when.
@@ -465,7 +479,8 @@ impl State {
             return t.clone();
         }
         let t = auth::random_token(16);
-        let life = if run.is_some() { Duration::from_secs(24 * 3600) } else { Duration::from_secs(600) };
+        // A run's goes with its run (`live_tickets`), however long it runs.
+        let life = if run.is_some() { Duration::from_secs(10 * 365 * 24 * 3600) } else { Duration::from_secs(600) };
         tickets.push((t.clone(), run, Instant::now() + life));
         t
     }
@@ -540,11 +555,14 @@ impl State {
             }
             _ => match portal_request(msg) {
                 Some(r) => {
+                    // Requests nobody waits for any more, and not asked lately (a picked file is
+                    // fetched under its pick's number after the pick was answered), are done.
+                    self.asked.retain(|r, (_, at)| portal::waiting(*r) || at.elapsed() < Duration::from_secs(600));
                     let follow_up = matches!(msg, ToApp::FetchFile { .. } | ToApp::WriteFile { offset: 1.., .. });
-                    let to = self.asked.get(&r).copied().or_else(|| if follow_up { None } else { self.page_for(pid) });
+                    let to = self.asked.get(&r).map(|(id, _)| *id).or_else(|| if follow_up { None } else { self.page_for(pid) });
                     match to {
                         Some(id) => {
-                            self.asked.insert(r, id);
+                            self.asked.insert(r, (id, Instant::now()));
                         }
                         // No page to answer it: the asker gives up now rather than at its timeout.
                         None => portal::forget(r),
@@ -713,6 +731,7 @@ impl State {
         self.send_from(Some(run), &ToApp::RunEnded { code: 0, output: Vec::new() }, &[]);
         icons::set_claim(run, icons::Claim::None);
         icons::ended(run);
+        self.run_over(run);
     }
 
     /// Runs that show windows of `run`'s process (claimed from it) and are on.
@@ -727,7 +746,7 @@ impl State {
     /// (their process is another instance's). A run whose process also shows other instances'
     /// windows: only its own windows are asked to close. Otherwise what it started ends.
     fn page_gone(&mut self, run: Option<u32>) {
-        let Some(r) = run else { return end_launches(None) };
+        let Some(r) = run else { return self.end_launches(None) };
         let own: Vec<u32> = self.windows.keys().copied().filter(|w| self.run_of(*w) == Some(r)).collect();
         let claiming = icons::claim(r) != icons::Claim::None;
         let deps = self.dependents(r);
@@ -742,7 +761,73 @@ impl State {
             self.claims.retain(|(p, _)| *p != r);
             return;
         }
-        end_launches(Some(r));
+        self.end_launches(Some(r));
+    }
+
+    /// The window is gone, so are the programs `lindroids run` and `launch` started into it
+    /// (`run`: that run; None: those without a window of their own). Their windows are asked to
+    /// close first (a program saves its state then: Electron's SIGTERM handler does not wait for
+    /// that), then the roots of their trees get SIGTERM, then whatever is left SIGKILL.
+    fn end_launches(&mut self, run: Option<u32>) {
+        let pids: Vec<u32> = match run {
+            Some(r) => icons::launched_pids().into_iter().filter(|p| *p == r).collect(),
+            None => icons::launched_pids().into_iter().filter(|p| !icons::wants_own_window(*p)).collect(),
+        };
+        if pids.is_empty() {
+            return;
+        }
+        info!("the window is gone: ending {pids:?}");
+        self.close_windows_of(&pids);
+        std::thread::spawn(move || end_processes(&pids, END_CLOSE_WAIT, END_TERM_WAIT));
+    }
+
+    /// Ask every window of these runs to close (xdg_toplevel.close).
+    fn close_windows_of(&mut self, pids: &[u32]) {
+        let wins: Vec<u32> = self.windows.keys().copied().filter(|w| self.run_of(*w).is_some_and(|r| pids.contains(&r))).collect();
+        for win in wins {
+            if let Some(w) = self.windows.get(&win) {
+                w.toplevel.close();
+            }
+        }
+    }
+
+    /// The window app says the window of `run` is gone for good (its task was removed from
+    /// Recents, or finished): as a page that said `Closing`, the run ends after the grace,
+    /// unless a page links for it again.
+    fn run_closed(&mut self, run: u32) {
+        let mut linked = false;
+        for l in self.links.iter_mut().filter(|l| l.run == Some(run)) {
+            l.closing = true;
+            linked = true;
+        }
+        info!("the window app says the window of run {run} is closed{}", if linked { "" } else { ": it ends in 5s unless it links again" });
+        if !linked {
+            self.unlinked.retain(|(r, ..)| *r != Some(run));
+            self.unlinked.push((Some(run), Instant::now(), CLOSED_GRACE));
+        }
+    }
+
+    /// A run ended: what it left running ends too (a GUI it detached, a helper), and its window
+    /// in a Lindroids app closes even when its page cannot (frozen, or gone with its process).
+    fn run_over(&mut self, run: u32) {
+        let left = icons::survivors(run);
+        if !left.is_empty() {
+            info!("run {run} ended: ending what it left running {left:?}");
+            condemn(&left);
+            std::thread::spawn(move || end_processes(&left, Duration::ZERO, END_TERM_WAIT));
+        }
+        if let Some(app) = window_browser(&self.cfg.runtime_dir, run).filter(|a| a.starts_with("org.lindroids")) {
+            let Ok(exe) = lindroids_proto::self_exe() else { return };
+            let mut c = std::process::Command::new(exe);
+            c.args(["window-end", &run.to_string()]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            match c.spawn() {
+                Ok(mut child) => {
+                    info!("run {run} ended: closing its window in {app}");
+                    std::thread::spawn(move || child.wait());
+                }
+                Err(e) => warn!("run {run}: cannot close its window in {app}: {e}"),
+            }
+        }
     }
 
     /// `lindroids launch <id>` for an exported program's own page (installed as an app, and opened
@@ -889,7 +974,7 @@ impl State {
         self.page_launches.retain(|_, (l, _)| *l != id);
         portal::app_changed(self.primary_link().map_or(0, |l| l.version));
         // What the page was asked will not be answered (a file picker it showed, a file to open).
-        let unanswered: Vec<u32> = self.asked.iter().filter(|(_, l)| **l == id).map(|(r, _)| *r).collect();
+        let unanswered: Vec<u32> = self.asked.iter().filter(|(_, (l, _))| *l == id).map(|(r, _)| *r).collect();
         for r in unanswered {
             self.asked.remove(&r);
             portal::forget(r);
@@ -1078,7 +1163,14 @@ impl State {
     /// Handshake on a new link. Returns the link back while it is still pending.
     fn handshake(&mut self, mut link: Link, msg: ToServer) -> Option<Link> {
         match (&link.phase, msg) {
-            (Phase::Hello, ToServer::Hello { version, build, density, nonce: app_nonce, screen, page }) => {
+            (Phase::Hello, ToServer::Hello { version, build, density, nonce: app_nonce, screen, page, app }) => {
+                if let Some((package, template)) = app.filter(|(p, _)| p.starts_with("org.lindroids") && p.len() < 128) {
+                    if template < proto::APP_TEMPLATE && !self.app_templates.iter().any(|(p, t)| *p == package && *t == template) {
+                        warn!("{package} was built from window app template {template}, older than this Lindroids' {}", proto::APP_TEMPLATE);
+                    }
+                    self.app_templates.retain(|(p, _)| *p != package);
+                    self.app_templates.push((package, template));
+                }
                 link.page = page.filter(|p| p.starts_with('/') && p.len() < 256);
                 link.run = link.page.as_deref().and_then(run_of_page);
                 link.app = if link.run.is_none() { link.page.as_deref().and_then(app_of_page) } else { None };
@@ -1384,6 +1476,7 @@ impl State {
                     })
                     .collect(),
                 clients: self.clients,
+                apps: self.app_templates.clone(),
             }),
             CliRequest::Ticket { run } => Some(CliReply::Ticket { ticket: self.ticket(run), origin: self.origin() }),
             CliRequest::Displays => Some(CliReply::Displays { displays: load_displays() }),
@@ -1397,6 +1490,9 @@ impl State {
                 Some(CliReply::Ok { message: "stopping".into() })
             }
             CliRequest::Launch { pid, name, icon_png_b64, symbolic_png_b64, window, app_key, again, supervisor } => {
+                // Nothing of a run that ended may survive into this one (VS Code's single-instance
+                // socket would hand this launch to it).
+                kill_condemned();
                 let ordinal = icons::register(pid, icons::NewLaunch { name, icon: icon_png_b64, window, app_key: app_key.clone(), again, supervisor });
                 if !app_key.is_empty() {
                     info!("run {pid} is instance {ordinal} of {app_key}");
@@ -1441,6 +1537,7 @@ impl State {
                 if icons::wants_own_window(pid) {
                     self.send_from(Some(pid), &ToApp::RunEnded { code, output }, &[]);
                 }
+                self.run_over(pid);
                 Some(CliReply::Ok { message: "noted".into() })
             }
             CliRequest::Info => Some(CliReply::Info { system: portal::system() }),
@@ -1641,7 +1738,7 @@ pub fn run(cfg: Config) -> i32 {
             }
         }
     };
-    let port = proto::server_tcp_port(uid);
+    let port = tcp_port();
     let tcp_listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
         Ok(l) => {
             l.set_nonblocking(true).ok();
@@ -1701,6 +1798,7 @@ pub fn run(cfg: Config) -> i32 {
         sound: HashMap::new(),
         mic: HashSet::new(),
         asked: HashMap::new(),
+        app_templates: Vec::new(),
         claims: Vec::new(),
     };
     surface::register_globals(&dh);
@@ -1772,7 +1870,7 @@ pub fn run(cfg: Config) -> i32 {
         for fd in x11.as_ref().map(|x| x.poll_fds()).unwrap_or_default() {
             fds.push(pfd(fd));
         }
-        let over = |since: &Instant, grace: &Option<Duration>| grace.is_some_and(|g| since.elapsed() >= g);
+        let over = |since: &Instant, grace: &Duration| since.elapsed() >= *grace;
         let due: Vec<Option<u32>> = state.unlinked.iter().filter(|(_, since, grace)| over(since, grace)).map(|(r, ..)| *r).collect();
         if !due.is_empty() {
             state.unlinked.retain(|(_, since, grace)| !over(since, grace));
@@ -1792,6 +1890,7 @@ pub fn run(cfg: Config) -> i32 {
             for pid in reaped.lost {
                 warn!("run {pid} is gone, and nothing said how it ended (its `lindroids run` was killed?)");
                 state.send_from(Some(pid), &ToApp::RunEnded { code: -1, output: vec!["Lindroids lost track of this program: it ended, but not through `lindroids run`.".into()] }, &[]);
+                state.run_over(pid);
             }
             android::reap_running();
         }
@@ -1852,6 +1951,7 @@ pub fn run(cfg: Config) -> i32 {
                     Inbox::ToApp(m) => state.send_app(&m),
                     Inbox::WithPayload(m, p) => state.send_app_with(&m, &p),
                     Inbox::From(pid, m, p) => state.send_from(pid, &m, &p),
+                    Inbox::RunClosed(run) => state.run_closed(run),
                 }
             }
         }
@@ -1959,12 +2059,14 @@ pub fn run(cfg: Config) -> i32 {
                     continue;
                 }
                 let away = l.hidden_since.is_some_and(|t| t.elapsed() >= Duration::from_secs(3));
-                let grace = if l.closing || (!away && l.close_frame == Some(Some(1001))) {
-                    Some(Duration::from_secs(5))
-                } else if away {
-                    None
+                let closed = l.closing || (!away && l.close_frame == Some(Some(1001)));
+                let dropped = !closed && away;
+                let grace = if closed {
+                    CLOSED_GRACE
+                } else if dropped {
+                    background_limit()
                 } else {
-                    Some(linger())
+                    linger()
                 };
                 let run = l.run;
                 let how = match l.close_frame {
@@ -1975,12 +2077,14 @@ pub fn run(cfg: Config) -> i32 {
                 let said = if l.closing { ", said it was closing" } else { "" };
                 let hidden = l.hidden_since.map_or(String::new(), |t| format!(", out of sight {}s", t.elapsed().as_secs()));
                 let what = run.map_or("the rest".into(), |r| format!("run {r}"));
-                match grace {
-                    Some(g) => info!("page for {what} closed ({how}{said}{hidden}); what was started into it ends in {}s unless it links again", g.as_secs()),
-                    None => info!("page for {what} lost in the background ({how}{hidden}); what was started into it runs until a page links for it again"),
+                if dropped {
+                    info!("page for {what} lost in the background ({how}{hidden}); what was started into it runs until a page links for it again, for {}s at most", grace.as_secs());
+                } else {
+                    info!("page for {what} closed ({how}{said}{hidden}); what was started into it ends in {}s unless it links again", grace.as_secs());
                 }
                 state.drop_link(id);
                 if !state.links.iter().any(|l| l.run == run && l.app.is_none()) {
+                    state.unlinked.retain(|(r, ..)| *r != run);
                     state.unlinked.push((run, Instant::now(), grace));
                 }
             }
@@ -2040,7 +2144,13 @@ pub fn run(cfg: Config) -> i32 {
     // The programs `run` and `launch` started end with the server: without it they have no
     // display, and a program under proot outlives it (seen on a Galaxy Tab: an orphaned VSCodium,
     // not responding, that kept the next launch's window out of VSCodium's app).
-    end_all_launches();
+    let pids = icons::launched_pids();
+    if !pids.is_empty() {
+        info!("stopping: ending {pids:?}");
+        state.close_windows_of(&pids);
+        let _ = display.flush_clients();
+        end_processes(&pids, Duration::from_secs(2), Duration::from_secs(3));
+    }
     let _ = std::fs::remove_file(&wl_path);
     let _ = std::fs::remove_file(&cli_path);
     let _ = std::fs::remove_file(cfg.runtime_dir.join("server.pid"));
@@ -2164,48 +2274,76 @@ fn linger() -> Duration {
     Duration::from_secs(std::env::var("LINDROIDS_LINGER").ok().and_then(|v| v.parse().ok()).unwrap_or(60))
 }
 
-/// The window is gone, so are the programs `lindroids run` and `launch` started into it (`run`:
-/// that run; None: those without a window of their own): SIGTERM, and SIGKILL for whatever is
-/// still there 5 s later.
-fn end_launches(run: Option<u32>) {
-    let pids: Vec<u32> = match run {
-        Some(r) => icons::launched_pids().into_iter().filter(|p| *p == r).collect(),
-        None => icons::launched_pids().into_iter().filter(|p| !icons::wants_own_window(*p)).collect(),
-    };
-    if pids.is_empty() {
-        return;
-    }
-    info!("the window is gone: ending {pids:?}");
-    // The whole tree under each, children first: a program under proot is proot's tracee, and
-    // outlives proot otherwise.
-    let tree: Vec<u32> = pids.iter().flat_map(|p| icons::process_tree(*p)).collect();
-    for &p in &tree {
-        unsafe { libc::kill(p as i32, libc::SIGTERM) };
-    }
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(5));
-        for p in pids.iter().flat_map(|p| icons::process_tree(*p)) {
-            unsafe { libc::kill(p as i32, libc::SIGKILL) };
-        }
-    });
+/// How long the programs of a window closed by the user outlive it (a reload links again sooner).
+const CLOSED_GRACE: Duration = Duration::from_secs(5);
+/// Windows asked to close first get this long to do it, before SIGTERM.
+const END_CLOSE_WAIT: Duration = Duration::from_secs(3);
+/// And SIGTERM this long, before SIGKILL.
+const END_TERM_WAIT: Duration = Duration::from_secs(5);
+
+/// How long programs outlive a page dropped in the background without a word
+/// (`LINDROIDS_BACKGROUND`, seconds; 10 minutes). Android kills a page's process for memory
+/// while it is out of sight, and loads it again when the user comes back to the window, which
+/// links again: the program is kept for that. But a window swiped from Recents after Android
+/// stopped its app's watcher (`CloseWatch`) says nothing either, and its program must not run on
+/// for good with no window anywhere (seen on a Galaxy Tab: VSCodium's whole tree, no task).
+fn background_limit() -> Duration {
+    Duration::from_secs(std::env::var("LINDROIDS_BACKGROUND").ok().and_then(|v| v.parse().ok()).unwrap_or(600))
 }
 
-/// Every launched program's process tree: SIGTERM, then SIGKILL for what is left after 3 s.
-fn end_all_launches() {
-    let pids = icons::launched_pids();
-    if pids.is_empty() {
-        return;
+/// Processes of runs that ended, still to go (pid, start time).
+static CONDEMNED: Mutex<Vec<(u32, u64)>> = Mutex::new(Vec::new());
+
+fn condemn(pids: &[u32]) {
+    let mut c = CONDEMNED.lock().unwrap();
+    c.retain(|(p, t)| icons::start_time(*p) == Some(*t));
+    c.extend(pids.iter().filter_map(|p| icons::start_time(*p).map(|t| (*p, t))));
+}
+
+/// SIGKILL what is left of runs that ended.
+fn kill_condemned() {
+    let c = std::mem::take(&mut *CONDEMNED.lock().unwrap());
+    for (p, t) in c {
+        if icons::start_time(p) == Some(t) {
+            warn!("process {p} of a run that ended still runs: killing it");
+            unsafe { libc::kill(p as i32, libc::SIGKILL) };
+        }
     }
-    info!("stopping: ending {pids:?}");
-    for p in pids.iter().flat_map(|p| icons::process_tree(*p)) {
+}
+
+/// End the process trees of `pids` (launches, or plain processes): wait `close_wait` for them
+/// to end by themselves (their windows were asked to close), then SIGTERM the roots of each tree
+/// (a program's main process ends its children itself: Electron saves its state then; a program
+/// under proot is proot's tracee, and proot passes it on), then SIGKILL every process left,
+/// `term_wait` later. Blocks until done.
+fn end_processes(pids: &[u32], close_wait: Duration, term_wait: Duration) {
+    let tree = |pids: &[u32]| -> Vec<u32> {
+        let mut t: Vec<u32> = pids.iter().flat_map(|p| icons::process_tree(*p)).collect();
+        t.sort_unstable();
+        t.dedup();
+        t
+    };
+    let wait = |d: Duration| {
+        let t0 = Instant::now();
+        while t0.elapsed() < d && !tree(pids).is_empty() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let mut seen: Vec<(u32, u64)> = Vec::new();
+    let mut note = |t: &[u32]| seen.extend(t.iter().filter_map(|p| icons::start_time(*p).map(|s| (*p, s))));
+    note(&tree(pids));
+    wait(close_wait);
+    let t = tree(pids);
+    note(&t);
+    for p in icons::roots(&t) {
         unsafe { libc::kill(p as i32, libc::SIGTERM) };
     }
-    let t0 = Instant::now();
-    while t0.elapsed() < Duration::from_secs(3) && pids.iter().any(|p| Path::new(&format!("/proc/{p}")).exists()) {
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    for p in pids.iter().flat_map(|p| icons::process_tree(*p)) {
-        unsafe { libc::kill(p as i32, libc::SIGKILL) };
+    wait(term_wait);
+    note(&tree(pids));
+    for (p, s) in seen {
+        if icons::start_time(p) == Some(s) {
+            unsafe { libc::kill(p as i32, libc::SIGKILL) };
+        }
     }
 }
 

@@ -101,6 +101,36 @@ Verified with the corrected run environment:
 No Electron flags were added to production launches. The host debug app stands in for the
 Android/browser UI.
 
+## Window lifecycle (2026-11-10)
+
+A single run and its window go together (docs/DISPLAY.md, "Lifecycles"). Checked on this Linux
+host by `tests/run-regressions.py`, with `lindroids debug-app --run <pid> --ticket <ticket>`
+standing in for a run's own window, and plain HTTP for the window app's report:
+
+- The program exits: `run` ends, the server logs its end, and a helper it left in the background
+  is gone.
+- Its window is closed (`closing`, then the link goes): the program is asked to close
+  (`xdg_toplevel.close`), and, as it ignores that, gets SIGTERM about 8 s later (5 s grace, 3 s to
+  close); `run` exits 143.
+- The window app reports a removed task (`GET /run/<pid>/closed` with the run's ticket; a wrong
+  ticket gets 410): a program that closes when asked ends about 5 s later with status 0, and its
+  ticket is spent (`/alive` answers 410).
+- A launcher that detaches a GUI that closes its window but keeps running: the run ends 5 s later
+  and the GUI is gone.
+- The supervisor is SIGKILLed: the server finds the run lost and ends the GUI it had adopted
+  (the server logs `ending what it left running`).
+- Launched again after it ended: a new run with a new window, the old ticket spent, one instance.
+
+`tests/run-window.mjs` checks the page's side in headless Chromium: a spent ticket shows the end
+and closes the window (the window app, and a browser window that never linked), or goes back to the
+start page in a program's own app; the page tells the app its run and ticket, and that the run
+ended; an app older than the server's template is told once; in-app navigation sends no `closing`.
+Against the page before this round, all 8 checks fail.
+
+Here the test server takes its own loopback port (`LINDROIDS_TCP_PORT`), next to a real server.
+Without clang on `PATH`, `LINDROIDS_CLANG` must name one (the Android NDK's works) for the
+credential shim the fake-root check needs.
+
 ## Reproduce
 
 Requires an unprivileged Linux user, Python 3, `dbus-daemon`, `gdbus`, and a C compiler. clang
@@ -111,6 +141,8 @@ at least one must contain readable PEM certificates.
 ```sh
 cargo build -p lindroids -p lindroids-server -p lindroids-proto
 cargo test -p lindroids -p lindroids-server -p lindroids-proto
+python3 tests/run-regressions.py
+node tests/run-window.mjs
 LINDROIDS_TEST_TLS=1 python3 tests/run-regressions.py
 LINDROIDS_TEST_TLS=1 LINDROIDS_TEST_ELECTRON=/path/to/electron-43/electron \
   python3 tests/run-regressions.py

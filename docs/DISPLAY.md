@@ -420,27 +420,52 @@ shared page keeps "newest wins".
  started ──its page links──▶ shown ──page closed (Closing, or 1001 on screen)── 5 s ──▶ ended
     │                         │  ▲                                                     ▲
     │                         │  └──its page links again (within the grace)──┐         │
-    │                         ├──link lost on screen, without Closing──▶ detached ─ 60 s ┘
-    │                         └──link lost out of sight, without Closing──▶ in the background
-    │                                (no limit: until its page links again)
+    │                         ├──link lost on screen, without Closing──▶ detached ─ 60 s ┤
+    │                         ├──link lost out of sight, without Closing──▶ in the background
+    │                         │      (until its page links again, 10 min at most) ──────┤
+    │                         └──the window app: its task removed or finished── 5 s ────┘
  any state ──program exited / Ctrl+C / SIGHUP──▶ ended
 ```
 
 **When the window goes** (the grace is over):
 
-1. The relay sends SIGTERM to the run's whole process tree, children first. A program under proot
-   is proot's tracee and outlives proot otherwise *(tested: Xournal++ was left running before
-   this)*.
-2. The relay sends SIGKILL to whatever is left 5 seconds later.
-3. The supervisor's `wait` returns, and it exits with 128 + the signal number.
+1. The relay asks the run's windows to close (`xdg_toplevel.close`), as a desktop's close button
+   does: a program saves its state then (Electron's SIGTERM handler does not wait for that).
+2. 3 seconds later, the relay sends SIGTERM to the roots of the run's process tree, seen through
+   proot (proot does not pass SIGTERM on: its tracee, the program, gets it), so that a program's
+   main process ends its children itself. Before, every process got SIGTERM, children first,
+   and Electron's renderers died before its main process could save.
+3. The relay sends SIGKILL to whatever is left 5 seconds later, every process it saw in the tree.
+   A program under proot is proot's tracee and outlives proot otherwise *(tested: Xournal++ was
+   left running before this)*.
+4. The supervisor's `wait` returns, and it exits with 128 + the signal number (0 if the program
+   closed when asked).
+
+The same three steps end every run when the server stops (`lindroids stop`), 2 s and 3 s apart.
 
 **When the program goes** (and only then: a program with no window open for a while, a dialog in
 its place or a window it hides, still runs, and its window says so):
 
-1. The supervisor exits with its status.
-2. The page shows the program's icon and "`<name>` closed. Press Back to close this window."
-3. It also calls `window.close()` after 1.5 s, in case a splash window gave way to the real one.
-   Browsers that allow it close the window; Firefox's Custom Tabs ignore it.
+1. The supervisor (`lindroids run`, a subreaper: it adopts what the program detached) ends what
+   the program left behind: SIGTERM to the roots of what is left below it, SIGKILL 3 s later.
+   Left running, a detached GUI held on to what the next launch needed: VS Code's single-instance
+   socket handed that launch to it, and its window went to another run's page *(seen on the
+   tablet: VSCodium's whole tree running, no window anywhere)*.
+2. The supervisor tells the server (`RunEnded`) and exits with its status. A launcher that
+   detached its GUI and exited (VS Code's CLI) is followed to the GUI's end: its processes end, or
+   it has had no window at all for 5 seconds (a window it closes to open another is not its end).
+3. The server ends any process of the run that is still there: it notes the run's processes every
+   2 seconds while it runs, so a GUI is found even when its supervisor was killed (Android's
+   phantom process killer) and the run is lost. Before the next launch, whatever of an ended run
+   is still there gets SIGKILL.
+4. The page shows the program's icon and "`<name>` closed. The window closes with the program."
+5. It also calls `window.close()` after 1.5 s, in case a splash window gave way to the real one.
+   Browsers that allow it close the window; Firefox's Custom Tabs ignore it. In a Lindroids window
+   app the page closes its task (`lindroids.close()`), and the server has the app close it too
+   (`lindroids window-end <run>`: an `org.lindroids.END` broadcast to that app alone, with the
+   run's ticket), for a page that cannot: frozen in the background, or its process gone while its
+   card stays in Recents. A card left by a run that ended anyway goes when the next run's window
+   opens (the app asks the server which of its cards' runs still run, by their tickets).
 
 ### What the relay can see *(tested)*
 
@@ -450,7 +475,8 @@ its place or a window it hides, still runs, and its window says so):
 | The close button, or swiped away while the browser keeps running | `Closing`, then close frame **1001** | window closed: end in 5 s |
 | Back | nothing: the page takes it (out of full screen first) | still shown |
 | Chrome's close button (no `pagehide`) | close frame **1001** while on screen, or out of sight under 3 s | window closed: end in 5 s |
-| Another app in front, then Android kills the page's process for memory | `Shown: false`, then later close frame **1001** (the browser closes the link of a page whose process died), and no `Closing` | dropped in the background: **keeps running** until its page links again; the browser loads the page again when the user comes back to the window *(tested, Cromite: kept, and back from Recents in 1 s)* |
+| Another app in front, then Android kills the page's process for memory | `Shown: false`, then later close frame **1001** (the browser closes the link of a page whose process died), and no `Closing` | dropped in the background: **keeps running** until its page links again, for 10 minutes at most; the browser loads the page again when the user comes back to the window *(tested, Cromite: kept, and back from Recents in 1 s)* |
+| A Lindroids window app's task removed from Recents (or finished) | the app says so: `GET /run/<pid>/closed` with the run's ticket, from its `CloseWatch` service (`onTaskRemoved`) or the activity's `onDestroy` | window closed: end in 5 s, page or no page |
 | Another app in front, then the browser killed for memory | `Shown: false`, then **EOF** | the same *(tested)* |
 | A reload (Firefox reloads a raised window) | `Closing`, then a new link within a second | the same window: keeps running |
 | Swiped away, and it was the browser's last task | **EOF**, no close frame, ~1 s later: Android killed the browser | lost: end in 60 s, or kept if the page had been out of sight 3 s |
@@ -465,22 +491,36 @@ the page tells the relay when it leaves the screen and comes back (`Shown`).
   background. Phones do this all the time: the user switches to another app, and Android kills
   the browser's page process, or the whole browser, for memory. When the user comes back to the
   window, the browser loads the page again, and the page links to its run again (the ticket is in
-  its history entry). The program runs on until then, with no limit: its notification brings
-  the window back. Before, it ended 5 s later, and the window, back, said it had closed
-  *(reported on a Samsung phone; reproduced on b16 by killing Cromite's page process)*.
+  its history entry). The program runs on until then, for 10 minutes at most
+  (`LINDROIDS_BACKGROUND`, in seconds): its notification brings the window back. Before, it ended
+  5 s later, and the window, back, said it had closed *(reported on a Samsung phone; reproduced
+  on b16 by killing Cromite's page process)*. Before this round it had no limit at all, and a
+  window swiped away after its page was dropped left its program running for good, with no
+  window anywhere *(the tablet: VSCodium's whole tree under Termux, no Lindroids task)*.
 - **Closed by the user:** `Closing` (pagehide: the close button, swiped from Recents with
-  the page alive) or 1001 on screen: 5 s.
+  the page alive) or 1001 on screen: 5 s. In a Lindroids window app, also its task removed from
+  Recents, said by the app itself (below): 5 s.
 - **Lost on screen** (the browser crashed): 60 seconds (`LINDROIDS_LINGER`, in seconds).
 
-The cost: a window swiped from Recents *after* its page was dropped has no page left to say so,
-and its program runs on until it ends, Ctrl+C in Termux, or its window is brought back from the
-notification and closed.
+**The window app says when its window goes.** A page in the background is often frozen or gone,
+and cannot say anything. The app can: the page tells it which run it shows and the run's ticket
+(`lindroids.attached`), and the app keeps that per task. When the user removes the task from
+Recents, Android tells the app's `CloseWatch` service (`onTaskRemoved`); when the activity is
+finished for good, its `onDestroy`. Either asks the server `GET /run/<pid>/closed` over loopback
+with the ticket (header `X-Lindroids-Ticket`), and the server treats it as `Closing`. `CloseWatch`
+is a plain started service (no permission, no notification); Android stops it about a minute
+after the app leaves the screen, and each window starts it again when it comes back. A window
+swiped away after that, with its page dropped, is the one case left to the 10-minute limit.
 
 **The page links again by itself** when its link is lost while its program runs, also unseen in
 the background *(tested: a dropped link, a reload, both relinked to the running Calculator)*. It
 says "`<name>` closed" only when the program has ended: the server said so (`RunEnded`), it refused
 the window's ticket on the way back (a run's ticket goes with its process), or the server cannot
-be reached (the program's display went with it). Before, a window took any lost link for the
+be reached (the program's display went with it). A refused ticket is always the end, also for a
+window Android rebuilt from Recents that never linked on this page: before, only a window that had
+linked before took it so, and a rebuilt one sat on "This window was not opened by `lindroids
+run`" for good. A program's own app goes back to its start page instead, which starts the program
+again. Before, a window took any lost link for the
 end, and said so while its program still ran in Termux *(reported: Chrome on a Samsung phone,
 after leaving the window and coming back)*.
 Each window traces what happens to it into the server's log (shown and hidden, full screen,
@@ -550,8 +590,8 @@ of commit fdaf800 are reverted.
 Timings in the lab: the window was there 2 s after the tap, from a stopped Termux.
 
 **Tapping the icon of a program that is already running** brings its window back instead of
-starting another *(tested: one Mousepad, the same window)*. `launch` notes the pid it started in
-`<runtime>/launched/<id>.pid` and raises that run's window.
+starting another *(tested: one Mousepad, the same window)*. `launch` asks the server for the
+program's instances that run and raises the window of the one used last.
 
 ## Keeping the relay alive on Android
 
@@ -585,7 +625,7 @@ has a developer option to turn it off. Lindroids keeps its own process count low
 | Any Android version and vendor | Yes, with a browser that has Custom Tabs, which every major one does. Without one, the windows fall back to a plain browser tab. |
 | A window of its own, not a tab, not installed through the browser | Yes. A Custom Tab in its own task per program, opened and raised by Lindroids. Full screen from the first tap (no browser allows it sooner, see *Full screen*); before that, a thin bar with close, title and menu. |
 | The program's icon | Yes on the home screen, in the status bar and notifications, in the window, as the favicon, and on the start and end screens. In recents too with a Chromium-based browser, except on Samsung's launcher; Firefox shows its own icon there. |
-| Single run tied to its process | Window gone: the program ends 5 s later, or 60 s later if the browser died. Program gone: `run` exits and the window closes itself (Chromium), or shows its end screen until ✕ (Firefox does not let a page close a Custom Tab). |
+| Single run tied to its process | Window gone: the program is asked to close, and ends 5 s later (8 s if it ignores that), 60 s later if the browser died, 10 minutes later if its page was dropped in the background without a word. Program gone: `run` exits, nothing it started is left, and the window closes itself (Chromium, the window apps, also with the page frozen), or shows its end screen until ✕ (Firefox does not let a page close a Custom Tab). |
 | Export works with Termux closed | Yes. A Termux-owned shortcut with the program's icon, through the share receiver; 2 s to the window in the lab. |
 
 ## Ideas to make it better

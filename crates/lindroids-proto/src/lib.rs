@@ -24,6 +24,12 @@ pub mod fdpass;
 /// versions, and the CLI says which side needs updating.
 pub const PROTOCOL_VERSION: u32 = 8;
 
+/// The window app's own code (packaging/webview-app), numbered: bumped whenever it changes, so
+/// that an app built from an older template (its code is in the APK, and only `lindroids export`
+/// or `lindroids app install` builds it again) can be told apart. Its bridge says its number
+/// (`template()`; none before 1). `WindowActivity.TEMPLATE` is the same number.
+pub const APP_TEMPLATE: u32 = 1;
+
 /// The real uid of this process. Under proot's fake root (proot-distro, UserLAnd) getuid() says
 /// 0, but the app looks for the sandbox app's own uid; the kernel's view in /proc is not faked.
 pub fn real_uid() -> u32 {
@@ -385,6 +391,10 @@ pub enum ToServer {
         /// URL, which Firefox answers by switching to the tab instead of opening another.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         page: Option<String>,
+        /// The Android app showing the page, when it is one of Lindroids' window apps: its package
+        /// and the number of the template it was built from (`APP_TEMPLATE`; 0: older than 1).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app: Option<(String, u32)>,
     },
     /// Second message. A paired display: its id (`display`) and its signature over the relay's
     /// nonce (`proof`, `auth::display_transcript`). Pairing: a new public key (`public_key`), the
@@ -670,6 +680,10 @@ pub enum CliReply {
         /// The origin pages are served in.
         #[serde(default)]
         origin: String,
+        /// Lindroids' window apps that showed a page since the server started: package and
+        /// template number (`APP_TEMPLATE`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        apps: Vec<(String, u32)>,
     },
     Ok { message: String },
     Folder { path: Option<String> },

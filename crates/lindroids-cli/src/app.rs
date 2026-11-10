@@ -376,6 +376,38 @@ pub fn offer(apk: &Path, name: &str, page: &str) -> Result<Offered, String> {
     Ok(Offered::Browser(file))
 }
 
+/// Lindroids' window apps that showed a page since the server started and were built from an
+/// older template than the one this Lindroids carries (their code is in their APK: the fixes
+/// since are not in them), each with what builds it again. `except`: a package just rebuilt.
+pub fn out_of_date(rt: &Path, except: Option<&str>) -> Vec<(String, u32, String)> {
+    let Ok(lindroids_proto::CliReply::Status { apps, .. }) = crate::client::status(rt) else { return Vec::new() };
+    apps.into_iter()
+        .filter(|(pkg, t)| *t < lindroids_proto::APP_TEMPLATE && Some(pkg.as_str()) != except)
+        .map(|(pkg, t)| {
+            let how = rebuild_command(&pkg, &crate::export::load_all());
+            (pkg, t, how)
+        })
+        .collect()
+}
+
+/// What builds the window app `package` again.
+fn rebuild_command(package: &str, exports: &[lindroids_proto::Exported]) -> String {
+    if !is_program_app(package) {
+        return "lindroids app install".into();
+    }
+    match exports.iter().find(|r| lindroids_apk::package_for(&r.id) == package || r.webapk.as_deref() == Some(package)) {
+        Some(r) => format!("lindroids export {}", r.id),
+        None => "lindroids export <id> (lindroids list)".into(),
+    }
+}
+
+/// Says so for each app `out_of_date` finds.
+pub fn warn_out_of_date(rt: &Path, except: Option<&str>) {
+    for (pkg, t, how) in out_of_date(rt, except) {
+        eprintln!("lindroids: the app {pkg} was built by an older Lindroids (template {t}, now {}), without the fixes since: run `{how}`", lindroids_proto::APP_TEMPLATE);
+    }
+}
+
 pub fn cmd_app(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         None | Some("status") => {
@@ -398,5 +430,20 @@ mod tests {
     #[test]
     fn release_names_the_apk() {
         assert!(super::PACKAGE.contains('.'));
+    }
+
+    #[test]
+    fn the_apps_code_is_the_template_the_server_expects() {
+        let java = include_str!("../../../packaging/webview-app/src/org/lindroids/WindowActivity.java");
+        assert!(java.contains(&format!("static final int TEMPLATE = {};", lindroids_proto::APP_TEMPLATE)), "bump WindowActivity.TEMPLATE and lindroids_proto::APP_TEMPLATE together");
+    }
+
+    #[test]
+    fn what_rebuilds_an_app() {
+        let rec = lindroids_proto::Exported { id: "codium".into(), name: "VSCodium".into(), icon_png_b64: String::new(), run: Vec::new(), webapk: None, browser: None };
+        let pkg = lindroids_apk::package_for("codium");
+        assert_eq!(super::rebuild_command(&pkg, &[rec]), "lindroids export codium");
+        assert!(super::rebuild_command(&pkg, &[]).starts_with("lindroids export <id>"));
+        assert_eq!(super::rebuild_command(super::WINDOWS_PACKAGE, &[]), "lindroids app install");
     }
 }
