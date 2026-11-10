@@ -67,17 +67,34 @@ pub fn scale_changed(state: &mut State) {
     }
 }
 
-pub fn screen_size_hint(state: &mut State, w: u32, h: u32) {
-    let bigger = match state.outputs.screen {
-        None => true,
-        Some((sw, sh)) => w * h > sw * sh,
-    };
-    if bigger {
-        state.outputs.screen = Some((w, h));
+/// The screen's size as the page reports it (in its hello, and with each window size: it turns
+/// with the device), never smaller than the window: the output follows a rotation both ways.
+pub fn set_screen(state: &mut State, (w, h): (u32, u32), window: Option<(u32, u32)>) {
+    let (ww, wh) = window.unwrap_or((0, 0));
+    let size = (w.max(ww), h.max(wh));
+    if state.outputs.screen != Some(size) {
+        state.outputs.screen = Some(size);
         for o in &state.outputs.resources {
             send_all(state, o);
         }
     }
+}
+
+/// A window's size from a page that does not report the screen: the screen is at least as large,
+/// and turned the window's way when the window no longer fits the other way.
+pub fn screen_size_hint(state: &mut State, w: u32, h: u32) {
+    let screen = match state.outputs.screen {
+        None => (w, h),
+        Some((sw, sh)) if w > sw || h > sh => {
+            if w <= sh && h <= sw {
+                (sh, sw)
+            } else {
+                (sw.max(w), sh.max(h))
+            }
+        }
+        Some(s) => s,
+    };
+    set_screen(state, screen, None);
 }
 
 impl GlobalDispatch<wl_output::WlOutput, ()> for State {

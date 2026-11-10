@@ -398,15 +398,38 @@ pub enum ToServer {
     },
     /// The frame sent last for this window is on screen (or dropped); send the next one.
     FrameDone { win: u32 },
-    /// The window's surface changed size, in physical pixels.
-    Resize { win: u32, width: u32, height: u32, density: f32 },
+    /// The window's surface changed size, in physical pixels, and the screen's size now (it turns
+    /// with the device), if the page knows it.
+    Resize {
+        win: u32,
+        width: u32,
+        height: u32,
+        density: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        screen: Option<(u32, u32)>,
+    },
     Touch { win: u32, action: TouchAction, id: i32, x: f32, y: f32, time_ms: u32 },
     Pointer { win: u32, action: PointerAction, x: f32, y: f32, button: u32, time_ms: u32 },
-    Scroll { win: u32, dx: f32, dy: f32, time_ms: u32 },
-    /// A key, as an Android KeyEvent keycode (the server maps it to evdev).
+    /// Scrolling. `pixels` false: wheel steps (notches), positive down and right. `pixels` true: a
+    /// touchpad's (or any smooth source's) distance, in the window's physical pixels.
+    Scroll {
+        win: u32,
+        dx: f32,
+        dy: f32,
+        time_ms: u32,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pixels: bool,
+    },
+    /// A key, as an Android KeyEvent keycode (the server maps it to evdev). A key already down
+    /// going down again is the browser's auto-repeat: the client gets a release and a press.
     Key { win: u32, code: u32, down: bool, time_ms: u32 },
-    /// Whether the page's keyboard has Caps Lock on. The page is the source of truth.
-    CapsLock { on: bool },
+    /// The page keyboard's lock state: Caps Lock (`on`) and Num Lock (`num`, when the page knows
+    /// it). The page is the source of truth.
+    CapsLock {
+        on: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        num: Option<bool>,
+    },
     /// Committed text from the soft keyboard / IME.
     Text { win: u32, text: String },
     Focus { win: u32, focused: bool },

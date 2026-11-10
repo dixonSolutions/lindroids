@@ -1210,16 +1210,21 @@ impl State {
                     audio::record_data(stream, payload);
                 }
             }
-            ToServer::Resize { win, width, height, .. } => {
+            ToServer::Resize { win, width, height, screen, .. } => {
                 if let Some(w) = self.windows.get_mut(&win) {
                     w.phys = Some((width, height));
                     w.dirty = true;
                     // The page sizes a window when it shows it or its canvas came back empty (a
-                    // lost GPU context): the next frame is a whole one, not only what changed.
+                    // lost GPU context): the next frame is a whole one, not only what changed. A
+                    // frame on its way still gets its acknowledgement (the page drops it if it is
+                    // the old size): the whole frame follows it, so a burst of sizes (a rotation)
+                    // never has more than one frame out.
                     w.shown_size = (0, 0);
-                    w.in_flight = false;
                 }
-                output::screen_size_hint(self, width, height);
+                match screen {
+                    Some(s) => output::set_screen(self, s, Some((width, height))),
+                    None => output::screen_size_hint(self, width, height),
+                }
                 self.configure_window(win, false);
             }
             ToServer::FrameDone { win } => {
@@ -1246,9 +1251,9 @@ impl State {
                 }
             }
             ToServer::Shown { shown } => {
-                // The page of the focused window hid: its key-ups may never come.
+                // The page of the focused window hid: its key-ups and button releases may never come.
                 if !shown && seat::focus_on_link(self.seat.focus_win, |w| self.windows.get(&w).and_then(|w| w.link), from) {
-                    seat::release_keys(self);
+                    seat::release_input(self);
                 }
                 if let Some(l) = self.links.iter_mut().find(|l| l.id == from) {
                     l.hidden_since = if shown { None } else { l.hidden_since.or(Some(Instant::now())) };
@@ -1276,9 +1281,9 @@ impl State {
             }
             ToServer::Touch { win, action, id, x, y, time_ms } => seat::touch(self, win, action, id, x, y, time_ms),
             ToServer::Pointer { win, action, x, y, button, time_ms } => seat::pointer(self, win, action, x, y, button, time_ms),
-            ToServer::Scroll { win, dx, dy, time_ms } => seat::scroll(self, win, dx, dy, time_ms),
+            ToServer::Scroll { win, dx, dy, time_ms, pixels } => seat::scroll(self, win, dx, dy, pixels, time_ms),
             ToServer::Key { win, code, down, time_ms } => seat::key(self, win, code, down, time_ms),
-            ToServer::CapsLock { on } => seat::caps_lock(self, on),
+            ToServer::CapsLock { on, num } => seat::locks(self, on, num),
             ToServer::Text { win, text } => seat::text(self, win, &text),
             ToServer::Clipboard { text } => data::android_clipboard(self, text),
             ToServer::FolderPicked { request, path } => self.reply_cli(&Waiting::Folder(request), CliReply::Folder { path }),
@@ -1902,6 +1907,8 @@ pub fn run(cfg: Config) -> i32 {
                 }
             }
         }
+        // Input reaches the programs now, not after a frame is composed and packed below.
+        let _ = display.flush_clients();
         let mut i = state.clis.len();
         while i > 0 {
             i -= 1;

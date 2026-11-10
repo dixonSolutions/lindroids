@@ -28,11 +28,14 @@ pub struct Seat {
     pub focus_win: Option<u32>,
     pub(crate) kb_focus: Option<wl_surface::WlSurface>,
     pub ptr_focus: Option<wl_surface::WlSurface>,
+    /// Where `ptr_focus` starts, in window logical coordinates: while a button is down the pointer
+    /// stays on it (an implicit grab) and moves relative to this.
+    ptr_origin: (f64, f64),
     /// Touch point -> (surface, surface origin in window logical coordinates).
     touch_targets: HashMap<i32, (wl_surface::WlSurface, f64, f64)>,
     /// Touch point driving the emulated pointer, for clients without wl_touch.
     emulating: Option<i32>,
-    /// The keys the focused client holds down, and Caps Lock.
+    /// The keys and buttons the page holds down, and the locks.
     keys: KeyState,
     /// The on-screen keyboard follows taps, as on Android, never comes up without one (apps
     /// enable text input for a field focused at start: the keyboard came up on its own), and:
@@ -49,12 +52,14 @@ pub struct Seat {
     touch_down: HashMap<i32, (f32, f32, std::time::Instant)>,
 }
 
-/// The keys the page holds down, and the lock modifiers. The modifiers a client is sent are the
-/// ones held down now, so a key-up that never comes can only leave a key down until the next
-/// `release_all`, not for good.
+/// What the page holds down on the Linux side: keys (evdev codes) and pointer buttons, and the lock
+/// modifiers. The modifiers a client is sent are the ones held down now. The server owns letting
+/// go: when the focused window loses the focus, its page hides or its link drops
+/// (`release_input`, `release_link`), whatever key-ups and button releases never came.
 #[derive(Default)]
 pub struct KeyState {
     pressed: BTreeSet<u32>,
+    buttons: BTreeSet<u32>,
     locked: u32,
 }
 
@@ -68,20 +73,45 @@ impl KeyState {
         self.locked
     }
 
-    /// A key went down or up. Returns whether the code was held before this call: a key-up for a
-    /// code that was not held (the focus moved mid-hold) has nothing to release on the client.
-    pub fn set_key(&mut self, code: u32, down: bool) -> bool {
-        let was_held = self.pressed.contains(&code);
-        if down {
-            self.pressed.insert(code);
-        } else {
-            self.pressed.remove(&code);
+    /// A key message from the page: what the client is sent for it, in order (true: pressed).
+    /// - A key going down again while down (the browser's auto-repeat, or a key-up that never
+    ///   came): released and pressed again. A client never gets a press for a key it has down,
+    ///   and repeats come from one place, the page's keyboard (clients are told not to repeat).
+    /// - A key-up for a key not down (the focus moved mid-hold, or it was let go already): nothing.
+    pub fn key(&mut self, code: u32, down: bool) -> &'static [bool] {
+        match (down, self.pressed.contains(&code)) {
+            (true, false) => {
+                self.pressed.insert(code);
+                &[true]
+            }
+            (true, true) => &[false, true],
+            (false, true) => {
+                self.pressed.remove(&code);
+                &[false]
+            }
+            (false, false) => &[],
         }
-        was_held
     }
 
-    /// Caps Lock's state, from the page. Returns whether it changed.
-    pub fn set_locked(&mut self, locked: u32) -> bool {
+    /// A pointer button went down or up: whether the client is told (a press of a button that is
+    /// down, or a release of one that is not, is nothing new).
+    pub fn button(&mut self, code: u32, pressed: bool) -> bool {
+        if pressed {
+            self.buttons.insert(code)
+        } else {
+            self.buttons.remove(&code)
+        }
+    }
+
+    pub fn any_button(&self) -> bool {
+        !self.buttons.is_empty()
+    }
+
+    /// The page's lock state: Caps Lock, and Num Lock when it says (unchanged otherwise). Returns
+    /// whether it changed.
+    pub fn set_locks(&mut self, caps: bool, num: Option<bool>) -> bool {
+        let num = num.map_or(self.locked & keys::MOD_NUM, |n| if n { keys::MOD_NUM } else { 0 });
+        let locked = if caps { keys::MOD_LOCK } else { 0 } | num;
         if self.locked == locked {
             return false;
         }
@@ -89,15 +119,20 @@ impl KeyState {
         true
     }
 
-    /// Whether a key can change the modifiers a client sees (Caps Lock too: its modifiers are
-    /// sent so the client's own toggle is put back to ours).
+    /// Whether a key can change the modifiers a client sees (the lock keys too: the modifiers are
+    /// sent so the client's own toggle is put back to the page's state).
     pub fn is_modifier_key(code: u32) -> bool {
-        keys::modifier_of(code) != 0 || code == keys::KEY_CAPSLOCK
+        keys::modifier_of(code) != 0 || code == keys::KEY_CAPSLOCK || code == keys::KEY_NUMLOCK
     }
 
-    /// Lets go of every key: the codes that were down, in order. The lock stays.
-    pub fn release_all(&mut self) -> Vec<u32> {
+    /// Lets go of every key: the codes that were down, in order. The locks stay.
+    pub fn release_keys(&mut self) -> Vec<u32> {
         std::mem::take(&mut self.pressed).into_iter().collect()
+    }
+
+    /// Lets go of every button: the codes that were down, in order.
+    pub fn release_buttons(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.buttons).into_iter().collect()
     }
 }
 
@@ -220,8 +255,13 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
                 if let Some((fd, size)) = keymap_fd() {
                     k.keymap(wl_keyboard::KeymapFormat::XkbV1, fd.as_fd(), size);
                 }
+                // No repeating in the client: the page's keyboard repeats (the browser's auto-repeat
+                // comes as the key released and pressed again, see `KeyState::key`). One source,
+                // the one that knows when the key is really up: a key-up lost or held back on a
+                // busy link can never make a client repeat on its own, and Android's own repeat
+                // settings (delay, rate, off) apply.
                 if k.version() >= 4 {
-                    k.repeat_info(30, 400);
+                    k.repeat_info(0, 0);
                 }
                 // A keyboard bound by the focused client must learn about the focus.
                 if let Some(s) = state.seat.kb_focus.clone() {
@@ -375,10 +415,12 @@ pub fn surface_destroyed(state: &mut State, id: &ObjectId) {
     if seat.kb_focus.as_ref().map_or(false, |s| &s.id() == id) {
         seat.kb_focus = None;
         // Nobody left to send the key-ups to: forget them, or the next focus gets them as held.
-        seat.keys.release_all();
+        seat.keys.release_keys();
     }
     if seat.ptr_focus.as_ref().map_or(false, |s| &s.id() == id) {
         seat.ptr_focus = None;
+        seat.keys.release_buttons();
+        seat.emulating = None;
     }
     seat.touch_targets.retain(|_, (s, _, _)| &s.id() != id);
 }
@@ -386,7 +428,7 @@ pub fn surface_destroyed(state: &mut State, id: &ObjectId) {
 /// Lets go of the keys the focused client holds, and of the Shift etc. on it: a key-up that never
 /// comes (the window lost the focus, its page hid or went) must not leave them down there.
 pub fn release_keys(state: &mut State) {
-    let released = state.seat.keys.release_all();
+    let released = state.seat.keys.release_keys();
     if released.is_empty() {
         return;
     }
@@ -405,6 +447,30 @@ pub fn release_keys(state: &mut State) {
     }
 }
 
+/// Lets go of the buttons held on the surface under the pointer (and the touch that drives it).
+fn release_buttons(state: &mut State) {
+    state.seat.emulating = None;
+    let released = state.seat.keys.release_buttons();
+    let Some(surface) = state.seat.ptr_focus.clone().filter(|_| !released.is_empty()) else { return };
+    let time = state.now_ms();
+    for code in released {
+        let serial = state.next_serial();
+        for p in state.seat.pointers.iter().filter(|p| same_client(*p, &surface)) {
+            p.button(serial, time, code, wl_pointer::ButtonState::Released);
+        }
+    }
+    for p in state.seat.pointers.iter().filter(|p| same_client(*p, &surface) && p.version() >= 5) {
+        p.frame();
+    }
+}
+
+/// The page stops getting input (the focused window lost the focus, its page hid): every key and
+/// button it held goes up.
+pub fn release_input(state: &mut State) {
+    release_keys(state);
+    release_buttons(state);
+}
+
 /// Whether the focused window is one of `link`'s windows. `link_of` maps a window to its page.
 pub fn focus_on_link(focus_win: Option<u32>, link_of: impl Fn(u32) -> Option<u64>, link: u64) -> bool {
     focus_win.and_then(link_of) == Some(link)
@@ -417,26 +483,19 @@ fn surface_link(state: &State, surface: &wl_surface::WlSurface) -> Option<u64> {
 }
 
 /// A page is dropped: what it holds goes, and nothing of another page's. Its keys go only when it
-/// has the focus (its key-ups will not come); the emulated button and the touches go only when
-/// they are in its windows, so a background page leaving does not cancel a live touch elsewhere.
+/// has the focus (its key-ups will not come); the buttons and the touches go only when they are in
+/// its windows, so a background page leaving does not cancel a live touch elsewhere.
 pub fn release_link(state: &mut State, link: u64) {
     if focus_on_link(state.seat.focus_win, |w| state.windows.get(&w).and_then(|w| w.link), link) {
         release_keys(state);
     }
+    if state.seat.ptr_focus.as_ref().is_some_and(|s| surface_link(state, s) == Some(link)) {
+        release_buttons(state);
+    }
     let gone: Vec<i32> = state.seat.touch_targets.iter().filter(|(_, (s, _, _))| surface_link(state, s) == Some(link)).map(|(id, _)| *id).collect();
-    // The touch driving the emulated pointer went with its window: let go of the button.
     if state.seat.emulating.is_some_and(|id| gone.contains(&id)) {
-        state.seat.emulating = None;
-        if let Some(surface) = state.seat.ptr_focus.clone() {
-            let serial = state.next_serial();
-            let time = state.now_ms();
-            for p in state.seat.pointers.iter().filter(|p| same_client(*p, &surface)) {
-                p.button(serial, time, BTN_LEFT, wl_pointer::ButtonState::Released);
-                if p.version() >= 5 {
-                    p.frame();
-                }
-            }
-        }
+        // The touch driving the emulated pointer went with its window: let go of the button.
+        release_buttons(state);
     }
     let mut cancelled = Vec::new();
     for id in gone {
@@ -488,6 +547,7 @@ pub fn window_focus(state: &mut State, win: u32, focused: bool) {
         set_keyboard_focus(state, surface);
     } else if state.seat.focus_win == Some(win) {
         state.seat.focus_win = None;
+        release_buttons(state);
         set_keyboard_focus(state, None);
     }
     if let Some(w) = state.windows.get_mut(&win) {
@@ -507,18 +567,20 @@ fn to_logical(state: &State, win: u32, x: f32, y: f32) -> (f64, f64) {
 }
 
 fn pointer_motion(state: &mut State, win: u32, lx: f64, ly: f64, time: u32) {
-    let Some((sid, sx, sy)) = shell::surface_at(state, win, lx, ly) else { return };
-    let Some(surface) = state.surfaces.get(&sid).map(|s| s.res.clone()) else { return };
-    if state.seat.ptr_focus.as_ref() != Some(&surface) {
-        if let Some(old) = state.seat.ptr_focus.take() {
-            let serial = state.next_serial();
-            for p in state.seat.pointers.iter().filter(|p| same_client(*p, &old)) {
-                p.leave(serial, &old);
-                if p.version() >= 5 {
-                    p.frame();
-                }
-            }
+    // While a button is down the surface it went down on keeps the pointer (an implicit grab): a
+    // drag across a popup or a subsurface still ends, released, where it began.
+    let grab = state.seat.ptr_focus.clone().filter(|_| state.seat.keys.any_button());
+    let (surface, sx, sy) = match grab {
+        Some(s) => (s, lx - state.seat.ptr_origin.0, ly - state.seat.ptr_origin.1),
+        None => {
+            let Some((sid, sx, sy)) = shell::surface_at(state, win, lx, ly) else { return };
+            let Some(surface) = state.surfaces.get(&sid).map(|s| s.res.clone()) else { return };
+            state.seat.ptr_origin = (lx - sx, ly - sy);
+            (surface, sx, sy)
         }
+    };
+    if state.seat.ptr_focus.as_ref() != Some(&surface) {
+        pointer_leave(state);
         let serial = state.next_serial();
         for p in state.seat.pointers.iter().filter(|p| same_client(*p, &surface)) {
             p.enter(serial, &surface, sx, sy);
@@ -533,11 +595,25 @@ fn pointer_motion(state: &mut State, win: u32, lx: f64, ly: f64, time: u32) {
     }
 }
 
+fn pointer_leave(state: &mut State) {
+    let Some(old) = state.seat.ptr_focus.take() else { return };
+    let serial = state.next_serial();
+    for p in state.seat.pointers.iter().filter(|p| same_client(*p, &old)) {
+        p.leave(serial, &old);
+        if p.version() >= 5 {
+            p.frame();
+        }
+    }
+}
+
 fn pointer_button(state: &mut State, button: u32, pressed: bool, time: u32) {
+    let Some(surface) = state.seat.ptr_focus.clone() else { return };
+    if !state.seat.keys.button(button, pressed) {
+        return;
+    }
     if !pressed {
         tapped(state);
     }
-    let Some(surface) = state.seat.ptr_focus.clone() else { return };
     let serial = state.next_serial();
     let st = if pressed { wl_pointer::ButtonState::Pressed } else { wl_pointer::ButtonState::Released };
     for p in state.seat.pointers.iter().filter(|p| same_client(*p, &surface)) {
@@ -552,14 +628,9 @@ pub fn pointer(state: &mut State, win: u32, action: PointerAction, x: f32, y: f3
     let (lx, ly) = to_logical(state, win, x, y);
     match action {
         PointerAction::Enter | PointerAction::Motion => pointer_motion(state, win, lx, ly, time),
-        PointerAction::Leave => {
-            if let Some(old) = state.seat.ptr_focus.take() {
-                let serial = state.next_serial();
-                for p in state.seat.pointers.iter().filter(|p| same_client(*p, &old)) {
-                    p.leave(serial, &old);
-                }
-            }
-        }
+        // Not while a button is down: the surface keeps the pointer until it is released.
+        PointerAction::Leave if !state.seat.keys.any_button() => pointer_leave(state),
+        PointerAction::Leave => {}
         PointerAction::Press | PointerAction::Release => {
             let pressed = action == PointerAction::Press;
             if pressed && !shell::in_popup(state, win, lx, ly) {
@@ -579,20 +650,26 @@ pub fn pointer(state: &mut State, win: u32, action: PointerAction, x: f32, y: f3
     }
 }
 
-pub fn scroll(state: &mut State, _win: u32, dx: f32, dy: f32, time: u32) {
+/// Scrolling: wheel steps (`pixels` false) as discrete steps of 15, or a touchpad's distance in
+/// the window's physical pixels (`pixels` true) as a continuous axis, in surface coordinates.
+pub fn scroll(state: &mut State, win: u32, dx: f32, dy: f32, pixels: bool, time: u32) {
     let Some(surface) = state.seat.ptr_focus.clone() else { return };
+    let fit = state.windows.get(&win).map_or(1.0, |w| w.fit as f64);
+    let k = if pixels { 1.0 / (state.scale as f64 * fit) } else { 15.0 };
+    let source = if pixels { wl_pointer::AxisSource::Continuous } else { wl_pointer::AxisSource::Wheel };
     for p in state.seat.pointers.iter().filter(|p| same_client(*p, &surface)) {
         if p.version() >= 5 {
-            p.axis_source(wl_pointer::AxisSource::Wheel);
+            p.axis_source(source);
         }
         for (axis, v) in [(wl_pointer::Axis::VerticalScroll, dy), (wl_pointer::Axis::HorizontalScroll, dx)] {
             if v == 0.0 {
                 continue;
             }
-            if p.version() >= 5 {
-                p.axis_discrete(axis, v.round() as i32);
+            let steps = v.round() as i32;
+            if !pixels && steps != 0 && p.version() >= 5 {
+                p.axis_discrete(axis, steps);
             }
-            p.axis(time, axis, v as f64 * 15.0);
+            p.axis(time, axis, v as f64 * k);
         }
         if p.version() >= 5 {
             p.frame();
@@ -702,42 +779,60 @@ pub fn touch(state: &mut State, win: u32, action: TouchAction, id: i32, x: f32, 
 
 fn send_key(state: &mut State, code: u32, down: bool, time: u32) {
     let Some(surface) = state.seat.kb_focus.clone() else { return };
-    // A key-up for a key the client was never sent (the focus moved while it was held) is no key
-    // to release: sending it would release a key the client never had, and its modifiers with it.
-    let was_held = state.seat.keys.set_key(code, down);
-    if !down && !was_held {
+    let steps = state.seat.keys.key(code, down);
+    if steps.is_empty() {
         return;
     }
-    // Caps Lock's state comes from the page (`caps_lock`); the key alone does not toggle it. The
-    // modifiers are still sent so a client's own toggle on this key is put back to ours.
+    // The locks come from the page (`locks`); a lock key alone does not toggle them. The modifiers
+    // are still sent so a client's own toggle on the key is put back to the page's state.
     let mods_changed = KeyState::is_modifier_key(code);
-    let serial = state.next_serial();
-    let st = if down { wl_keyboard::KeyState::Pressed } else { wl_keyboard::KeyState::Released };
-    let (depressed, locked) = (state.seat.keys.depressed(), state.seat.keys.locked());
-    for k in state.seat.keyboards.iter().filter(|k| same_client(*k, &surface)) {
-        k.key(serial, time, code, st);
-        if mods_changed {
+    for &pressed in steps {
+        let serial = state.next_serial();
+        let st = if pressed { wl_keyboard::KeyState::Pressed } else { wl_keyboard::KeyState::Released };
+        for k in state.seat.keyboards.iter().filter(|k| same_client(*k, &surface)) {
+            k.key(serial, time, code, st);
+        }
+    }
+    if mods_changed {
+        let serial = state.next_serial();
+        let (depressed, locked) = (state.seat.keys.depressed(), state.seat.keys.locked());
+        for k in state.seat.keyboards.iter().filter(|k| same_client(*k, &surface)) {
             k.modifiers(serial, depressed, 0, locked, 0);
         }
     }
 }
 
-pub fn caps_lock(state: &mut State, on: bool) {
-    let locked = if on { keys::MOD_LOCK } else { 0 };
-    if !state.seat.keys.set_locked(locked) {
+/// The page keyboard's Caps Lock and Num Lock.
+pub fn locks(state: &mut State, caps: bool, num: Option<bool>) {
+    if !state.seat.keys.set_locks(caps, num) {
         return;
     }
     let Some(surface) = state.seat.kb_focus.clone() else { return };
     let serial = state.next_serial();
-    let depressed = state.seat.keys.depressed();
+    let (depressed, locked) = (state.seat.keys.depressed(), state.seat.keys.locked());
     for k in state.seat.keyboards.iter().filter(|k| same_client(*k, &surface)) {
         k.modifiers(serial, depressed, 0, locked, 0);
     }
 }
 
+/// Whether a key message is dropped (None), or goes to the focused window, taking the focus first
+/// (Some(true)) or not (Some(false)). Only a key going down takes the focus: a key-up for a window
+/// without it (sent as its page hid, or after another window took the focus) has nothing held
+/// there, which was let go when the focus went.
+pub fn key_route(focus_win: Option<u32>, win: u32, down: bool) -> Option<bool> {
+    match (focus_win == Some(win), down) {
+        (true, _) => Some(false),
+        (false, true) => Some(true),
+        (false, false) => None,
+    }
+}
+
 pub fn key(state: &mut State, win: u32, android_code: u32, down: bool, time: u32) {
-    if state.seat.focus_win != Some(win) {
-        window_focus(state, win, true);
+    match key_route(state.seat.focus_win, win, down) {
+        None => return,
+        Some(true) if !state.windows.contains_key(&win) => return,
+        Some(true) => window_focus(state, win, true),
+        Some(false) => {}
     }
     if let Some(code) = keys::android_to_evdev(android_code as i32) {
         send_key(state, code, down, time);
@@ -782,42 +877,54 @@ pub fn text(state: &mut State, win: u32, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     const KEY_A: u32 = 30;
 
     #[test]
-    fn set_key_says_whether_the_code_was_held() {
+    fn a_key_down_again_is_released_and_pressed_never_pressed_twice() {
         let mut k = KeyState::default();
-        // A key-up for a code never pressed (the focus moved mid-hold) is not a held key.
-        assert!(!k.set_key(KEY_A, false));
-        assert!(!k.set_key(KEY_A, true));
-        // A second down while held is held before the call.
-        assert!(k.set_key(KEY_A, true));
-        assert!(k.set_key(KEY_A, false));
-        assert!(!k.set_key(KEY_A, false));
+        assert_eq!(k.key(KEY_A, false), &[] as &[bool]);
+        assert_eq!(k.key(KEY_A, true), &[true]);
+        // The browser's auto-repeat (or a lost key-up, then the key again).
+        assert_eq!(k.key(KEY_A, true), &[false, true]);
+        assert_eq!(k.key(KEY_A, false), &[false]);
+        assert_eq!(k.key(KEY_A, false), &[] as &[bool]);
         assert_eq!(k.depressed(), 0);
     }
 
     #[test]
-    fn is_modifier_key_covers_modifiers_and_caps_lock_only() {
+    fn buttons_are_told_once() {
+        let mut k = KeyState::default();
+        assert!(!k.button(BTN_LEFT, false));
+        assert!(k.button(BTN_LEFT, true));
+        assert!(!k.button(BTN_LEFT, true));
+        assert!(k.any_button());
+        assert_eq!(k.release_buttons(), vec![BTN_LEFT]);
+        assert!(!k.button(BTN_LEFT, false));
+        assert!(!k.any_button());
+    }
+
+    #[test]
+    fn is_modifier_key_covers_modifiers_and_the_lock_keys_only() {
         assert!(KeyState::is_modifier_key(keys::KEY_LEFTSHIFT));
         assert!(KeyState::is_modifier_key(keys::KEY_LEFTCTRL));
+        assert!(KeyState::is_modifier_key(keys::KEY_RIGHTALT));
         assert!(KeyState::is_modifier_key(keys::KEY_CAPSLOCK));
+        assert!(KeyState::is_modifier_key(keys::KEY_NUMLOCK));
         assert!(!KeyState::is_modifier_key(KEY_A));
     }
 
     #[test]
-    fn release_all_takes_a_held_shift_whose_key_up_never_came() {
+    fn release_keys_takes_a_held_shift_whose_key_up_never_came() {
         let mut k = KeyState::default();
-        assert!(!k.set_key(keys::KEY_LEFTSHIFT, true));
-        assert!(!k.set_key(KEY_A, true));
-        assert!(k.set_key(KEY_A, false));
-        // Shift is still held, and no key-up for it has come.
+        k.key(keys::KEY_LEFTSHIFT, true);
+        k.key(KEY_A, true);
+        k.key(KEY_A, false);
         assert_eq!(k.depressed(), keys::MOD_SHIFT);
-        // Focus goes: the held key is released and nothing stays depressed.
-        assert_eq!(k.release_all(), vec![keys::KEY_LEFTSHIFT]);
+        assert_eq!(k.release_keys(), vec![keys::KEY_LEFTSHIFT]);
         assert_eq!(k.depressed(), 0);
-        assert!(k.release_all().is_empty());
+        assert!(k.release_keys().is_empty());
     }
 
     #[test]
@@ -831,9 +938,7 @@ mod tests {
         assert!(focus_on_link(Some(1), link_of, 10));
         assert!(!focus_on_link(Some(1), link_of, 20));
         assert!(focus_on_link(Some(2), link_of, 20));
-        // A background page dropping while another page's window has the focus: no match.
         assert!(!focus_on_link(Some(2), link_of, 10));
-        // No focus, a window with no page, or an unknown window: nothing matches.
         assert!(!focus_on_link(None, link_of, 10));
         assert!(!focus_on_link(Some(3), link_of, 10));
         assert!(!focus_on_link(Some(9), link_of, 10));
@@ -842,42 +947,336 @@ mod tests {
     #[test]
     fn releasing_one_shift_keeps_the_other_shift_depressed() {
         let mut k = KeyState::default();
-        k.set_key(keys::KEY_LEFTSHIFT, true);
-        k.set_key(keys::KEY_RIGHTSHIFT, true);
-        k.set_key(keys::KEY_LEFTSHIFT, false);
+        k.key(keys::KEY_LEFTSHIFT, true);
+        k.key(keys::KEY_RIGHTSHIFT, true);
+        k.key(keys::KEY_LEFTSHIFT, false);
         assert_eq!(k.depressed(), keys::MOD_SHIFT);
-        k.set_key(keys::KEY_RIGHTSHIFT, false);
+        k.key(keys::KEY_RIGHTSHIFT, false);
         assert_eq!(k.depressed(), 0);
     }
 
     #[test]
-    fn release_all_returns_every_held_key_and_keeps_caps_lock() {
+    fn locks_follow_the_page_and_outlive_a_release() {
         let mut k = KeyState::default();
-        k.set_locked(keys::MOD_LOCK);
-        k.set_key(keys::KEY_LEFTCTRL, true);
-        k.set_key(KEY_A, true);
-        assert_eq!(k.release_all(), vec![keys::KEY_LEFTCTRL, KEY_A]);
-        assert_eq!(k.depressed(), 0);
+        assert!(k.set_locks(true, None));
         assert_eq!(k.locked(), keys::MOD_LOCK);
+        assert!(k.set_locks(true, Some(true)));
+        assert_eq!(k.locked(), keys::MOD_LOCK | keys::MOD_NUM);
+        // Num Lock unsaid: kept.
+        assert!(k.set_locks(false, None));
+        assert_eq!(k.locked(), keys::MOD_NUM);
+        assert!(!k.set_locks(false, None));
+        k.key(keys::KEY_LEFTCTRL, true);
+        k.release_keys();
+        assert_eq!(k.locked(), keys::MOD_NUM);
     }
 
     #[test]
-    fn caps_lock_on_then_off_leaves_no_lock() {
+    fn lock_keys_hold_no_modifier_bit() {
         let mut k = KeyState::default();
-        assert!(k.set_locked(keys::MOD_LOCK));
-        assert_eq!(k.locked(), keys::MOD_LOCK);
-        assert!(k.set_locked(0));
-        assert_eq!(k.locked(), 0);
-        // Already off: nothing to send.
-        assert!(!k.set_locked(0));
+        k.key(keys::KEY_CAPSLOCK, true);
+        k.key(keys::KEY_NUMLOCK, true);
+        assert_eq!(k.depressed(), 0);
     }
 
     #[test]
-    fn caps_lock_key_holds_no_modifier_bit() {
-        let mut k = KeyState::default();
-        k.set_key(keys::KEY_CAPSLOCK, true);
-        assert_eq!(k.depressed(), 0);
-        k.set_key(keys::KEY_CAPSLOCK, false);
-        assert_eq!(k.depressed(), 0);
+    fn only_a_key_down_takes_the_focus() {
+        assert_eq!(key_route(Some(1), 1, true), Some(false));
+        assert_eq!(key_route(Some(1), 1, false), Some(false));
+        assert_eq!(key_route(Some(1), 2, true), Some(true));
+        assert_eq!(key_route(None, 2, true), Some(true));
+        // A key-up sent while its page hid, or after another window took the focus: dropped.
+        assert_eq!(key_route(Some(1), 2, false), None);
+        assert_eq!(key_route(None, 2, false), None);
+    }
+
+    // ------------------------------------------------------------------ seeded storm
+
+    /// splitmix64: a seeded generator, so a failing storm can be run again.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+        fn pick<T: Copy>(&mut self, of: &[T]) -> T {
+            of[self.below(of.len() as u64) as usize]
+        }
+    }
+
+    /// What one client (one window's program) has been told.
+    #[derive(Default, Debug)]
+    struct Client {
+        keys: BTreeSet<u32>,
+        buttons: BTreeSet<u32>,
+        depressed: u32,
+        locked: u32,
+        focused: bool,
+    }
+
+    /// The seat's routing, as seat.rs does it (`key`, `window_focus`, `set_keyboard_focus`,
+    /// `release_input`, `release_link`, `pointer_button`, `locks`) with the Wayland requests
+    /// replaced by what each client is told, checked as it is told.
+    struct Model {
+        keys: KeyState,
+        focus_win: Option<u32>,
+        kb_focus: Option<u32>,
+        ptr_focus: Option<u32>,
+        clients: BTreeMap<u32, Client>,
+        link_of: BTreeMap<u32, u64>,
+        last_locks: (bool, Option<bool>),
+        log: Vec<String>,
+    }
+
+    impl Model {
+        fn new() -> Model {
+            let link_of: BTreeMap<u32, u64> = [(1, 10), (2, 10), (3, 20)].into();
+            let clients = link_of.keys().map(|w| (*w, Client::default())).collect();
+            Model { keys: KeyState::default(), focus_win: None, kb_focus: None, ptr_focus: None, clients, link_of, last_locks: (false, None), log: Vec::new() }
+        }
+        fn fail(&self, what: String) -> ! {
+            let tail: Vec<&String> = self.log.iter().rev().take(30).collect();
+            panic!("{what}\nlast messages (newest first): {tail:#?}");
+        }
+        fn tell_key(&mut self, win: u32, code: u32, pressed: bool) {
+            let c = self.clients.get_mut(&win).unwrap();
+            let fresh = if pressed { c.keys.insert(code) } else { c.keys.remove(&code) };
+            if !fresh {
+                let what = format!("win {win}: key {code} {} while it {} down", if pressed { "pressed" } else { "released" }, if pressed { "was" } else { "was not" });
+                self.fail(what);
+            }
+        }
+        fn tell_mods(&mut self, win: u32) {
+            let (d, l) = (self.keys.depressed(), self.keys.locked());
+            let c = self.clients.get_mut(&win).unwrap();
+            c.depressed = d;
+            c.locked = l;
+        }
+        fn tell_button(&mut self, win: u32, code: u32, pressed: bool) {
+            let c = self.clients.get_mut(&win).unwrap();
+            let fresh = if pressed { c.buttons.insert(code) } else { c.buttons.remove(&code) };
+            if !fresh {
+                self.fail(format!("win {win}: button {code} told {pressed} twice"));
+            }
+        }
+        fn release_keys(&mut self) {
+            let released = self.keys.release_keys();
+            let Some(win) = self.kb_focus else { return };
+            if released.is_empty() {
+                return;
+            }
+            for code in released {
+                self.tell_key(win, code, false);
+            }
+            self.tell_mods(win);
+        }
+        fn release_buttons(&mut self) {
+            let released = self.keys.release_buttons();
+            let Some(win) = self.ptr_focus else { return };
+            for code in released {
+                self.tell_button(win, code, false);
+            }
+        }
+        fn release_input(&mut self) {
+            self.release_keys();
+            self.release_buttons();
+        }
+        fn set_keyboard_focus(&mut self, win: Option<u32>) {
+            if self.kb_focus == win {
+                return;
+            }
+            self.release_keys();
+            if let Some(old) = self.kb_focus.take() {
+                self.clients.get_mut(&old).unwrap().focused = false;
+            }
+            if let Some(new) = win {
+                self.clients.get_mut(&new).unwrap().focused = true;
+                self.tell_mods(new);
+            }
+            self.kb_focus = win;
+        }
+        fn window_focus(&mut self, win: u32, focused: bool) {
+            if focused {
+                self.focus_win = Some(win);
+                self.set_keyboard_focus(Some(win));
+            } else if self.focus_win == Some(win) {
+                self.focus_win = None;
+                self.release_buttons();
+                self.set_keyboard_focus(None);
+            }
+        }
+        fn key(&mut self, win: u32, code: u32, down: bool) {
+            match key_route(self.focus_win, win, down) {
+                None => return,
+                Some(true) => self.window_focus(win, true),
+                Some(false) => {}
+            }
+            let Some(target) = self.kb_focus else { return };
+            for &pressed in self.keys.key(code, down) {
+                self.tell_key(target, code, pressed);
+            }
+            if KeyState::is_modifier_key(code) {
+                self.tell_mods(target);
+            }
+        }
+        fn button(&mut self, win: u32, code: u32, pressed: bool) {
+            // pointer_motion: no button down, the pointer goes to the window under it.
+            if !self.keys.any_button() {
+                self.ptr_focus = Some(win);
+            }
+            let Some(target) = self.ptr_focus else { return };
+            if self.keys.button(code, pressed) {
+                self.tell_button(target, code, pressed);
+            }
+        }
+        fn locks(&mut self, caps: bool, num: Option<bool>) {
+            self.last_locks = (caps, num.or(self.last_locks.1));
+            if self.keys.set_locks(caps, num) {
+                if let Some(win) = self.kb_focus {
+                    self.tell_mods(win);
+                }
+            }
+        }
+        fn shown(&mut self, link: u64, shown: bool) {
+            let focused_here = focus_on_link(self.focus_win, |w| self.link_of.get(&w).copied(), link);
+            if !shown && focused_here {
+                self.release_input();
+            }
+        }
+        fn drop_link(&mut self, link: u64) {
+            let focused_here = focus_on_link(self.focus_win, |w| self.link_of.get(&w).copied(), link);
+            let pointer_here = self.ptr_focus.is_some_and(|w| self.link_of.get(&w) == Some(&link));
+            if focused_here {
+                self.release_keys();
+            }
+            if pointer_here {
+                self.release_buttons();
+            }
+        }
+        /// Nothing held of `link`'s windows, on either side.
+        fn check_released(&self, link: u64, why: &str) {
+            for (win, c) in &self.clients {
+                if self.link_of[win] != link {
+                    continue;
+                }
+                if !c.keys.is_empty() || !c.buttons.is_empty() || c.depressed != 0 {
+                    self.fail(format!("after {why}: win {win} still holds {c:?}"));
+                }
+            }
+            let focus_here = self.focus_win.is_some_and(|w| self.link_of[&w] == link);
+            if focus_here && (!self.keys.pressed.is_empty() || self.keys.depressed() != 0) {
+                self.fail(format!("after {why}: the seat still holds {:?}", self.keys.pressed));
+            }
+        }
+        fn check_locks(&self) {
+            let (caps, num) = self.last_locks;
+            let want = if caps { keys::MOD_LOCK } else { 0 } | if num == Some(true) { keys::MOD_NUM } else { 0 };
+            if self.keys.locked() != want {
+                self.fail(format!("locks {:#x}, the page last said {want:#x}", self.keys.locked()));
+            }
+            if let Some(win) = self.kb_focus {
+                if self.clients[&win].locked != want {
+                    self.fail(format!("win {win} was told locks {:#x}, the page last said {want:#x}", self.clients[&win].locked));
+                }
+            }
+        }
+        fn check_mods(&self) {
+            if let Some(win) = self.kb_focus {
+                let c = &self.clients[&win];
+                let from_keys = c.keys.iter().fold(0, |m, &k| m | keys::modifier_of(k));
+                if c.depressed != from_keys || c.depressed != self.keys.depressed() {
+                    self.fail(format!("win {win}: told depressed {:#x}, its keys say {from_keys:#x}", c.depressed));
+                }
+            }
+        }
+    }
+
+    /// Seeded random input as the pages send it (keys with repeats and lost key-ups, modifier
+    /// chords, buttons, focus moves, hidden pages, dropped links, lock changes): every client is
+    /// told a press only for what it does not have down, and nothing is held once the focus, the
+    /// page or the link that held it is gone. LINDROIDS_SEAT_SEED and LINDROIDS_SEAT_STEPS pick
+    /// another storm.
+    #[test]
+    fn seeded_input_storm_leaves_nothing_held() {
+        let env = |k: &str, d: u64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+        let first = env("LINDROIDS_SEAT_SEED", 1);
+        let steps = env("LINDROIDS_SEAT_STEPS", 20_000);
+        let codes = [KEY_A, 31, 32, keys::KEY_ENTER, keys::KEY_LEFTSHIFT, keys::KEY_RIGHTSHIFT, keys::KEY_LEFTCTRL, keys::KEY_LEFTALT, keys::KEY_RIGHTALT, keys::KEY_LEFTMETA, keys::KEY_CAPSLOCK, keys::KEY_NUMLOCK];
+        let buttons = [BTN_LEFT, 0x111, 0x112];
+        for seed in first..first + 8 {
+            let mut rng = Rng(seed);
+            let mut m = Model::new();
+            for _ in 0..steps {
+                let win = rng.pick(&[1u32, 2, 3]);
+                let link = m.link_of[&win];
+                match rng.below(100) {
+                    0..=44 => {
+                        let (code, down) = (rng.pick(&codes), rng.below(2) == 0);
+                        m.log.push(format!("key win {win} code {code} down {down}"));
+                        m.key(win, code, down);
+                    }
+                    45..=64 => {
+                        let (code, pressed) = (rng.pick(&buttons), rng.below(2) == 0);
+                        m.log.push(format!("button win {win} {code:#x} {pressed}"));
+                        m.button(win, code, pressed);
+                    }
+                    65..=74 => {
+                        let focused = rng.below(2) == 0;
+                        m.log.push(format!("focus win {win} {focused}"));
+                        let had = m.focus_win == Some(win);
+                        m.window_focus(win, focused);
+                        if !focused && had {
+                            m.check_released(link, "focus lost");
+                        }
+                    }
+                    75..=82 => {
+                        let shown = rng.below(2) == 0;
+                        m.log.push(format!("shown link {link} {shown}"));
+                        let had = m.focus_win.is_some_and(|w| m.link_of[&w] == link);
+                        m.shown(link, shown);
+                        if !shown && had {
+                            m.check_released(link, "page hidden");
+                        }
+                    }
+                    83..=87 => {
+                        m.log.push(format!("link {link} dropped"));
+                        let focused_here = m.focus_win.is_some_and(|w| m.link_of[&w] == link);
+                        m.drop_link(link);
+                        if focused_here {
+                            for (w, c) in &m.clients {
+                                if m.link_of[w] == link && m.kb_focus == Some(*w) && (!c.keys.is_empty() || c.depressed != 0) {
+                                    m.fail(format!("link dropped: win {w} still holds keys {c:?}"));
+                                }
+                            }
+                        }
+                        if m.ptr_focus.is_some_and(|w| m.link_of[&w] == link) && m.keys.any_button() {
+                            m.fail("link dropped: buttons still held".into());
+                        }
+                    }
+                    _ => {
+                        let (caps, num) = (rng.below(2) == 0, [None, Some(false), Some(true)][rng.below(3) as usize]);
+                        m.log.push(format!("locks caps {caps} num {num:?}"));
+                        m.locks(caps, num);
+                    }
+                }
+                m.check_mods();
+                m.check_locks();
+            }
+            // The storm ends with the page hidden: nothing may stay held anywhere.
+            for link in [10, 20] {
+                m.shown(link, false);
+                m.drop_link(link);
+            }
+            m.window_focus(m.focus_win.unwrap_or(1), false);
+            for link in [10, 20] {
+                m.check_released(link, "the end");
+            }
+        }
     }
 }

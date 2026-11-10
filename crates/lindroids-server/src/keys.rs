@@ -14,6 +14,7 @@ pub const KEY_RIGHTSHIFT: u32 = 54;
 pub const KEY_LEFTALT: u32 = 56;
 pub const KEY_SPACE: u32 = 57;
 pub const KEY_CAPSLOCK: u32 = 58;
+pub const KEY_NUMLOCK: u32 = 69;
 pub const KEY_RIGHTCTRL: u32 = 97;
 pub const KEY_RIGHTALT: u32 = 100;
 pub const KEY_LEFTMETA: u32 = 125;
@@ -24,8 +25,9 @@ pub const MOD_SHIFT: u32 = 1 << 0;
 pub const MOD_LOCK: u32 = 1 << 1;
 pub const MOD_CTRL: u32 = 1 << 2;
 pub const MOD_ALT: u32 = 1 << 3;
+/// Mod2: Num Lock, locked.
+pub const MOD_NUM: u32 = 1 << 4;
 pub const MOD_SUPER: u32 = 1 << 6;
-pub const MOD_ALTGR: u32 = 1 << 7;
 
 /// Android `KeyEvent.KEYCODE_*` to Linux evdev. `None` for keys with no Linux equivalent.
 pub fn android_to_evdev(code: i32) -> Option<u32> {
@@ -75,7 +77,7 @@ pub fn android_to_evdev(code: i32) -> Option<u32> {
         76 => 53,  // SLASH
         68 => 41,  // GRAVE
         115 => KEY_CAPSLOCK,
-        143 => 69,  // NUM_LOCK
+        143 => KEY_NUMLOCK,
         116 => 70,  // SCROLL_LOCK
         120 => 99,  // SYSRQ
         121 => 119, // BREAK -> PAUSE
@@ -92,8 +94,8 @@ pub fn modifier_of(evdev: u32) -> u32 {
     match evdev {
         KEY_LEFTSHIFT | KEY_RIGHTSHIFT => MOD_SHIFT,
         KEY_LEFTCTRL | KEY_RIGHTCTRL => MOD_CTRL,
-        KEY_LEFTALT => MOD_ALT,
-        KEY_RIGHTALT => MOD_ALTGR,
+        // Right Alt too: the keymap's RALT is Alt_R on Mod1 (a US layout has no AltGr level).
+        KEY_LEFTALT | KEY_RIGHTALT => MOD_ALT,
         KEY_LEFTMETA | KEY_RIGHTMETA => MOD_SUPER,
         _ => 0,
     }
@@ -137,6 +139,18 @@ mod tests {
         assert_eq!(char_to_key('Q'), Some((16, true)));
         assert_eq!(char_to_key('?'), Some((53, true)));
         assert_eq!(char_to_key('é'), None);
+    }
+
+    #[test]
+    fn modifier_bits_match_the_keymaps_modifier_map() {
+        // Real modifier order: Shift, Lock, Control, Mod1 (Alt), Mod2 (Num Lock), Mod3, Mod4 (Super).
+        assert!(KEYMAP_US.contains("modifier_map Mod1 { <LALT>, <RALT>"));
+        assert!(KEYMAP_US.contains("modifier_map Mod2 { <NMLK> }"));
+        assert_eq!(modifier_of(KEY_RIGHTALT), MOD_ALT);
+        assert_eq!(modifier_of(KEY_LEFTALT), MOD_ALT);
+        assert_eq!(modifier_of(KEY_RIGHTMETA), MOD_SUPER);
+        assert_eq!(MOD_NUM, 1 << 4);
+        assert_eq!(android_to_evdev(143), Some(KEY_NUMLOCK));
     }
 
     #[test]
