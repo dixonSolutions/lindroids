@@ -75,7 +75,7 @@ public class WindowActivity extends Activity {
      * This code's number (lindroids_proto::APP_TEMPLATE): bumped with every change to the app,
      * whose code is in each APK built from it, so the page can tell an app that is out of date.
      */
-    static final int TEMPLATE = 1;
+    static final int TEMPLATE = 2;
 
     static final String EXTRA_URL = "org.lindroids.URL";
     static final String EXTRA_NAME = "org.lindroids.NAME";

@@ -312,7 +312,7 @@ brought back after its run ended sat on a dead panel. Now (docs/DISPLAY.md, "Lif
 | | Before | Now |
 |---|---|---|
 | Task removed from Recents | nothing told the server once the page was gone | the app says so (`CloseWatch.onTaskRemoved`, or `onDestroy` when finishing): the program is asked to close, and ends 5 s later |
-| Page lost in the background without a word | the program ran for good | it runs until its page links again, 10 minutes at most |
+| Page lost in the background without a word | the program ran for good | it runs until its page links again, 10 minutes at most (since template 2: longer while its window app says its card is in Recents) |
 | The program ends while its page is frozen | the card stayed (only the page could close it) | the server sends the app `org.lindroids.END` with the run's ticket (`End` receiver), and the app removes that task; cards of runs that ended go when the next run's window opens |
 | Task rebuilt from Recents after its run ended | "This window was not opened by `lindroids run`" | the end, then the window closes; a program's own app starts the program again |
 | "New window" in a program's own app while a run is shown | the new run's page replaced the shown one, which then ended 5 s later | the new run gets a task of its own |
@@ -355,6 +355,22 @@ applies). A program that ignores Ctrl+C in Termux (VSCodium under proot does) us
 `lindroids run` waiting; when the signal reaches `lindroids` itself the program is now ended 5 s
 later, but a Ctrl+C typed in the terminal goes to the program's own group, so close its window.
 A single run's card in the shared windows app still shows the app's own icon, not the program's.
+
+### Review fixes (template 2)
+
+| | Before | Now |
+|---|---|---|
+| Android kills the window app's process in the background; its card stays in Recents | after 10 minutes without its page the program was closed, then ended, though tapping the card would have brought the window back (unsaved work lost) | after 10 minutes the server asks the app (`lindroids window-ask`: an `org.lindroids.ASK` broadcast to that app alone, with the run's ticket and the server's port, through the helper as Termux, no permission); its `End` receiver looks at its tasks and answers over loopback: `/run/<pid>/kept` (the card is there: the run is kept, and asked about again 10 minutes later) or `/run/<pid>/closed` (ends 5 s later). No answer within 15 s (the app gone or disabled), or a window in a browser: it ends, as before |
+| A card left by an ended run whose pid a new run got, swiped away | it shared the new run's entry (tasks were known by their URL without the ticket), and said the new run's window closed: the new run ended | tasks are known by run and ticket |
+| A window brought back after its window said it closed, swiped away again | said nothing the second time (the app remembered it had told) | its page linking again clears that: it says so again |
+| Two runs of one single-instance program (a second VSCodium hands its work to the first), the first one's window closed | the first run ended 5 s later and took the process, and the second run's window with its unsaved work, with it | the process stays while another run shows a window of it, and ends with the last such run |
+| Holding a key in a game (SDL, GLFW, Godot) | each repeat came as a release and a press: a jump repeated while Space was held | `wl_seat` 10: a client of `wl_keyboard` 10 gets `repeated`; an older one repeats on its own (20/s after 500 ms), and a key whose key-up was lost there is let go when the page has said nothing of it for 2 s |
+
+To check on the tablet: an app built from template 2 (`lindroids app install`, `lindroids export
+<id>`); a window left in the background while Android kills its app (`am kill org.lindroids` with
+`LINDROIDS_BACKGROUND=60` set for the server): its program still runs after the limit, and the
+server log says the app answered that the card is in Recents; the card swiped away then: the
+program ends; a game or `wev` with a held key on a hardware keyboard.
 
 ## What Android allows, and what we assume
 

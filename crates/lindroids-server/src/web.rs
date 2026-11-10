@@ -157,7 +157,9 @@ pub fn answer(req: &Request, port: u16) -> Answer {
         return Answer::Close(response(status, "application/json", body.as_bytes()));
     }
     // The window app, about a run's window: gone for good (its task was removed from Recents,
-    // or finished: `closed`), or whether its run still runs (a card left in Recents: `alive`).
+    // or finished: `closed`), or whether its run still runs (a card left in Recents: `alive`),
+    // or, asked about a run whose page was dropped in the background, that its task is still in
+    // Recents (`kept`).
     // With the run's ticket, which only its window has; 410 when it is not good (the run is over).
     if let Some((run, what)) = run_request(&req.path) {
         let ticket = req.header("X-Lindroids-Ticket").unwrap_or_default();
@@ -166,6 +168,9 @@ pub fn answer(req: &Request, port: u16) -> Answer {
         }
         if what == "closed" {
             crate::shared().post(crate::Inbox::RunClosed(run));
+        }
+        if what == "kept" {
+            crate::shared().post(crate::Inbox::RunKept(run));
         }
         return Answer::Close(response(200, "text/plain", b"running\n"));
     }
@@ -221,10 +226,10 @@ pub fn answer(req: &Request, port: u16) -> Answer {
     Answer::Close(response(200, ctype, &body))
 }
 
-/// `/run/<pid>/closed` or `/run/<pid>/alive`.
+/// `/run/<pid>/closed`, `/run/<pid>/alive` or `/run/<pid>/kept`.
 fn run_request(path: &str) -> Option<(u32, &str)> {
     let (pid, what) = path.strip_prefix("/run/")?.split_once('/')?;
-    matches!(what, "closed" | "alive").then_some(())?;
+    matches!(what, "closed" | "alive" | "kept").then_some(())?;
     Some((pid.parse().ok()?, what))
 }
 
@@ -631,6 +636,7 @@ mod tests {
     fn run_requests() {
         assert_eq!(run_request("/run/42/closed"), Some((42, "closed")));
         assert_eq!(run_request("/run/42/alive"), Some((42, "alive")));
+        assert_eq!(run_request("/run/42/kept"), Some((42, "kept")));
         assert_eq!(run_request("/run/42/other"), None);
         assert_eq!(run_request("/run/x/closed"), None);
         assert_eq!(run_request("/run-icon/42.png"), None);

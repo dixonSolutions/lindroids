@@ -169,6 +169,7 @@ fn main() {
         Some("debug-app") => debug::cmd_debug_app(&args[1..]),
         // The server, when a run ends: its window in a Lindroids app closes.
         Some("window-end") => shortcut::cmd_window_end(&args[1..]),
+        Some("window-ask") => shortcut::cmd_window_ask(&args[1..]),
         Some(other) => {
             eprintln!("lindroids: unknown command {other:?}\n");
             eprint!("{HELP}");

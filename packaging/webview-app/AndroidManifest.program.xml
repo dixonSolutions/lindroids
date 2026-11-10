@@ -61,12 +61,14 @@
             android:exported="false"
             android:stopWithTask="false" />
 
-        <!-- A run ended: its window goes (End.java). Only with that run's ticket. -->
+        <!-- A run ended: its window goes; or is its window still in Recents? (End.java). Only
+             with that run's ticket. -->
         <receiver
             android:name="org.lindroids.End"
             android:exported="true">
             <intent-filter>
                 <action android:name="org.lindroids.END" />
+                <action android:name="org.lindroids.ASK" />
             </intent-filter>
         </receiver>
     </application>

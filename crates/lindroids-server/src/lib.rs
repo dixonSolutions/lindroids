@@ -244,6 +244,9 @@ pub enum Inbox {
     From(Option<u32>, ToApp, Vec<u8>),
     /// The window app says the window of this run is gone for good (`GET /run/<pid>/closed`).
     RunClosed(u32),
+    /// The window app, asked (`background_over`), says this run's task is still in Recents
+    /// (`GET /run/<pid>/kept`).
+    RunKept(u32),
 }
 
 pub struct Shared {
@@ -390,6 +393,71 @@ pub fn claim_target(cands: &[ClaimCandidate], app_key: &str, claimer: u32, since
         .map(|c| c.win)
 }
 
+/// How long a window app has to answer whether a run's task is still in Recents.
+const ASK_WAIT: Duration = Duration::from_secs(15);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackgroundStep {
+    /// Its window app is asked.
+    Ask,
+    /// The run ends (its window is in a browser, the app says its task is gone, or nothing
+    /// answered).
+    End,
+    /// Its task is still in Recents: the run is kept.
+    Keep,
+    /// Nothing was asked about this run (an answer late, or not asked for).
+    Nothing,
+}
+
+/// Runs whose page was dropped in the background for the limit, and whose window app was asked
+/// whether their task is still in Recents: until when it may answer.
+#[derive(Default)]
+struct BackgroundAsks {
+    asked: Vec<(u32, Instant)>,
+}
+
+impl BackgroundAsks {
+    /// The limit is over for `run`, whose window is in a window app (`window_app`) or not.
+    fn limit_reached(&mut self, run: u32, window_app: bool, now: Instant) -> BackgroundStep {
+        self.forget(run);
+        if !window_app {
+            return BackgroundStep::End;
+        }
+        self.asked.push((run, now + ASK_WAIT));
+        BackgroundStep::Ask
+    }
+
+    /// The app's answer: whether a task shows `run` with its ticket.
+    fn answered(&mut self, run: u32, task: bool) -> BackgroundStep {
+        if !self.forget(run) {
+            return BackgroundStep::Nothing;
+        }
+        if task {
+            BackgroundStep::Keep
+        } else {
+            BackgroundStep::End
+        }
+    }
+
+    /// No longer asked (its page linked again, the run ended). Whether it was.
+    fn forget(&mut self, run: u32) -> bool {
+        let before = self.asked.len();
+        self.asked.retain(|(r, _)| *r != run);
+        self.asked.len() != before
+    }
+
+    /// Runs whose app did not answer in time: they end.
+    fn due(&mut self, now: Instant) -> Vec<u32> {
+        let over: Vec<u32> = self.asked.iter().filter(|(_, until)| *until <= now).map(|(r, _)| *r).collect();
+        self.asked.retain(|(_, until)| *until > now);
+        over
+    }
+
+    fn next_due(&self) -> Option<Instant> {
+        self.asked.iter().map(|(_, until)| *until).min()
+    }
+}
+
 /// An ended run whose processes (with their start times) wait for `dependents` to end.
 struct DeferredEnd {
     run: u32,
@@ -446,8 +514,11 @@ pub struct State {
     pub parked: Vec<ObjectId>,
     pub running: bool,
     /// Pages that went away, by the run they showed (None: the page showing everything else):
-    /// what was started into them ends when the grace is over, unless a page for it links again.
-    unlinked: Vec<(Option<u32>, Instant, Duration)>,
+    /// what was started into them ends when the grace is over, unless a page for it links again;
+    /// true: dropped in the background (its window app is asked first, `background_over`).
+    unlinked: Vec<(Option<u32>, Instant, Duration, bool)>,
+    /// Window apps asked whether a run's task is still in Recents.
+    background_asks: BackgroundAsks,
     clis: Vec<CliConn>,
     next_request: u32,
     clients: u32,
@@ -804,6 +875,7 @@ impl State {
     /// Recents, or finished): as a page that said `Closing`, the run ends after the grace,
     /// unless a page links for it again.
     fn run_closed(&mut self, run: u32) {
+        self.background_asks.forget(run);
         let mut linked = false;
         for l in self.links.iter_mut().filter(|l| l.run == Some(run)) {
             l.closing = true;
@@ -812,8 +884,44 @@ impl State {
         info!("the window app says the window of run {run} is closed{}", if linked { "" } else { ": it ends in 5s unless it links again" });
         if !linked {
             self.unlinked.retain(|(r, ..)| *r != Some(run));
-            self.unlinked.push((Some(run), Instant::now(), CLOSED_GRACE));
+            self.unlinked.push((Some(run), Instant::now(), CLOSED_GRACE, false));
         }
+    }
+
+    /// The page of `run` was dropped in the background, and has not linked again for the limit
+    /// (`background_limit`). A window app may still have its task in Recents (Android killed the
+    /// app's process for memory; tapping the card loads the page, which links again): it is
+    /// asked (`lindroids window-ask`), and the run ends only if it says the task is gone or does
+    /// not answer. A window in a browser: the run ends.
+    fn background_over(&mut self, run: u32) {
+        let app = window_browser(&self.cfg.runtime_dir, run).filter(|a| a.starts_with("org.lindroids"));
+        if self.background_asks.limit_reached(run, app.is_some(), Instant::now()) == BackgroundStep::End {
+            return self.page_gone(Some(run));
+        }
+        let app = app.unwrap_or_default();
+        info!("run {run}: its page has been gone in the background for {}s: asking {app} whether its window is still in Recents", background_limit().as_secs());
+        let spawned = lindroids_proto::self_exe().and_then(|exe| {
+            let mut c = std::process::Command::new(exe);
+            c.args(["window-ask", &run.to_string()]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            c.spawn()
+        });
+        match spawned {
+            Ok(mut child) => {
+                std::thread::spawn(move || child.wait());
+            }
+            Err(e) => warn!("run {run}: cannot ask {app}: {e}"),
+        }
+    }
+
+    /// The window app says the task of `run` is still in Recents: the run is kept, and the app
+    /// asked again after the limit.
+    fn run_kept(&mut self, run: u32) {
+        if self.background_asks.answered(run, true) != BackgroundStep::Keep {
+            return;
+        }
+        info!("run {run}: its window is still in Recents: it keeps running, for {}s more unless its page links", background_limit().as_secs());
+        self.unlinked.retain(|(r, ..)| *r != Some(run));
+        self.unlinked.push((Some(run), Instant::now(), background_limit(), true));
     }
 
     /// A run ended: what it left running ends too (a GUI it detached, a helper), and its window
@@ -821,6 +929,7 @@ impl State {
     /// What it left running also shows other runs' windows (claimed from it): it ends when the
     /// last of those runs does (`end_deferred`), not before: their unsaved work is in it.
     fn run_over(&mut self, run: u32) {
+        self.background_asks.forget(run);
         let left = icons::survivors(run);
         if !left.is_empty() {
             let deps = self.dependents(run);
@@ -1348,6 +1457,9 @@ impl State {
                 self.primary = Some(id);
                 let before = self.unlinked.len();
                 self.unlinked.retain(|(r, ..)| *r != run);
+                if let Some(r) = run {
+                    self.background_asks.forget(r);
+                }
                 if self.unlinked.len() != before {
                     info!("a page linked again: what was started keeps running");
                 }
@@ -1838,6 +1950,7 @@ pub fn run(cfg: Config) -> i32 {
         frame_due: Vec::new(),
         parked: Vec::new(),
         unlinked: Vec::new(),
+        background_asks: BackgroundAsks::default(),
         running: true,
         clis: Vec::new(),
         next_request: 0,
@@ -1919,12 +2032,19 @@ pub fn run(cfg: Config) -> i32 {
             fds.push(pfd(fd));
         }
         let over = |since: &Instant, grace: &Duration| since.elapsed() >= *grace;
-        let due: Vec<Option<u32>> = state.unlinked.iter().filter(|(_, since, grace)| over(since, grace)).map(|(r, ..)| *r).collect();
+        let due: Vec<(Option<u32>, bool)> = state.unlinked.iter().filter(|(_, since, grace, _)| over(since, grace)).map(|(r, _, _, bg)| (*r, *bg)).collect();
         if !due.is_empty() {
-            state.unlinked.retain(|(_, since, grace)| !over(since, grace));
-            for run in due {
-                state.page_gone(run);
+            state.unlinked.retain(|(_, since, grace, _)| !over(since, grace));
+            for (run, background) in due {
+                match run {
+                    Some(r) if background => state.background_over(r),
+                    _ => state.page_gone(run),
+                }
             }
+        }
+        for run in state.background_asks.due(Instant::now()) {
+            info!("run {run}: its window app did not answer: its window is taken for gone");
+            state.page_gone(Some(run));
         }
         if !state.claims.is_empty() {
             state.expire_claims();
@@ -1959,7 +2079,8 @@ pub fn run(cfg: Config) -> i32 {
             due.push(Instant::now() + t);
         }
         due.extend(state.claims.iter().map(|(_, u)| *u));
-        due.extend(state.unlinked.iter().map(|(_, since, grace)| *since + *grace));
+        due.extend(state.unlinked.iter().map(|(_, since, grace, _)| *since + *grace));
+        due.extend(state.background_asks.next_due());
         due.extend(state.pending.iter().map(|p| p.since + PENDING_FOR));
         let timeout = poll_timeout(Instant::now(), due);
         unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
@@ -2002,6 +2123,7 @@ pub fn run(cfg: Config) -> i32 {
                     Inbox::WithPayload(m, p) => state.send_app_with(&m, &p),
                     Inbox::From(pid, m, p) => state.send_from(pid, &m, &p),
                     Inbox::RunClosed(run) => state.run_closed(run),
+                    Inbox::RunKept(run) => state.run_kept(run),
                 }
             }
         }
@@ -2128,14 +2250,14 @@ pub fn run(cfg: Config) -> i32 {
                 let hidden = l.hidden_since.map_or(String::new(), |t| format!(", out of sight {}s", t.elapsed().as_secs()));
                 let what = run.map_or("the rest".into(), |r| format!("run {r}"));
                 if dropped {
-                    info!("page for {what} lost in the background ({how}{hidden}); what was started into it runs until a page links for it again, for {}s at most", grace.as_secs());
+                    info!("page for {what} lost in the background ({how}{hidden}); what was started into it runs until a page links for it again, for {}s (then its window app, if any, is asked whether its card is still in Recents)", grace.as_secs());
                 } else {
                     info!("page for {what} closed ({how}{said}{hidden}); what was started into it ends in {}s unless it links again", grace.as_secs());
                 }
                 state.drop_link(id);
                 if !state.links.iter().any(|l| l.run == run && l.app.is_none()) {
                     state.unlinked.retain(|(r, ..)| *r != run);
-                    state.unlinked.push((run, Instant::now(), grace));
+                    state.unlinked.push((run, Instant::now(), grace, dropped));
                 }
             }
         }
@@ -2336,7 +2458,9 @@ const END_TERM_WAIT: Duration = Duration::from_secs(5);
 /// while it is out of sight, and loads it again when the user comes back to the window, which
 /// links again: the program is kept for that. But a window swiped from Recents after Android
 /// stopped its app's watcher (`CloseWatch`) says nothing either, and its program must not run on
-/// for good with no window anywhere (seen on a Galaxy Tab: VSCodium's whole tree, no task).
+/// for good with no window anywhere (seen on a Galaxy Tab: VSCodium's whole tree, no task). A
+/// window app is asked then whether the card is still there (`background_over`): if so, the run
+/// is kept for this long again.
 fn background_limit() -> Duration {
     Duration::from_secs(std::env::var("LINDROIDS_BACKGROUND").ok().and_then(|v| v.parse().ok()).unwrap_or(600))
 }
@@ -2536,7 +2660,7 @@ fn render_dirty(state: &mut State) {
 
 #[cfg(test)]
 mod tests {
-    use super::{claim_target, pick_page, run_of_page, via_of_page, when_page_gone, ClaimCandidate, PageGone};
+    use super::{claim_target, pick_page, run_of_page, via_of_page, when_page_gone, BackgroundAsks, BackgroundStep, ClaimCandidate, PageGone, ASK_WAIT};
 
     #[test]
     fn the_loop_sleeps_until_the_first_thing_due() {
@@ -2549,6 +2673,33 @@ mod tests {
         assert_eq!(poll_timeout(now, [now - Duration::from_secs(1)]), 0, "overdue: at once");
     }
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_run_dropped_in_the_background_ends_only_when_its_window_app_says_its_task_is_gone() {
+        let t0 = Instant::now();
+        let mut a = BackgroundAsks::default();
+        // A window in a browser: the limit ends it, as before.
+        assert_eq!(a.limit_reached(1, false, t0), BackgroundStep::End);
+        assert_eq!(a.next_due(), None);
+        // A window app's task still in Recents: kept (and asked again after the next limit).
+        assert_eq!(a.limit_reached(2, true, t0), BackgroundStep::Ask);
+        assert_eq!(a.next_due(), Some(t0 + ASK_WAIT));
+        assert_eq!(a.answered(2, true), BackgroundStep::Keep);
+        assert_eq!(a.next_due(), None);
+        assert_eq!(a.answered(2, true), BackgroundStep::Nothing, "an answer no one asked for keeps nothing");
+        // Its task is gone: it ends.
+        assert_eq!(a.limit_reached(3, true, t0), BackgroundStep::Ask);
+        assert_eq!(a.answered(3, false), BackgroundStep::End);
+        // The app cannot be reached (not installed, disabled): it ends when the wait is over.
+        assert_eq!(a.limit_reached(4, true, t0), BackgroundStep::Ask);
+        assert!(a.due(t0 + ASK_WAIT - Duration::from_millis(1)).is_empty());
+        assert_eq!(a.due(t0 + ASK_WAIT), vec![4]);
+        assert_eq!(a.answered(4, true), BackgroundStep::Nothing, "too late");
+        // Its page linked again (or the run ended) while asked: no end for it.
+        assert_eq!(a.limit_reached(5, true, t0), BackgroundStep::Ask);
+        assert!(a.forget(5));
+        assert!(a.due(t0 + ASK_WAIT).is_empty());
+    }
 
     #[test]
     fn closing_a_claimed_window_never_ends_the_process_it_belongs_to() {

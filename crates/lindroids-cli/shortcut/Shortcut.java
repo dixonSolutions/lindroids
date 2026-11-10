@@ -49,6 +49,7 @@ import java.util.concurrent.TimeUnit;
  *   app_process ... lindroids.Shortcut app-open &lt;package&gt; &lt;app package&gt; &lt;url&gt; &lt;name&gt; &lt;icon base64&gt; &lt;launch url&gt; &lt;termux package&gt; raise|new
  *   app_process ... lindroids.Shortcut install-apk &lt;package&gt; &lt;apk path&gt;
  *   app_process ... lindroids.Shortcut app-end &lt;package&gt; &lt;app package&gt; &lt;run&gt; &lt;ticket&gt;
+ *   app_process ... lindroids.Shortcut app-ask &lt;package&gt; &lt;app package&gt; &lt;run&gt; &lt;ticket&gt; &lt;host:port&gt;
  * </pre>
  *
  * Prints "ok", or "error: ..." and exits 1. Android's binder interfaces are hidden API, reached by
@@ -120,6 +121,8 @@ public final class Shortcut {
                 appOpen(a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8].equals("new"));
             } else if (a.length >= 5 && a[0].equals("app-end")) {
                 appEnd(a[2], a[3], a[4]);
+            } else if (a.length >= 6 && a[0].equals("app-ask")) {
+                appAsk(a[2], a[3], a[4], a[5]);
             } else if (a.length >= 3 && a[0].equals("install-apk")) {
                 installApk(a[1], a[2]);
             } else if (a.length >= 2 && a[0].equals("can-install")) {
@@ -134,7 +137,8 @@ public final class Shortcut {
                         + " | cancel <package> <id> | pinned <package> <id> | clip <package> <file> | device"
                         + " | app-browsers | system-browsers | diag | default-browser | apps-for <url> | view <package> <target> <url> | app-settings <package> <app> | app-icons <icon> <maskable> <plain>"
                         + " | app-installed <app> | app-open <package> <app> <url> <name> <icon base64> <launch> <termux> raise|new"
-                        + " | install-apk <package> <apk path> | app-end <package> <app> <run> <ticket>");
+                        + " | install-apk <package> <apk path> | app-end <package> <app> <run> <ticket>"
+                        + " | app-ask <package> <app> <run> <ticket> <host:port>");
             }
             System.out.println("ok");
             System.exit(0);
@@ -1178,6 +1182,21 @@ public final class Shortcut {
         b.addFlags(Intent.FLAG_RECEIVER_FOREGROUND | Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
         b.putExtra("org.lindroids.RUN", run);
         b.putExtra("org.lindroids.TICKET", ticket);
+        broadcast(app, b);
+    }
+
+    /**
+     * The page of a run in a Lindroids app has been gone in the background for long: the app is
+     * asked whether a task of its still shows this run with this ticket (its card in Recents).
+     * Its End receiver answers the server at {@code host} over loopback.
+     */
+    static void appAsk(String app, String run, String ticket, String host) throws Exception {
+        Intent b = new Intent("org.lindroids.ASK");
+        b.setPackage(app);
+        b.addFlags(Intent.FLAG_RECEIVER_FOREGROUND | Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
+        b.putExtra("org.lindroids.RUN", run);
+        b.putExtra("org.lindroids.TICKET", ticket);
+        b.putExtra("org.lindroids.HOST", host);
         broadcast(app, b);
     }
 
