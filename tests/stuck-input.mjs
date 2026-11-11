@@ -129,9 +129,11 @@ function record(name, pass, detail, messages) {
   console.log(`${pass ? 'PASS' : 'FAIL'} ${name}${detail ? `: ${detail}` : ''}`);
 }
 
-async function openPage(browser, server) {
+async function openPage(browser, server, native = false) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   await context.addInitScript(INIT);
+  // The window app's bridge (none of its calls answer here).
+  if (native) await context.addInitScript(() => { window.lindroids = {}; });
   const page = await context.newPage();
   page.on('pageerror', (e) => console.log(`  [page error] ${e.message}`));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
@@ -840,6 +842,28 @@ async function caseTouchSlop(browser, server) {
   await context.close();
 }
 
+// The window app, a floating keyboard: its bar takes 56 px under the window while it is up. The
+// window is sized for it once; after that the strip stays the keyboard's and nothing is resized
+// as the keyboard comes and goes. A keyboard that takes real room gives the strip back. And a
+// canvas keeps its frame's size while the stage has another: never stretched.
+async function caseKeyboardBar(browser, server) {
+  const { context, page } = await openPage(browser, server, true);
+  const sizes = async (from) => (await since(page, from)).filter((m) => m.t === 'resize').map((m) => m.height);
+  const to = async (h) => { const from = await mark(page); await page.setViewportSize({ width: 1280, height: h }); await page.waitForTimeout(150); return sizes(from); };
+  const look = () => page.evaluate(() => [document.getElementById('stage').style.marginBottom, document.querySelector('#stage canvas').style.height]);
+  // What the page's own bar takes of the height (the test's page is not a window of its own).
+  const own = 720 - await page.evaluate(() => document.getElementById('stage').getBoundingClientRect().height);
+  const up = await to(664), upLook = await look();
+  const down = await to(720), downLook = await look();
+  const again = await to(664);
+  const ok = up.join() === `${664 - own}` && down.length === 0 && again.length === 0 && downLook[0] === '56px' && upLook[0] === '';
+  record('KB-A a floating keyboard\'s bar: one resize, then none as it goes and comes', ok, `resizes ${JSON.stringify([up, down, again])}, margin with the bar ${JSON.stringify(upLook[0])}, without ${JSON.stringify(downLook[0])}`);
+  record('KB-B a canvas keeps its frame\'s size while the stage has another', upLook[1] === `${720 - own}px`, `canvas ${upLook[1]} over a ${664 - own} px stage, no frame of that size yet`);
+  const big = await to(400), back = await to(720), backLook = await look();
+  record('KB-C a keyboard that takes room: the window is sized for it, and gets the whole height back', big.join() === `${400 - own}` && back.join() === `${720 - own}` && backLook[0] === '', `resizes ${JSON.stringify([big, back])}, margin ${JSON.stringify(backLook[0])}`);
+  await context.close();
+}
+
 const server = await serve();
 const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
 try {
@@ -850,7 +874,7 @@ try {
   } else {
     for (const c of [caseBlur, caseHidden, caseReconnect, caseLostKeyUp, caseCaps, caseFlagShift, caseAltGr, caseTouchFlags,
       caseWindowSwitch, caseTwoShifts, caseMeta, caseRepeat, caseImeKeyUp, caseModifierPressedFromFlag, caseLocks,
-      caseChordedButtons, caseMotionAndWheel, caseRotation, caseTouchSlop]) {
+      caseChordedButtons, caseMotionAndWheel, caseRotation, caseTouchSlop, caseKeyboardBar]) {
       await c(browser, server);
     }
   }

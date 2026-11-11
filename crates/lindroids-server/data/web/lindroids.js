@@ -669,6 +669,7 @@ function newWindow(m) {
   tabsEl.appendChild(tab);
   const w = { win: m.win, title: m.title, appId: m.app_id, icon: m.icon_png_b64, canvas, tab, pendingAck: false, size: [0, 0], phys: stageSize().slice(0, 2) };
   windows.set(m.win, w);
+  fitCanvas(w);
   drawer.canvas(m.win, canvas);
   everShown = true;
   updateChrome();
@@ -739,6 +740,17 @@ function stageSize() {
   return [Math.max(1, Math.round(r.width * dpr)), Math.max(1, Math.round(r.height * dpr)), dpr];
 }
 
+// A window's canvas is shown at its frame's own size, from the stage's top left. While the stage
+// has another size (the keyboard came or went, the device turned, and the program has not drawn
+// at the new size yet) the last frame stays as it is, cut off or with black beside it: stretched
+// to the stage it jumped, and jumped back with the next frame.
+function fitCanvas(w) {
+  const dpr = window.devicePixelRatio || 1;
+  const cw = `${w.phys[0] / dpr}px`, ch = `${w.phys[1] / dpr}px`;
+  if (w.canvas.style.width !== cw) w.canvas.style.width = cw;
+  if (w.canvas.style.height !== ch) w.canvas.style.height = ch;
+}
+
 function resizeWindow(w) {
   // Not laid out yet (a page loading behind the browser's own screens): wait for a real size.
   const r = stage.getBoundingClientRect();
@@ -763,6 +775,30 @@ function checkSizes() {
   stageRect = null;
   for (const w of windows.values()) resizeWindow(w);
 }
+// A floating keyboard (Samsung's, Gboard's) takes no room of its own: Android only shows a bar
+// under the window while it is up, and the window app gives the window's bottom to it. The
+// keyboard comes and goes with every move between a text and a list, and the program's window was
+// resized each time, by that bar's height, and drawn again: it jumped all the while. Once such a
+// bar was seen its strip stays the keyboard's: the stage keeps the size it has above it, bar or
+// no bar, until the window is left, turned, or a keyboard that takes real room comes up. Only in
+// the window app: in a browser a height change this small is the browser's own bars.
+const KEYBOARD_BAR_MAX = 100; // CSS pixels: a navigation bar is 48, Samsung's with the keyboard up 56
+let fullHeight = 0, fullWidth = 0, keyboardBar = 0;
+function keepKeyboardBar(forget) {
+  if (!NATIVE) return;
+  if (forget || innerWidth !== fullWidth) { fullWidth = innerWidth; fullHeight = 0; keyboardBar = 0; }
+  fullHeight = Math.max(fullHeight, innerHeight);
+  const gap = fullHeight - innerHeight;
+  if (gap > KEYBOARD_BAR_MAX) keyboardBar = 0;
+  else if (gap > 0) keyboardBar = gap;
+  const keep = gap === 0 ? keyboardBar : 0;
+  const now_ = keep ? `${keep}px` : '';
+  if (stage.style.marginBottom !== now_) stage.style.marginBottom = now_;
+}
+// Before the sizes are looked at, below.
+addEventListener('resize', () => keepKeyboardBar(false), { passive: true });
+document.addEventListener('visibilitychange', () => { if (document.hidden) keepKeyboardBar(true); });
+keepKeyboardBar(false);
 new ResizeObserver(checkSizes).observe(stage);
 addEventListener('resize', checkSizes, { passive: true });
 for (const ev of ['resize', 'scroll', 'fullscreenchange']) addEventListener(ev, forgetStageRect, { passive: true });
@@ -863,7 +899,7 @@ function tiles(m, payload) {
     w.pendingAck = true;
     return ackLater(w);
   }
-  w.phys = [m.width, m.height];
+  if (w.phys[0] !== m.width || w.phys[1] !== m.height) { w.phys = [m.width, m.height]; fitCanvas(w); }
   // The message's own buffer goes to the drawer (moved, not copied); the page is done with it.
   drawer.post({ t: 'tiles', win: m.win, width: m.width, height: m.height, rects: m.rects, raw: !!m.raw,
     data: payload.buffer, off: payload.byteOffset, len: payload.byteLength }, [payload.buffer]);
@@ -913,8 +949,10 @@ document.addEventListener('visibilitychange', () => {
 // ------------------------------------------------------------------ pointer, touch, pen
 
 function toPhys(w, e) {
+  // The canvas shows its frame pixel for pixel from the stage's corner (fitCanvas).
   const r = stageRect || (stageRect = stage.getBoundingClientRect());
-  return [(e.clientX - r.left) * (w.phys[0] / r.width), (e.clientY - r.top) * (w.phys[1] / r.height)];
+  const dpr = window.devicePixelRatio || 1;
+  return [(e.clientX - r.left) * dpr, (e.clientY - r.top) * dpr];
 }
 
 const touchIds = new Map(); // pointerId -> { id: small touch id, x, y: where it went down, still }
@@ -1035,8 +1073,7 @@ function attachInput(w) {
     } else if ((wx || wy) && wx % 120 === 0 && wy % 120 === 0) {
       send({ t: 'scroll', win: w.win, dx: -wx / 120, dy: -wy / 120, time_ms: now() });
     } else {
-      const r = stageRect || (stageRect = stage.getBoundingClientRect());
-      send({ t: 'scroll', win: w.win, dx: e.deltaX * w.phys[0] / r.width, dy: e.deltaY * w.phys[1] / r.height, pixels: true, time_ms: now() });
+      send({ t: 'scroll', win: w.win, dx: e.deltaX * (window.devicePixelRatio || 1), dy: e.deltaY * (window.devicePixelRatio || 1), pixels: true, time_ms: now() });
     }
   }, { passive: false });
 }

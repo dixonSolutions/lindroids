@@ -396,6 +396,31 @@ every move goes out as before.
 
 `tests/stuck-input.mjs` has both cases (TOUCH-A, TOUCH-B); they fail on the page of 0.1.189.
 
+### A window that jumped as the keyboard came and went (after 0.1.189)
+
+Samsung's keyboard was floating on the tablet. A floating keyboard takes no room; Android only
+shows a bar under the window while it is up (112 px here, 56 CSS px at density 2), and the window
+app gives the window's bottom to it. VSCodium asks for the keyboard in the editor and the terminal
+and lets go of it in a list, so moving around showed and hid it all the time, and each time the
+program's window was resized by those 112 px and laid out again: a 60 fps screen recording shows
+the status bar at a third height for some frames, then the old layout, then the new one.
+
+- In the window app, once a bar like that was seen (the height changed by 100 CSS px or less) its
+  strip stays the keyboard's: the stage keeps the size it has above it, with or without the bar,
+  until the window is left, turned, or a keyboard that takes real room comes up. The strip is
+  black while the keyboard is away.
+- A window's canvas is shown at its frame's own size from the top left, not stretched to the
+  stage: while a program has not drawn at a new size yet, its last frame stays where it was.
+
+| Tablet, VSCodium, page's own log over DevTools | 0.1.189 | now |
+| --- | --- | --- |
+| keyboard shown, hidden, shown | `resize` 1200x1808, 1200x1920, 1200x1808 | one `resize` 1200x1808 |
+| three more hide/show rounds | 6 resizes | 0 |
+
+`tests/stuck-input.mjs`: KB-A, KB-B (fail on the page before), KB-C (a keyboard that takes room
+still resizes both ways). Still Android's own: the bar's slide in and out, and One UI moving the
+whole screen for a few frames as it goes.
+
 ### Review fixes (template 2)
 
 | | Before | Now |
