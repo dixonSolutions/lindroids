@@ -1,0 +1,72 @@
+Package: lindroids
+Version: 0.1.187
+Architecture: amd64
+Maintainer: dixonSolutions <lindroids@users.noreply.github.com>
+Installed-Size: 13416
+Recommends: xwayland, libc6 (>= 2.34), libxcb1, libxcb-cursor0
+Suggests: flatpak
+Section: x11
+Priority: optional
+Homepage: https://github.com/dixonSolutions/lindroids
+Filename: pool/stable/main/l/lindroids/lindroids_0.1.187_amd64.deb
+Size: 3809144
+MD5sum: 9c83e8b8a16f66c1f54460ab2f698fd7
+SHA1: 452d6ce06cd2e8ab6e010f447d5bfcb6be800fbb
+SHA256: 3bdb7951bab06e75619d4fbcd27598266710a15ef05e0e49471828fec9680656
+Description: Linux GUI programs on Android, in windows and apps of their own
+ Lindroids is a package for the Linux environments on Android (Termux,
+ proot distros, Flatpak); it is not an Android app or a container itself.
+ It opens their GUI programs as Android windows, with touch, keyboard,
+ clipboard and sound, and "lindroids export" builds a program its own
+ Android app on the phone. This package contains the lindroids CLI (which
+ is also the Wayland compositor and sound server) and xwayland-satellite,
+ which runs X11 programs under Xwayland (lindroids run --x11).
+
+Package: lindroids
+Version: 0.1.189
+Architecture: amd64
+Maintainer: dixonSolutions <lindroids@users.noreply.github.com>
+Installed-Size: 13456
+Recommends: xwayland, libc6 (>= 2.34), libxcb1, libxcb-cursor0
+Suggests: flatpak
+Section: x11
+Priority: optional
+Homepage: https://github.com/dixonSolutions/lindroids
+Filename: pool/stable/main/l/lindroids/lindroids_0.1.189_amd64.deb
+Size: 3809220
+MD5sum: 42fa56730a8cf18e9878eae7c2155258
+SHA1: 2cd073a1a54aabc6b3f6c90c290628b3165b0f34
+SHA256: 9e3942188079d801d5f69b191820339bf4987c105a71e5b198ec5817a9c7dfc3
+Description: Linux GUI programs on Android, in windows and apps of their own
+ Lindroids is a package for the Linux environments on Android (Termux,
+ proot distros, Flatpak); it is not an Android app or a container itself.
+ It opens their GUI programs as Android windows, with touch, keyboard,
+ clipboard and sound, and "lindroids export" builds a program its own
+ Android app on the phone. This package contains the lindroids CLI (which
+ is also the Wayland compositor and sound server) and xwayland-satellite,
+ which runs X11 programs under Xwayland (lindroids run --x11).
+
+Package: lindroids
+Version: 0.1.192
+Architecture: amd64
+Maintainer: dixonSolutions <lindroids@users.noreply.github.com>
+Installed-Size: 13460
+Recommends: xwayland, libc6 (>= 2.34), libxcb1, libxcb-cursor0
+Suggests: flatpak
+Section: x11
+Priority: optional
+Homepage: https://github.com/dixonSolutions/lindroids
+Filename: pool/stable/main/l/lindroids/lindroids_0.1.192_amd64.deb
+Size: 3809664
+MD5sum: f84d278a62bccf66352a64f4f667d8ed
+SHA1: 8fca540ac96b1c0d91b62d517dd25e9621c2d82d
+SHA256: d2482b3712938b3066beb5cefbaf7a75550a5ce67163e17abd46a5c5fe1f173f
+Description: Linux GUI programs on Android, in windows and apps of their own
+ Lindroids is a package for the Linux environments on Android (Termux,
+ proot distros, Flatpak); it is not an Android app or a container itself.
+ It opens their GUI programs as Android windows, with touch, keyboard,
+ clipboard and sound, and "lindroids export" builds a program its own
+ Android app on the phone. This package contains the lindroids CLI (which
+ is also the Wayland compositor and sound server) and xwayland-satellite,
+ which runs X11 programs under Xwayland (lindroids run --x11).
+
