@@ -917,7 +917,12 @@ function toPhys(w, e) {
   return [(e.clientX - r.left) * (w.phys[0] / r.width), (e.clientY - r.top) * (w.phys[1] / r.height)];
 }
 
-const touchIds = new Map(); // pointerId -> small touch id
+const touchIds = new Map(); // pointerId -> { id: small touch id, x, y: where it went down, still }
+// A finger that is tapping never holds still: it rolls a few pixels between down and up. Programs
+// take a touch that moved as the start of a scroll or a drag, not as a tap (VSCodium's menus: the
+// entry is lit, its submenu never opens). So, as Android does for its own apps, a finger has not
+// moved until it is this far (CSS pixels, Android's 8dp) from where it went down.
+const TOUCH_SLOP = 8;
 
 // The mouse buttons the Linux side has down, as the page sent them (1 left, 2 right, 3 middle, 4
 // back, 5 forward). They follow each mouse event's `buttons`, not its `button`: a second button
@@ -948,8 +953,8 @@ function attachInput(w) {
     const [x, y] = toPhys(w, e);
     if (e.pointerType === 'touch') {
       let id = 0;
-      while ([...touchIds.values()].includes(id)) id++;
-      touchIds.set(e.pointerId, id);
+      while ([...touchIds.values()].some((t) => t.id === id)) id++;
+      touchIds.set(e.pointerId, { id, x: e.clientX, y: e.clientY, still: true });
       send({ t: 'touch', win: w.win, action: 'down', id, x, y, time_ms: now() });
     } else if (e.pointerType === 'pen') {
       // A pen acts as a mouse with its button held: it draws in note and paint programs.
@@ -980,20 +985,25 @@ function attachInput(w) {
     if (linkBacklog()) return;
     const [x, y] = toPhys(w, e);
     if (e.pointerType === 'touch') {
-      const id = touchIds.get(e.pointerId);
-      if (id !== undefined) send({ t: 'touch', win: w.win, action: 'move', id, x, y, time_ms: now() });
+      const t = touchIds.get(e.pointerId);
+      if (!t) return;
+      if (t.still && Math.hypot(e.clientX - t.x, e.clientY - t.y) < TOUCH_SLOP) return;
+      t.still = false;
+      send({ t: 'touch', win: w.win, action: 'move', id: t.id, x, y, time_ms: now() });
     } else {
       send({ t: 'pointer', win: w.win, action: 'motion', x, y, button: 0, time_ms: now() });
       if (e.pointerType === 'mouse') syncButtons(w, e, x, y);
     }
   };
   const up = (e, cancel) => {
-    const [x, y] = toPhys(w, e);
+    let [x, y] = toPhys(w, e);
     if (e.pointerType === 'touch') {
-      const id = touchIds.get(e.pointerId);
-      if (id === undefined) return;
+      const t = touchIds.get(e.pointerId);
+      if (!t) return;
       touchIds.delete(e.pointerId);
-      send({ t: 'touch', win: w.win, action: cancel ? 'cancel' : 'up', id, x, y, time_ms: now() });
+      // A finger that never left the slop comes up where it went down.
+      if (t.still) [x, y] = toPhys(w, { clientX: t.x, clientY: t.y });
+      send({ t: 'touch', win: w.win, action: cancel ? 'cancel' : 'up', id: t.id, x, y, time_ms: now() });
     } else if (e.pointerType === 'pen') {
       if (!penDown.delete(e.pointerId)) return;
       send({ t: 'pointer', win: w.win, action: 'release', x, y, button: e.button === 2 || e.button === 5 ? 2 : 1, time_ms: now() });

@@ -812,6 +812,34 @@ async function storm(browser, server, seed, iterations) {
 // ------------------------------------------------------------------ main
 
 const stress = process.argv.includes('--stress');
+// A finger that rolls a few pixels while tapping has not moved (VSCodium's submenus stayed shut
+// otherwise): no move inside the slop, the up where it went down; past the slop the moves go out.
+async function caseTouchSlop(browser, server) {
+  const { context, page } = await openPage(browser, server);
+  const cdp = await context.newCDPSession(page);
+  const touch = (type, id, x, y) => cdp.send('Input.dispatchTouchEvent', { type: { pointerdown: 'touchStart', pointermove: 'touchMove', pointerup: 'touchEnd' }[type], touchPoints: type === 'pointerup' ? [] : [{ x, y, id }] });
+  let from = await mark(page);
+  await touch('pointerdown', 21, 300, 300);
+  await touch('pointermove', 21, 303, 302);
+  await touch('pointermove', 21, 305, 304);
+  await touch('pointerup', 21, 305, 304);
+  await settle(page);
+  const tap = (await since(page, from)).filter((m) => m.t === 'touch');
+  const tapOk = tap.length === 2 && tap[0].action === 'down' && tap[1].action === 'up' && tap[1].x === tap[0].x && tap[1].y === tap[0].y;
+  record('TOUCH-A a tap that rolls 6 px: down and up at one place, no move', tapOk, JSON.stringify(tap.map((m) => [m.action, m.x, m.y])));
+  from = await mark(page);
+  await touch('pointerdown', 22, 300, 300);
+  await touch('pointermove', 22, 304, 300);
+  await touch('pointermove', 22, 320, 300);
+  await touch('pointermove', 22, 322, 300);
+  await touch('pointerup', 22, 322, 300);
+  await settle(page);
+  const drag = (await since(page, from)).filter((m) => m.t === 'touch');
+  const dragOk = drag.map((m) => m.action).join(' ') === 'down move move up' && drag[1].x > drag[0].x && drag[3].x === drag[2].x;
+  record('TOUCH-B a drag: moves from the first one past the slop, the up where the finger is', dragOk, JSON.stringify(drag.map((m) => [m.action, m.x, m.y])));
+  await context.close();
+}
+
 const server = await serve();
 const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
 try {
@@ -822,7 +850,7 @@ try {
   } else {
     for (const c of [caseBlur, caseHidden, caseReconnect, caseLostKeyUp, caseCaps, caseFlagShift, caseAltGr, caseTouchFlags,
       caseWindowSwitch, caseTwoShifts, caseMeta, caseRepeat, caseImeKeyUp, caseModifierPressedFromFlag, caseLocks,
-      caseChordedButtons, caseMotionAndWheel, caseRotation]) {
+      caseChordedButtons, caseMotionAndWheel, caseRotation, caseTouchSlop]) {
       await c(browser, server);
     }
   }

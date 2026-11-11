@@ -375,6 +375,27 @@ state and no real hold), a mouse, and the folder picker.
   UI's Recents draws the installed app's icon all the same. Only an app of the program's own
   (`lindroids export`) has its icon there.
 
+### Menus under a finger (after 0.1.189)
+
+On the tablet VSCodium's menu opened, but its entries with a submenu (File, View, Terminal...) only
+lit up under a finger: the submenu stayed shut. `adb shell input tap` opened them every time, which
+hid it: that tap does not move. A press that rolls 4 px in 130 ms (`input swipe x y x+4 y+3 130`,
+what a finger does) failed every time. The page sent each of those moves on as `wl_touch.motion`,
+and the program took a touch that moved as a drag, not a tap.
+
+The page now holds a finger's moves back until it is 8 CSS px (Android's own 8dp touch slop) from
+where it went down; a finger that never got that far comes up where it went down. Past the slop
+every move goes out as before.
+
+| Tablet, VSCodium, press that rolls | 0.1.189 | with the slop |
+| --- | --- | --- |
+| 4 px on View, Run | lit, submenu shut | submenu opens |
+| 9 px on View | lit, submenu shut | submenu opens |
+| 6 px on View > Appearance (a submenu of a submenu), then on Panel in it | n/a | opens; Panel hides the panel |
+| 500 px drag in the editor | scrolls | scrolls |
+
+`tests/stuck-input.mjs` has both cases (TOUCH-A, TOUCH-B); they fail on the page of 0.1.189.
+
 ### Review fixes (template 2)
 
 | | Before | Now |
