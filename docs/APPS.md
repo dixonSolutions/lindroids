@@ -421,6 +421,47 @@ the status bar at a third height for some frames, then the old layout, then the 
 still resizes both ways). Still Android's own: the bar's slide in and out, and One UI moving the
 whole screen for a few frames as it goes.
 
+### Typing on a predictive soft keyboard (after 0.1.192, template 3)
+
+Reported from the tablet (SM-X306B, Samsung's floating keyboard, prediction on) with a picture:
+VSCodium's terminal held `jjll ser|install phaser`, the caret in the middle, where `npm install
+phaser` was meant; and "very stuck when I go back". The tablet was not attached when this was
+worked on, so the Samsung keyboard itself is **still to test**; what follows was found in the page
+and checked in headless Chromium and on b15 (Android 12L, LatinIME, foot).
+
+- **The keyboard's own arrows and other keys did nothing while a word was being typed.** A
+  predictive keyboard keeps a composition open for the whole word. A key going down in a
+  composition was taken for the keyboard's own (`isComposing`), so `<`, `>` and any key that came
+  as itself were dropped, and the browser moved the caret in the hidden text area instead: the
+  page and the program no longer agreed where text went. Now only keyCode 229 is the keyboard's; a
+  named key (arrows, Enter, Backspace, Tab, Escape, Home, End...) goes to the program, at once
+  (`stuck-input.mjs` IME-A: on the old page nothing was sent).
+- **Keys held behind a composition.** Keys waited for an open composition's end (2 s at most), a
+  fix for Firefox, which hands a composition's text over at its end. Chromium hands it over as it
+  grows, so there the wait only delayed keys: now Firefox only.
+- **The text area starts again after a key.** The page turns what changes in its hidden text area
+  into text and backspaces. Once a key has gone to the program (an arrow, Backspace as a key, a
+  hardware key), the area's text is not what is left of the program's caret any more, and a
+  keyboard rewriting its word would make the page backspace over other text. The area is emptied
+  after such a key, or at the composition's end (IME-B).
+- **Window apps ask for a plain-key keyboard** (template 3: apps built before say they are out of
+  date; `lindroids export <id>` or `lindroids app install` rebuilds them). Samsung's keyboard
+  predicts whatever a page asks (`autocomplete="off"`, no spell check). The app's WebView now
+  reports its text field as a visible password with no suggestions, the type Termux uses for the
+  same keyboard: each key comes as it is pressed, with nothing held back or rewritten. The cost:
+  no predictions, corrections or swipe typing in a window app. A browser tab cannot ask for this.
+
+| Check | Result |
+|---|---|
+| b15, foot's app from template 3: `dumpsys input_method` | `inputType=0xa0091` (text, visible password, several lines, no suggestions); before `0xa00a1` |
+| b15, LatinIME taps: `npm install`, Backspace twice, `ll phaser` | sent as typed, one message a key; the terminal shows `npm install phaser` |
+| b15: Back (keyboard hides), tap, type; Home for 3 s, back, type | every key arrives; nothing stuck |
+| `tests/stuck-input.mjs` | 38/38; IME-A and IME-B fail on the page of 0.1.192 |
+
+Still open: the same on the tablet with Samsung's keyboard (does the plain-key type end the
+doubled letters; do its `<` `>` keys move the caret), and what "stuck when I go back" was if not
+those keys.
+
 ### Review fixes (template 2)
 
 | | Before | Now |

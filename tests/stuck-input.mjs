@@ -864,6 +864,42 @@ async function caseKeyboardBar(browser, server) {
   await context.close();
 }
 
+// The soft keyboard types into the hidden text area. A predictive keyboard (Samsung's) keeps a
+// composition open while a word is typed: an arrow pressed then is still the program's, and goes
+// at once; after it the text area starts again, so a word the keyboard rewrites later cannot make
+// the page backspace over text that is no longer left of the program's caret.
+async function caseSoftKeyboard(browser, server) {
+  const { context, page } = await openPage(browser, server, true);
+  const cdp = await context.newCDPSession(page);
+  await page.evaluate(() => window.__deliver({ t: 'keyboard', win: 1, show: true }, window.__sockets.length - 1));
+  await page.waitForFunction(() => document.activeElement && document.activeElement.id === 'ime');
+  const typed = (msgs) => msgs.filter((m) => m.t === 'key' || m.t === 'text').map((m) => (m.t === 'text' ? JSON.stringify(m.text) : `${m.code}${m.down ? '↓' : '↑'}`)).join(' ');
+  const arrow = async (type) => cdp.send('Input.dispatchKeyEvent', { type, key: 'ArrowLeft', code: '', windowsVirtualKeyCode: 37, nativeVirtualKeyCode: 37 });
+  let from = await mark(page);
+  await cdp.send('Input.insertText', { text: 'npm ' });
+  await cdp.send('Input.imeSetComposition', { text: 's', selectionStart: 1, selectionEnd: 1 });
+  await cdp.send('Input.imeSetComposition', { text: 'se', selectionStart: 2, selectionEnd: 2 });
+  await settle(page);
+  const before = await mark(page);
+  await arrow('rawKeyDown');
+  await page.waitForTimeout(100);
+  const atOnce = typed(await since(page, before));
+  await arrow('keyUp');
+  await settle(page);
+  record('IME-A an arrow pressed while a word is composed goes to the program, at once', atOnce === '21↓', `typed ${typed(await since(page, from))}; within 100 ms of the arrow: ${atOnce || 'nothing'}`);
+  // The keyboard gives up its word (as it does when the caret moves) and later types another.
+  await cdp.send('Input.insertText', { text: 'se' });
+  await settle(page);
+  const [value, empty] = await page.evaluate(() => [document.getElementById('ime').value, IME_BASE]);
+  from = await mark(page);
+  await cdp.send('Input.imeSetComposition', { text: 'x', selectionStart: 1, selectionEnd: 1 });
+  await cdp.send('Input.insertText', { text: 'xy' });
+  await settle(page);
+  const after = typed(await since(page, from));
+  record('IME-B after the arrow the text area starts again: the next word is only added', value === empty && after === '"x" "y"', `text area ${JSON.stringify(value)}, then typed ${after}`);
+  await context.close();
+}
+
 const server = await serve();
 const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
 try {
@@ -874,7 +910,7 @@ try {
   } else {
     for (const c of [caseBlur, caseHidden, caseReconnect, caseLostKeyUp, caseCaps, caseFlagShift, caseAltGr, caseTouchFlags,
       caseWindowSwitch, caseTwoShifts, caseMeta, caseRepeat, caseImeKeyUp, caseModifierPressedFromFlag, caseLocks,
-      caseChordedButtons, caseMotionAndWheel, caseRotation, caseTouchSlop, caseKeyboardBar]) {
+      caseChordedButtons, caseMotionAndWheel, caseRotation, caseTouchSlop, caseKeyboardBar, caseSoftKeyboard]) {
       await c(browser, server);
     }
   }
