@@ -1101,9 +1101,12 @@ const KEYS = { Enter: 66, Backspace: 67, Delete: 112, Tab: 61, Escape: 111, Arro
 
 // The key an event is about. A key going down in a composition (keyCode 229) is the IME's, which
 // types its text itself; a key going up is resolved all the same, by `code` or `key`, so a key
-// held is let go whatever the IME did with it.
+// held is let go whatever the IME did with it. A key that is not text (an arrow, Enter, Backspace)
+// and comes as itself while a word is being composed is the program's all the same: a predictive
+// soft keyboard keeps a composition open for the whole word, and its arrow keys did nothing then.
 function keyCode(e, down) {
-  if (down && (e.isComposing || e.keyCode === 229)) return 0;
+  if (down && e.keyCode === 229) return 0;
+  if (down && e.isComposing) return KEYS[e.key] || 0;
   return CODES[e.code] || KEYS[e.key] || 0;
 }
 
@@ -1216,6 +1219,7 @@ function onKey(e, down) {
   }
   held.add(code);
   key(code, true);
+  if (!isModifier(code)) imeForget();
 }
 
 /// Whether the character typed needs Shift on a US keyboard (the keymap the Linux side has).
@@ -1226,13 +1230,17 @@ function needsShift(e) {
   return '~!@#$%^&*()_+{}|:"<>?'.includes(e.key);
 }
 
-// While a composition is open, keys wait for its text: Firefox can open one for a single key
+// While a composition is open in Firefox, keys wait for its text: it can open one for a single key
 // among others (Android's injected keys) and hand over its text only when it ends, so the keys
 // typed after it would overtake it ("echo" arrived as "eco…h"). Safety: they go after 2 s anyway.
+// Only Firefox: Chromium hands over a composition's text as it grows, and a predictive keyboard
+// (Samsung's) keeps one open for as long as a word is being typed, so an arrow, Enter or Backspace
+// pressed in a word would wait for the word's end, or the 2 s.
+const KEYS_WAIT_FOR_COMPOSITION = /Gecko\/\d/.test(navigator.userAgent);
 let heldKeys = [], heldTimer = null;
 function key(code, down) {
   const m = { t: 'key', win: active, code, down, time_ms: now() };
-  if (!composing && !heldKeys.length) return send(m);
+  if (!(composing && KEYS_WAIT_FOR_COMPOSITION) && !heldKeys.length) return send(m);
   heldKeys.push(m);
   if (!heldTimer) heldTimer = setTimeout(sendHeldKeys, 2000);
 }
@@ -1273,9 +1281,21 @@ let imeLast = IME_BASE;
 let composing = false;
 
 function imeReset() {
+  imeStale = false;
   ime.value = IME_BASE;
   imeLast = IME_BASE;
   ime.setSelectionRange(IME_BASE.length, IME_BASE.length);
+}
+
+// A key went to the program (an arrow, Home, Tab, Backspace, a hardware key): what the text area
+// holds is no longer what is left of the program's caret, and a keyboard that then rewrites its
+// word (a prediction, a correction) would have the page backspace over other text. The text area
+// starts again, now or when the composition in it ends.
+let imeStale = false;
+function imeForget() {
+  if (document.activeElement !== ime || imeLast === IME_BASE) return;
+  if (composing) imeStale = true;
+  else imeReset();
 }
 
 function showKeyboard() {
@@ -1294,7 +1314,7 @@ function hideKeyboard() {
 }
 
 ime.addEventListener('compositionstart', () => { composing = true; });
-ime.addEventListener('compositionend', () => { composing = false; imeInput(); sendHeldKeys(); });
+ime.addEventListener('compositionend', () => { composing = false; imeInput(); sendHeldKeys(); if (imeStale) imeReset(); });
 ime.addEventListener('input', () => imeInput());
 
 function imeInput() {

@@ -28,7 +28,7 @@ pub const PROTOCOL_VERSION: u32 = 8;
 /// that an app built from an older template (its code is in the APK, and only `lindroids export`
 /// or `lindroids app install` builds it again) can be told apart. Its bridge says its number
 /// (`template()`; none before 1). `WindowActivity.TEMPLATE` is the same number.
-pub const APP_TEMPLATE: u32 = 2;
+pub const APP_TEMPLATE: u32 = 3;
 
 /// The real uid of this process. Under proot's fake root (proot-distro, UserLAnd) getuid() says
 /// 0, but the app looks for the sandbox app's own uid; the kernel's view in /proc is not faked.
