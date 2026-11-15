@@ -1,0 +1,36 @@
+Origin: Lindroids
+Label: Lindroids
+Suite: stable
+Codename: stable
+Date: Sun, 15 Nov 2026 02:11:09 +0000
+Architectures: arm64 armhf amd64 i386
+Components: main
+Acquire-By-Hash: no
+Description: Lindroids: Linux apps in Android windows
+MD5Sum:
+ 5f163fc9d9e643881182278fe20f6780             3378 main/binary-amd64/Packages
+ 9b85e398ae5e693adc13f9f543f71957              949 main/binary-amd64/Packages.gz
+ 96c3ce1e2156d2cd2cf948123261a0fd             3378 main/binary-arm64/Packages
+ 5d8e5e24ea8ea1a43bbcdc836f7dd20f              952 main/binary-arm64/Packages.gz
+ 8d8cbef582cedb22f7e233f3f11e7bdd             3378 main/binary-armhf/Packages
+ 5d9f3d8abba0d134676927d9646e0aa0              949 main/binary-armhf/Packages.gz
+ 8960537710336c5a5bddb77eb944001e             3372 main/binary-i386/Packages
+ 2d53b0e2723a7db58f66c57c7db7ebe1              948 main/binary-i386/Packages.gz
+SHA1:
+ dd30fb976c123aa228ce4f7211e325a20e5fcae7             3378 main/binary-amd64/Packages
+ f644eda3743b53dfe441f811417bb720d2a5bbf5              949 main/binary-amd64/Packages.gz
+ eddf28d423bc0a4cf42a921d3d0bffdc7c737725             3378 main/binary-arm64/Packages
+ 5c8f082092e4269edfa1c5a637085616eaf9686e              952 main/binary-arm64/Packages.gz
+ 14d6c54404ee2716e46374cdb72acd15286caf08             3378 main/binary-armhf/Packages
+ e435e8336884aae09bc7fb4488a61039eb933ad9              949 main/binary-armhf/Packages.gz
+ fb9b5994ced01e57960c302990d7415af8a4986a             3372 main/binary-i386/Packages
+ 3e97c53a5231457fc7ab093f2b20aff3e6389d99              948 main/binary-i386/Packages.gz
+SHA256:
+ 305e66dadf26d43db262949666a7107738cdbb8fa59517b7bb55b043d3d5a3f9             3378 main/binary-amd64/Packages
+ 1a41ceae959978bdbcd862b21a56fb4f63d0736853688c41df50ab805b911f9b              949 main/binary-amd64/Packages.gz
+ 3ee2d300df5d04248d59ee13bf15138b0f51dad8d5a3c31dcefc2142eb4d279f             3378 main/binary-arm64/Packages
+ e89a396c42eb1f270070c7b7dd8966a6ff3abc65dd9915692717250ddf06b637              952 main/binary-arm64/Packages.gz
+ 3c5708644bdacfc1c69139c67fe275deadc4c0bff616a23b30184d26b7bf33f4             3378 main/binary-armhf/Packages
+ fe39e16c3699436d8efc5180647f4ccd8a6894b1355b4d411ec7d1072d013d47              949 main/binary-armhf/Packages.gz
+ 805a814f42a08ea9bcc809ebbd03bdf0bd385e834b7a82c958877a40d32eaba7             3372 main/binary-i386/Packages
+ 5f2876fa658d9c85a6d11b96859455da2a64afbfe4673f6bd2a828f691555c05              948 main/binary-i386/Packages.gz
