@@ -19,12 +19,15 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
+import android.text.InputType;
 import android.util.Base64;
 import android.view.Display;
 import android.view.InputDevice;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -75,7 +78,7 @@ public class WindowActivity extends Activity {
      * This code's number (lindroids_proto::APP_TEMPLATE): bumped with every change to the app,
      * whose code is in each APK built from it, so the page can tell an app that is out of date.
      */
-    static final int TEMPLATE = 2;
+    static final int TEMPLATE = 3;
 
     static final String EXTRA_URL = "org.lindroids.URL";
     static final String EXTRA_NAME = "org.lindroids.NAME";
@@ -161,7 +164,23 @@ public class WindowActivity extends Activity {
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
-        webView = new WebView(this);
+        webView = new WebView(this) {
+            // What the soft keyboard is told about the page's text field: one that takes plain
+            // keys. Samsung's keyboard predicts and corrects whatever a page asks (autocomplete
+            // off, no spell check), holding each word back and rewriting it; a program's own text
+            // (a terminal's line, an editor with its own completion) is not the keyboard's to
+            // rewrite. A visible password with no suggestions is the type keyboards honour: every
+            // key comes as it is pressed. The page's own flags (several lines) stay.
+            @Override
+            public InputConnection onCreateInputConnection(EditorInfo out) {
+                InputConnection c = super.onCreateInputConnection(out);
+                if (c != null && (out.inputType & InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT) {
+                    out.inputType = (out.inputType & ~(InputType.TYPE_MASK_VARIATION | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT | InputType.TYPE_TEXT_FLAG_AUTO_COMPLETE))
+                        | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+                }
+                return c;
+            }
+        };
         webView.setBackgroundColor(Color.BLACK);
         webView.setLayoutParams(new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         root.addView(webView);
